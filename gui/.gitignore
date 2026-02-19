@@ -1,0 +1,18 @@
+# Virtual Environments
+venv/
+.venv/
+env/
+
+# Compiled Python files (these generate automatically, no need to save them)
+__pycache__/
+*.pyc
+
+# VS Code settings
+.vscode/
+
+# Secrets and environment variables (keeps your passwords/API keys safe)
+.env
+
+# OS generated files
+.DS_Store
+Thumbs.db
