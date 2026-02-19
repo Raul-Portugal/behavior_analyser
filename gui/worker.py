@@ -133,7 +133,7 @@ class AnalysisWorker(QObject):
                     # Core: Generate Reference
                     ref_frame = ReferenceFrameGenerator.generate(
                         video_path, 
-                        num_samples=settings.detection_config.window_size, # Use window size or config default
+                        num_samples=settings.detection_config.window_size,
                         target_dims=handler.dimensions, 
                         use_cache=True
                     )
@@ -159,7 +159,7 @@ class AnalysisWorker(QObject):
                     local_est = ProgressEstimator(end_frame - start_frame)
                     
                     # Run Analysis Loop
-                    result, timelapse, frames_done = self._run_tracked_analysis(
+                    result, timelapse_success, frames_done = self._run_tracked_analysis(
                         analyzer, result_container, settings, video_path, handler,
                         local_est, global_est, quality_monitor,
                         video_start_pct, base_name, global_offset
@@ -179,9 +179,9 @@ class AnalysisWorker(QObject):
                     self.emit_progress(video_start_pct + 85, f"Video: {base_name}", "Generating Plots...")
                     self._generate_all_visualizations(result, handler, base_name, video_progress_func)
                     
-                    if settings.create_timelapse and timelapse:
+                    if settings.create_timelapse and timelapse_success:
                         self.emit_progress(video_start_pct + 95, f"Video: {base_name}", "Creating Timelapse...")
-                        self._create_timelapse(timelapse, handler, base_name, config)
+                        self._generate_tracking_validation_video(result, video_path, settings, base_name, handler)
 
                 self.log.emit(f"✓ Successfully processed: {video_path.name}")
                 all_results.append((video_path, result))
@@ -256,12 +256,7 @@ class AnalysisWorker(QObject):
     def _run_tracked_analysis(self, analyzer, result_container, settings, video_path,
                              handler, local_est, global_est, quality_monitor,
                              video_start_pct, base_name, global_offset):
-        """Core Positional Tracking Loop."""
-        timelapse_frames = []
-        collect_timelapse = settings.create_timelapse
-        config = AppConfig()
-        interval = config.visualization.timelapse_fps_divider
-        
+        """Core Positional Tracking Loop (Optimized for RAM)."""
         frame_count = 0
         total_local_frames = analyzer.end_frame - analyzer.start_frame
 
@@ -275,10 +270,6 @@ class AnalysisWorker(QObject):
             detected = position is not None
             # Update Quality Monitor
             quality_monitor.update(detected, 1.0 if detected else 0.0, position)
-            
-            # Collect Timelapse Frame
-            if collect_timelapse and frame_count % interval == 0:
-                timelapse_frames.append(analyzer.get_last_annotated_frame())
             
             frame_count += 1
             
@@ -304,14 +295,55 @@ class AnalysisWorker(QObject):
                 self.checkpoint_mgr.save_checkpoint(video_path, frame_idx, result_container.__dict__, settings)
 
         analyzer.finalize_result(result_container)
-        return result_container, timelapse_frames, frame_count
+        return result_container, True, frame_count
 
-    def _create_timelapse(self, frames, handler, base_name, config):
-        """Create standard tracking timelapse."""
-        path = self.output_dir / f"{base_name}_timelapse.mp4"
-        fps = (handler.fps / config.visualization.timelapse_fps_divider) * config.visualization.timelapse_speed_multiplier
-        Visualizer.create_timelapse_video(frames, path, fps, show_progress=False)
-        self.log.emit(f"✓ Timelapse saved")
+    def _generate_tracking_validation_video(self, result, video_path, settings, base_name, handler):
+        """Generate tracking validation video with ROIs and Text directly to disk."""
+        try:
+            output_path = self.output_dir / f"{base_name}_timelapse.mp4"
+            config = AppConfig()
+            interval = config.visualization.timelapse_fps_divider
+            if interval < 1: interval = 1
+            out_fps = (handler.fps / interval) * config.visualization.timelapse_speed_multiplier
+            
+            # Use resolved visual labels if available, else raw roi labels
+            labels = result.visual_labels if len(result.visual_labels) == len(result.timestamps) else result.roi_labels
+
+            with SafeVideoWriter(output_path, out_fps, handler.dimensions) as writer:
+                cap = cv2.VideoCapture(str(video_path))
+                cap.set(cv2.CAP_PROP_POS_FRAMES, result.start_frame)
+                
+                curr_idx = 0
+                total_frames = len(result.timestamps)
+                
+                while curr_idx < total_frames:
+                    ret, frame = cap.read()
+                    if not ret: break
+                    
+                    if curr_idx % interval == 0:
+                        # 1. Draw ROIs
+                        frame = settings.roi_manager.draw_on_frame(frame, thickness=2)
+                        
+                        # 2. Draw Position Dot
+                        pos = result.positions[curr_idx]
+                        if pos:
+                            cv2.circle(frame, pos, 8, (0, 0, 255), -1)
+                        
+                        # 3. Draw Zone Text Overlay
+                        current_zone = labels[curr_idx] if curr_idx < len(labels) else "outside"
+                        text = f"Zone: {current_zone.replace('_', ' ').title()}"
+                        
+                        # Text background for visibility
+                        font = cv2.FONT_HERSHEY_SIMPLEX
+                        cv2.rectangle(frame, (10, 10), (350, 60), (0, 0, 0), -1)
+                        cv2.putText(frame, text, (20, 45), font, 1.0, (0, 255, 255), 2, cv2.LINE_AA)
+                        
+                        writer.write(frame)
+                    curr_idx += 1
+                cap.release()
+            self.log.emit(f"✓ Timelapse saved")
+        except Exception as e:
+            logger.error(f"Error creating timelapse video: {e}", exc_info=True)
 
     def _export_all_data(self, result, base_name, settings):
         """Export CSVs and JSONs."""

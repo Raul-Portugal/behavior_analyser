@@ -19,7 +19,6 @@ import numpy as np
 from scipy.ndimage import gaussian_filter
 from tqdm import tqdm
 
-# --- UPDATED IMPORTS ---
 from mazes.base_maze import BaseAnalysisResult, Maze
 from core.video import SafeVideoWriter  # Replaces VideoWriter from video_io
 
@@ -249,16 +248,24 @@ class Visualizer:
         if not result.timestamps: return
 
         try:
-            unique_zones = sorted(list(set(result.visual_labels)))
+            # FIX: Fallback to roi_labels safely if visual_labels hasn't been populated
+            labels_to_plot = result.visual_labels if len(result.visual_labels) == len(result.timestamps) else result.roi_labels
+            
+            if not labels_to_plot:
+                logger.warning("No labels available for time series plot.")
+                return
+
+            unique_zones = sorted(list(set(labels_to_plot)))
             zone_map = {zone: i for i, zone in enumerate(unique_zones)}
-            y_values = [zone_map.get(label, -1) for label in result.visual_labels]
+            y_values = [zone_map.get(label, -1) for label in labels_to_plot]
 
             fig = Figure(figsize=(15, 6))
             canvas = FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
             ax.step(result.timestamps, y_values, where='post')
             ax.set_yticks(range(len(unique_zones)))
-            ax.set_yticklabels(unique_zones)
+            # Format zone names beautifully (e.g., "arm_a" -> "Arm A")
+            ax.set_yticklabels([z.replace('_', ' ').title() for z in unique_zones])
             ax.set_xlabel('Time (seconds)')
             ax.set_ylabel('Current Zone')
             ax.set_title('Zone Occupancy Over Time')
@@ -266,17 +273,17 @@ class Visualizer:
             fig.tight_layout()
             fig.savefig(output_path, dpi=150)
         except Exception as e:
-            logger.error(f"Failed to generate time series: {e}")
+            logger.error(f"Failed to generate time series: {e}", exc_info=True)
 
     @staticmethod
     def create_timelapse_video(frames, output_path, fps, show_progress=True):
+        """Used for pure array-based timelapse writing (deprecated for tracking, kept for compatibility)"""
         if not frames:
             logger.warning("No frames for timelapse.")
             return
         logger.info(f"Creating timelapse: {output_path}")
         h, w = frames[0].shape[:2]
         
-        # --- UPDATED: Use SafeVideoWriter from Core ---
         try:
             from core.video import SafeVideoWriter
             with SafeVideoWriter(output_path, fps, (w, h)) as writer:

@@ -193,6 +193,19 @@ class YMaze(Maze):
         if not isinstance(result, YMazeAnalysisResult):
             raise TypeError("YMaze logic requires a YMazeAnalysisResult instance.")
 
+        # --- HYSTERESIS LOGIC FOR VISUAL TIMELAPSE AND PLOTTING ---
+        definitive_zone = 'outside'
+        result.visual_labels = []
+
+        for i, zones in enumerate(result.overlapping_zones):
+            # Only change state if cleanly inside a single zone (excluding 'outside')
+            if len(zones) == 1 and zones[0] != 'outside':
+                definitive_zone = zones[0]
+            
+            # If in an overlap (len(zones) > 1), definitive_zone retains its previous state automatically!
+            result.visual_labels.append(definitive_zone)
+        
+        # --- EXISTING STRICT SEQUENCE TRACKER LOGIC ---
         tracker = _YMazeSequenceTracker()
         for i, timestamp in enumerate(result.timestamps):
             zones = result.overlapping_zones[i]
