@@ -1,80 +1,56 @@
 # Quickstart Guide
 
-This guide will walk you through a complete analysis workflow, from loading a video to viewing the results.
+This guide will walk you through a complete analysis workflow, from loading your first video to reviewing the generated heatmaps and data.
 
-## Prerequisites
+## 1. Launch the Application
+- **If using the executable (.exe):** Double-click the downloaded file.
+- **If using Python:** Open your terminal, activate your virtual environment, and run `python gui_main.py`.
 
-- You have successfully installed the Behavioral Maze Analyzer by following the instructions in the [README.md](./README.md) file.
-- You have one or more maze videos ready for analysis.
+## 2. Load Your Videos
+1. Click the **"Add Videos"** or **"Add Folder"** button at the top of the main window.
+2. Select the video files (.mp4, .avi, etc.) you want to analyze. 
+   *Note: All output files (CSVs, plots, timelapses) will be saved in the same directory as the first video in your list, unless you change it via `Tools -> Set Output Directory`.*
 
----
+## 3. Start the Configuration Workflow
+Click the **"Configure & Start Analysis"** button. 
 
-## Step-by-Step Analysis
+### Step A: Select Maze Type
+A dialog will appear asking you to select the paradigm (e.g., "Y-Maze", "Elevated Plus Maze", "Tail Suspension Test", or "Freestyle / Open Field"). Select the appropriate option.
 
-### 1. Launch the Application
+### Step B: Draw Regions of Interest (ROIs)
+1. You will see a frame from the middle of your video.
+2. Follow the prompt at the top left to draw the current zone (e.g., "Arm A").
+3. **Left-click** to drop points and draw a polygon around the arm.
+4. **Right-click** to close and finish the shape.
+5. Click **"Next Zone"** and repeat until all zones are drawn.
+6. *Calibration:* You will be asked to draw a reference line. Draw a line along an object of known length in the real world (e.g., a 30cm maze arm). This allows the software to output distances in centimeters instead of pixels.
 
-Open a terminal or command prompt, navigate to the project directory, activate your virtual environment, and run:
+### Step C: Tune Detection Parameters
+The Interactive Detection Tuner ensures the software cleanly separates the animal from the background.
+1. Use the **Frame Navigation** slider (or the `N` and `P` keys) to look at different parts of the video.
+2. Adjust the **Threshold** slider until the white mask in the "Threshold View" neatly covers the animal without picking up background noise (like reflections or shadows).
+3. Check the "Detection Quality" panel on the right. If it says "Excellent" or "Fair", you are good to go.
+4. *(Optional)* Click **Quick Scan Test** to automatically test the settings across 50 random frames.
+5. Click **Accept Parameters**.
 
-```bash
-python gui_main.py
-```
+### Step D: Finalize Time & Settings
+The final review dialog allows you to:
+- Adjust the **Start Time** and **End Time** (useful for trimming setup/handling time).
+- Enter the real-world length of the calibration line you drew earlier.
+- Check the box to generate a **Validation/Timelapse Video** (highly recommended for verifying results).
 
-### 2. Add Videos
+## 4. Run the Batch Analysis
+- If you have multiple videos loaded, the software will ask if you want to **Verify Each** or **Run All Now**.
+  - **Verify Each:** Allows you to adjust start/end times or redraw ROIs slightly if the camera moved between recordings.
+  - **Run All Now:** Applies the exact same ROIs and settings to every video in the list.
+- Click **Yes** to begin. The progress bar will show the estimated time remaining.
+- *Note: If you need to stop, click **Cancel Analysis**. The software will save a checkpoint, and you can resume from the exact same frame later!*
 
-- Click the **"Add Videos"** button.
-- A file dialog will open. Select one or more video files (.mp4, .avi, etc.).
-- The selected videos will appear in the list. The output files will be saved in the same directory as the first video you added.
+## 5. Review Your Results
+Once complete, navigate to your output folder. For every video, you will find:
+1. `[video_name]_tracking_data.csv`: Frame-by-frame X/Y coordinates and current zone.
+2. `[video_name]_analysis_summary.csv`: Total distance, time in zones, alternation scores, etc.
+3. `[video_name]_heatmap.png`: A visual density map of where the animal spent the most time.
+4. `[video_name]_timelapse.mp4` (if enabled): A sped-up video showing the tracking dot, drawn ROIs, and text indicating the recognized zone.
 
-### 3. Start the Configuration Workflow
-
-Click the **"Configure & Start Analysis"** button.
-
-### 4. Select Maze Type
-
-- A dialog box will appear asking you to select the maze type (e.g., "Y-Maze", "Elevated Plus Maze").
-- Choose the correct type for your videos and click **"OK"**.
-
-### 5. Define Regions of Interest (ROIs)
-
-- An ROI selection window will appear, displaying the first frame of your reference video.
-- Follow the on-screen instructions at the top of the window.
-- **Left-click** to add points to form a polygon for the current zone (e.g., "Arm A").
-- **Right-click** to finish the current shape. You can draw multiple shapes for a single zone if needed.
-- Click **"Next Zone"** to save the ROIs for the current zone and move to the next.
-- After defining all ROIs, you will be asked if you want to draw a reference line for distance calibration. This is highly recommended for accurate distance measurements.
-
-### 6. Tune Detection Parameters
-
-The Interactive Detection Tuner window will appear. This is where you ensure the software can accurately track your animal.
-
-- Use the sliders on the right to adjust parameters:
-  - **Threshold**: The most important parameter. Adjust it until the white mask in the "Threshold View" neatly covers the animal without picking up too much background noise.
-  - **Weight Omega / Window Size**: These control the spatial weighting. Generally, the defaults work well.
-- Use the frame slider or keyboard shortcuts (**N/P** for next/previous frame, **+/-** for larger jumps) to check the detection on different frames.
-- Once you are satisfied with the tracking, click the **"Accept Parameters"** button.
-
-### 7. Finalize Analysis Settings
-
-A final settings dialog will appear. Here you can:
-
-- Adjust the **Start Time** and **End Time** for the analysis.
-- Enter the **Real-world length** (in cm) corresponding to the reference line you drew in Step 5.
-- Check the box to **"Create Timelapse Videos"**.
-- Click **"OK"** (or **"Accept"** in batch mode).
-
-### 8. Run the Analysis
-
-- If you are analyzing multiple videos, you will be asked if you want to verify the settings for each video.
-  - **Yes**: You will repeat Step 7 for each video, allowing you to set unique start/end times or redraw ROIs if needed.
-  - **No**: The settings you just configured will be applied to all videos in the batch.
-- A final confirmation will appear. Click **"Yes"** to start the analysis.
-- The progress bar and log window will show the analysis progress. You can click **"Cancel Analysis"** to stop the process.
-
-### 9. Review Your Results
-
-- Once the analysis is complete, a confirmation message will appear.
-- Navigate to the output directory (the same folder as your first video). You will find all the generated CSV files, plots, and timelapse videos, clearly named after the source video file.
-
----
-
-**That's it!** You have successfully analyzed your first video.
+You will also find a `_BATCH_SUMMARY.csv` containing the final aggregated statistics for all processed videos in one easy-to-copy spreadsheet.
