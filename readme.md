@@ -8,7 +8,7 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 
 ## Key Features
 
-- **Standalone Application**: Run the software directly via a Windows executable—no Python setup required.
+- **Standalone Application**: Run the software directly via a Windows executable, no Python setup required.
 - **Batch Processing**: Analyze entire folders of videos in a single run with consistent or individually customized settings.
 - **Multi-Maze Support**: Comes with built-in, highly optimized logic for:
   - **Y-Maze**: Calculates spontaneous alternation, arm entries, and same-arm returns (includes hysteresis filtering for overlapping center zones).
@@ -32,7 +32,7 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 
 If you just want to use the software on a Windows machine, you do not need to install Python.
 
-1. Go to the [Releases](../../releases) page of this repository.
+1. Go to the [Releases](https://github.com/Raul-Portugal/behavior_analyser_v8/releases) page of this repository.
 2. Download the latest `Behavioral_Maze_Analyzer.exe` file.
 3. Double-click the `.exe` to run the application.
 
@@ -43,8 +43,8 @@ If you want to modify the code, add new mazes, or run it on macOS/Linux:
 **1. Clone the repository:**
 
 ```bash
-git clone https://github.com/yourusername/behavior_analyzer.git
-cd behavior_analyzer
+git clone https://github.com/Raul-Portugal/behavior_analyser_v8.git
+cd behavior_analyser_v8
 ```
 
 **2. Set up a virtual environment (Recommended):**
@@ -81,9 +81,3 @@ The application uses a modular Core Architecture, making it easy to add new maze
 2. **Create a Maze Class**: Inherit from the abstract `Maze` class (in `mazes/base_maze.py`).
 3. **Implement Abstract Methods**: Define `get_roi_definitions()`, `calculate_metrics()`, and any specific plotting functions.
 4. **Register the Maze**: Add your new class to the `AVAILABLE_MAZES` dictionary in `mazes/__init__.py`. The GUI will automatically incorporate it into the selection menus.
-
----
-
-## License
-
-This project is licensed under the MIT License. See the [LICENSE](LICENSE) file for details.
