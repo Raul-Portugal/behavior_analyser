@@ -43,8 +43,8 @@ If you want to modify the code, add new mazes, or run it on macOS/Linux:
 **1. Clone the repository:**
 
 ```bash
-git clone https://github.com/Raul-Portugal/behavior_analyser_v8.git
-cd behavior_analyser_v8
+git clone https://github.com/Raul-Portugal/behavior_analyser.git
+cd behavior_analyser
 ```
 
 **2. Set up a virtual environment (Recommended):**
