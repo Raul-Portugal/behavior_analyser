@@ -140,13 +140,13 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.subtask_label)
         
         # Log output
-        log_handler = QTextEditLogger(self)
-        log_handler.setFormatter(
+        self.log_handler = QTextEditLogger(self)
+        self.log_handler.setFormatter(
             logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
         )
-        logging.getLogger().addHandler(log_handler)
+        logging.getLogger().addHandler(self.log_handler)
         logging.getLogger().setLevel(logging.INFO)
-        main_layout.addWidget(log_handler.widget)
+        main_layout.addWidget(self.log_handler.widget)
 
     def create_menu_bar(self):
         """Create the menu bar."""
@@ -872,6 +872,18 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.Yes:
                 self.cancel_analysis()
                 if self.analysis_thread: self.analysis_thread.quit(); self.analysis_thread.wait()
+                self._detach_log_handler()
                 event.accept()
             else: event.ignore()
-        else: event.accept()
+        else:
+            self._detach_log_handler()
+            event.accept()
+
+    def _detach_log_handler(self):
+        """Remove the Qt-backed handler before its widget is destroyed."""
+        handler = getattr(self, "log_handler", None)
+        if handler is None:
+            return
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+        self.log_handler = None

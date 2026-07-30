@@ -22,7 +22,27 @@ if (-not (Test-Path -LiteralPath $BuildPython)) {
     Join-Path $ProjectRoot "Behavioral_Maze_Analyzer.spec"
 )
 
+$Executable = Join-Path (
+    Join-Path $ProjectRoot "dist"
+) "Behavioral_Maze_Analyzer.exe"
+$StartupCheck = Start-Process `
+    -FilePath $Executable `
+    -ArgumentList "--startup-check" `
+    -WindowStyle Hidden `
+    -PassThru
+if (-not $StartupCheck.WaitForExit(60000)) {
+    Stop-Process -Id $StartupCheck.Id -Force -ErrorAction SilentlyContinue
+    throw "Packaged startup check timed out; an error dialog may be open."
+}
+$StartupCheck.Refresh()
+if ($StartupCheck.ExitCode -ne 0) {
+    throw (
+        "Packaged startup check failed with exit code " +
+        $StartupCheck.ExitCode
+    )
+}
+
 Write-Host (
     "Release created at " +
-    (Join-Path $ProjectRoot "dist\Behavioral_Maze_Analyzer.exe")
+    $Executable
 )

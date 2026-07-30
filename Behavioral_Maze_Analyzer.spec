@@ -1,14 +1,18 @@
 # -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
+from PyInstaller.utils.hooks import collect_submodules
 
 project_root = Path(SPECPATH)
+scipy_array_api_modules = collect_submodules(
+    "scipy._external.array_api_compat.numpy"
+)
 
 a = Analysis(
     [str(project_root / "gui_main.py")],
     pathex=[str(project_root)],
     binaries=[],
     datas=[],
-    hiddenimports=[],
+    hiddenimports=scipy_array_api_modules,
     hookspath=[],
     hooksconfig={},
     runtime_hooks=[],
