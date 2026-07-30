@@ -1,0 +1,9 @@
+# Reproducible Windows release environment for Behavioral Maze Analyzer 3.0.0.
+numpy==2.5.1
+opencv-python==5.0.0.93
+scipy==1.18.0
+matplotlib==3.11.1
+psutil==7.2.2
+PyQt6==6.11.0
+tqdm==4.70.0
+pyinstaller==6.19.0
