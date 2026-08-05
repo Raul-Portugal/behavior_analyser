@@ -8,11 +8,11 @@ import cv2
 import logging
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QElapsedTimer
-from PyQt6.QtGui import QImage, QPixmap
+from PyQt6.QtGui import QGuiApplication, QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QProgressBar, QSlider, QSpinBox, QVBoxLayout,
+    QProgressBar, QSizePolicy, QSlider, QSpinBox, QVBoxLayout,
 )
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -219,7 +219,16 @@ class TstTunerDialog(QDialog):
     def __init__(self, video_path, roi_manager, tst_maze_instance, parent=None):
         super().__init__(parent)
         self.setWindowTitle("TST Parameter Tuner - High Performance")
-        self.resize(1400, 900)
+        self.setMinimumSize(820, 600)
+        screen = QGuiApplication.primaryScreen()
+        if screen:
+            available = screen.availableGeometry()
+            self.resize(
+                min(1400, max(820, available.width() - 80)),
+                min(900, max(600, available.height() - 80)),
+            )
+        else:
+            self.resize(1400, 900)
         
         self.video_path = video_path
         self.roi_manager = roi_manager
@@ -304,7 +313,11 @@ class TstTunerDialog(QDialog):
         video_layout = QVBoxLayout()
         
         self.image_label = QLabel("Initializing...")
-        self.image_label.setFixedSize(640, 480)  # Increased size to match new resolution
+        self.image_label.setMinimumSize(320, 240)
+        self.image_label.setMaximumSize(640, 480)
+        self.image_label.setSizePolicy(
+            QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+        )
         self.image_label.setStyleSheet("""
             QLabel {
                 background: #1a1a1a;

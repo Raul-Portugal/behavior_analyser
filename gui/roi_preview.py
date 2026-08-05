@@ -36,7 +36,7 @@ class ROIPreviewDialog(QDialog):
         self.current_frame_idx = 0
         
         self.setWindowTitle(f"ROI Preview - {video_path.name}")
-        self.setMinimumSize(800, 700)
+        self.setMinimumSize(600, 450)
         self.init_ui()
         self.update_frame(0)
 
@@ -56,7 +56,7 @@ class ROIPreviewDialog(QDialog):
         
         # Video preview
         self.preview_label = QLabel()
-        self.preview_label.setMinimumSize(640, 480)
+        self.preview_label.setMinimumSize(1, 1)
         self.preview_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.preview_label.setStyleSheet("border: 2px solid #333; background: black;")
         layout.addWidget(self.preview_label, 1)

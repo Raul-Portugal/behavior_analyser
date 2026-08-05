@@ -5,9 +5,9 @@ Updated to use the MIDDLE frame of the video to ensure animals are visible.
 import cv2
 import numpy as np
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
-                             QPushButton, QVBoxLayout)
+                             QPushButton, QSizePolicy, QVBoxLayout)
 
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
@@ -120,9 +120,15 @@ class RoiSelectorDialog(QDialog):
         self.display_width = w
         self.display_height = h
         
-        # Limit size if video is 4K to fit on screen
-        if w > 1280:
-            scale = 1280 / w
+        # Fit the complete dialog into the usable desktop area.  The old
+        # minimum size was based on the source image and could put Next below
+        # the bottom edge of laptop/smaller displays.
+        screen = QGuiApplication.primaryScreen()
+        available = screen.availableGeometry() if screen else None
+        max_width = max(480, (available.width() - 80) if available else 1280)
+        max_height = max(360, (available.height() - 190) if available else 720)
+        scale = min(1.0, max_width / w, max_height / h)
+        if scale < 1.0:
             w, h = int(w * scale), int(h * scale)
             self.base_frame = cv2.resize(self.base_frame, (w, h))
             self.display_width = w
@@ -135,7 +141,8 @@ class RoiSelectorDialog(QDialog):
         self.base_pixmap = QPixmap.fromImage(QImage(self.base_frame.data, w, h, ch * w, QImage.Format.Format_RGB888))
         
         self.setWindowTitle("ROI Selection")
-        self.setMinimumSize(w + 50, h + 150)
+        self.setMinimumSize(480, 360)
+        self.resize(w + 50, h + 150)
         
         layout = QVBoxLayout()
         self.instruction_label = QLabel()
@@ -143,6 +150,9 @@ class RoiSelectorDialog(QDialog):
         
         self.image_label = QLabel()
         self.image_label.setPixmap(self.base_pixmap)
+        self.image_label.setSizePolicy(
+            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
+        )
         
         button_layout = QHBoxLayout()
         self.undo_button = QPushButton("Undo Last Point")
