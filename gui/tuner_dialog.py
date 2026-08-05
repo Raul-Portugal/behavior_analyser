@@ -6,10 +6,10 @@ Updated to fix parameter mismatch with Core modules.
 import cv2
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer
-from PyQt6.QtGui import QGuiApplication, QImage, QPixmap
+from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QSlider, QVBoxLayout,
-                             QGroupBox, QScrollArea, QWidget)
+                             QGroupBox)
 
 from core.models import DetectionConfig
 from core.detection import DetectionEngine, DetectionQualityMonitor
@@ -49,14 +49,7 @@ class TunerDialog(QDialog):
 
     def init_ui(self):
         self.setWindowTitle("Interactive Detection Tuner - Enhanced")
-        self.setMinimumSize(800, 560)
-        screen = QGuiApplication.primaryScreen()
-        if screen:
-            available = screen.availableGeometry()
-            self.resize(
-                min(1400, max(800, available.width() - 80)),
-                min(900, max(560, available.height() - 80)),
-            )
+        self.setMinimumSize(1400, 900)
 
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
@@ -124,13 +117,8 @@ class TunerDialog(QDialog):
         button_layout.addWidget(self.accept_button)
         
         right_layout.addLayout(button_layout)
-        right_panel = QWidget()
-        right_panel.setLayout(right_layout)
-        right_scroll = QScrollArea()
-        right_scroll.setWidgetResizable(True)
-        right_scroll.setWidget(right_panel)
         main_layout.addLayout(left_layout, 3)
-        main_layout.addWidget(right_scroll, 1)
+        main_layout.addLayout(right_layout, 1)
         self.setLayout(main_layout)
 
     def _create_image_label(self, title: str) -> QLabel:

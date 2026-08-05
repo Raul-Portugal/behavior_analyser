@@ -7,7 +7,7 @@ import numpy as np
 from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
-                             QPushButton, QSizePolicy, QVBoxLayout)
+                             QPushButton, QScrollArea, QVBoxLayout)
 
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
@@ -30,15 +30,28 @@ class ReferenceLineDialog(QDialog):
         self.instruction_label = QLabel("Click two points to define a line of known length (e.g., an arm width).")
         self.image_label = QLabel()
         self.image_label.setPixmap(self.base_pixmap)
+        self.image_label.setFixedSize(self.base_pixmap.size())
+        self.image_scroll = QScrollArea()
+        self.image_scroll.setWidgetResizable(False)
+        self.image_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_scroll.setWidget(self.image_label)
         button_layout = QHBoxLayout()
         self.reset_button = QPushButton("Reset")
         self.accept_button = QPushButton("Accept")
         button_layout.addWidget(self.reset_button)
         button_layout.addWidget(self.accept_button)
         layout.addWidget(self.instruction_label)
-        layout.addWidget(self.image_label)
+        layout.addWidget(self.image_scroll, 1)
         layout.addLayout(button_layout)
         self.setLayout(layout)
+        self.setMinimumSize(480, 360)
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen:
+            available = screen.availableGeometry()
+            self.resize(
+                min(self.base_pixmap.width() + 50, available.width() - 40),
+                min(self.base_pixmap.height() + 130, available.height() - 40),
+            )
         self.image_label.mousePressEvent = self.add_point
         self.reset_button.clicked.connect(self.reset)
         self.accept_button.clicked.connect(self.accept_line)
@@ -120,15 +133,10 @@ class RoiSelectorDialog(QDialog):
         self.display_width = w
         self.display_height = h
         
-        # Fit the complete dialog into the usable desktop area.  The old
-        # minimum size was based on the source image and could put Next below
-        # the bottom edge of laptop/smaller displays.
-        screen = QGuiApplication.primaryScreen()
-        available = screen.availableGeometry() if screen else None
-        max_width = max(480, (available.width() - 80) if available else 1280)
-        max_height = max(360, (available.height() - 190) if available else 720)
-        scale = min(1.0, max_width / w, max_height / h)
-        if scale < 1.0:
+        # Bound very large source images once. The pixmap and click canvas
+        # remain identical in size after this conversion.
+        if w > 1280:
+            scale = 1280 / w
             w, h = int(w * scale), int(h * scale)
             self.base_frame = cv2.resize(self.base_frame, (w, h))
             self.display_width = w
@@ -150,9 +158,11 @@ class RoiSelectorDialog(QDialog):
         
         self.image_label = QLabel()
         self.image_label.setPixmap(self.base_pixmap)
-        self.image_label.setSizePolicy(
-            QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored
-        )
+        self.image_label.setFixedSize(self.base_pixmap.size())
+        self.image_scroll = QScrollArea()
+        self.image_scroll.setWidgetResizable(False)
+        self.image_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_scroll.setWidget(self.image_label)
         
         button_layout = QHBoxLayout()
         self.undo_button = QPushButton("Undo Last Point")
@@ -164,9 +174,17 @@ class RoiSelectorDialog(QDialog):
         button_layout.addWidget(self.next_button)
         
         layout.addWidget(self.instruction_label)
-        layout.addWidget(self.image_label)
+        layout.addWidget(self.image_scroll, 1)
         layout.addLayout(button_layout)
         self.setLayout(layout)
+        self.setMinimumSize(480, 360)
+        screen = self.screen() or QGuiApplication.primaryScreen()
+        if screen:
+            available = screen.availableGeometry()
+            self.resize(
+                min(self.base_pixmap.width() + 50, available.width() - 40),
+                min(self.base_pixmap.height() + 130, available.height() - 40),
+            )
         
         self.next_button.clicked.connect(self.next_roi)
         self.undo_button.clicked.connect(self.undo_point)
