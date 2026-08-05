@@ -8,10 +8,12 @@ from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QLabel, QPushButton, QSlider,
-                             QVBoxLayout, QHBoxLayout, QGroupBox)
+                             QVBoxLayout, QHBoxLayout, QGroupBox,
+                             QScrollArea, QWidget)
 
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
+from gui.dialog_layout import fit_dialog_to_available_screen
 
 
 class ROIPreviewDialog(QDialog):
@@ -36,7 +38,6 @@ class ROIPreviewDialog(QDialog):
         self.current_frame_idx = 0
         
         self.setWindowTitle(f"ROI Preview - {video_path.name}")
-        self.setMinimumSize(800, 700)
         self.init_ui()
         self.update_frame(0)
 
@@ -128,9 +129,22 @@ class ROIPreviewDialog(QDialog):
         # Close button
         close_button = QPushButton("Close")
         close_button.clicked.connect(self.accept)
-        layout.addWidget(close_button)
-        
-        self.setLayout(layout)
+
+        content_widget = QWidget()
+        content_widget.setLayout(layout)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setWidget(content_widget)
+
+        root_layout = QVBoxLayout()
+        root_layout.addWidget(self.content_scroll, 1)
+        root_layout.addWidget(close_button)
+        self.setLayout(root_layout)
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(800, 700),
+            minimum_size=(480, 360),
+        )
 
     def on_slider_changed(self, value):
         """Handle slider value change."""

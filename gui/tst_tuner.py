@@ -12,7 +12,7 @@ from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QProgressBar, QSlider, QSpinBox, QVBoxLayout,
+    QProgressBar, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget,
 )
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -21,6 +21,7 @@ import matplotlib.pyplot as plt
 
 from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
 from core.tst_events import smooth_tst_immobility_states
+from gui.dialog_layout import fit_dialog_to_available_screen
 from roi_manager import ROI
 
 logger = logging.getLogger(__name__)
@@ -219,7 +220,6 @@ class TstTunerDialog(QDialog):
     def __init__(self, video_path, roi_manager, tst_maze_instance, parent=None):
         super().__init__(parent)
         self.setWindowTitle("TST Parameter Tuner - High Performance")
-        self.resize(1400, 900)
         
         self.video_path = video_path
         self.roi_manager = roi_manager
@@ -554,8 +554,26 @@ class TstTunerDialog(QDialog):
         button_layout.addWidget(self.accept_button)
         button_layout.addWidget(self.cancel_button)
         
-        main_layout.addLayout(button_layout)
-        self.setLayout(main_layout)
+        # Keep the final actions permanently visible. Only the large preview,
+        # graph, and parameter area scroll when the display is short.
+        content_widget = QWidget()
+        content_widget.setLayout(main_layout)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setWidget(content_widget)
+        self.content_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+
+        root_layout = QVBoxLayout()
+        root_layout.addWidget(self.content_scroll, 1)
+        root_layout.addLayout(button_layout)
+        self.setLayout(root_layout)
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(1400, 900),
+            minimum_size=(640, 480),
+        )
 
     def _add_advanced_controls(self, main_layout):
         """Keep expert classifier settings available without cluttering basics."""

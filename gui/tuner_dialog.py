@@ -9,11 +9,12 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QSlider, QVBoxLayout,
-                             QGroupBox)
+                             QGroupBox, QScrollArea, QWidget)
 
 from core.models import DetectionConfig
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.video import VideoHandler
+from gui.dialog_layout import fit_dialog_to_available_screen
 from roi_manager import ROIManager
 
 
@@ -49,7 +50,6 @@ class TunerDialog(QDialog):
 
     def init_ui(self):
         self.setWindowTitle("Interactive Detection Tuner - Enhanced")
-        self.setMinimumSize(1400, 900)
 
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
@@ -116,10 +116,23 @@ class TunerDialog(QDialog):
         self.accept_button.clicked.connect(self.accept)
         button_layout.addWidget(self.accept_button)
         
-        right_layout.addLayout(button_layout)
+        right_panel = QWidget()
+        right_panel.setLayout(right_layout)
+        self.control_scroll = QScrollArea()
+        self.control_scroll.setWidgetResizable(True)
+        self.control_scroll.setWidget(right_panel)
         main_layout.addLayout(left_layout, 3)
-        main_layout.addLayout(right_layout, 1)
-        self.setLayout(main_layout)
+        main_layout.addWidget(self.control_scroll, 1)
+
+        root_layout = QVBoxLayout()
+        root_layout.addLayout(main_layout, 1)
+        root_layout.addLayout(button_layout)
+        self.setLayout(root_layout)
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(1400, 900),
+            minimum_size=(640, 480),
+        )
 
     def _create_image_label(self, title: str) -> QLabel:
         label = QLabel(title)

@@ -4,6 +4,7 @@ from unittest.mock import patch
 
 try:
     import numpy as np
+    from PyQt6.QtCore import QPoint
     from PyQt6.QtWidgets import QApplication
 
     from gui.tst_tuner import TstTunerDialog
@@ -45,6 +46,22 @@ class TSTTunerTests(unittest.TestCase):
             self.assertEqual(dialog.mouse_selector.currentData(), "mouse_1")
             self.assertEqual(dialog.time_slider.value(), 17)
             self.assertFalse(dialog.energy_slider.isEnabled())
+            dialog.resize(640, 480)
+            dialog.show()
+            self.app.processEvents()
+            self.assertTrue(dialog.accept_button.isVisible())
+            self.assertTrue(dialog.cancel_button.isVisible())
+            self.assertFalse(
+                dialog.content_scroll.isAncestorOf(dialog.accept_button)
+            )
+            self.assertGreater(
+                dialog.content_scroll.verticalScrollBar().maximum(), 0
+            )
+            button_bottom = (
+                dialog.accept_button.mapTo(dialog, QPoint(0, 0)).y()
+                + dialog.accept_button.height()
+            )
+            self.assertLessEqual(button_bottom, dialog.contentsRect().bottom())
         finally:
             dialog.cleanup()
             dialog.close()

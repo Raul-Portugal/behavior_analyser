@@ -7,6 +7,7 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
                              QGroupBox, QLabel, QLineEdit, QListWidget, 
                              QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
                              QHBoxLayout, QWidget, QMessageBox)
+from gui.dialog_layout import fit_dialog_to_available_screen
 
 
 class FreestyleConfigDialog(QDialog):
@@ -18,7 +19,6 @@ class FreestyleConfigDialog(QDialog):
     def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Freestyle / Open Field Configuration")
-        self.setMinimumSize(600, 500)
         
         self.zone_names: list[str] = []
         self.zone_free_mode = False
@@ -143,9 +143,21 @@ class FreestyleConfigDialog(QDialog):
         )
         self.button_box.accepted.connect(self.validate_and_accept)
         self.button_box.rejected.connect(self.reject)
-        main_layout.addWidget(self.button_box)
-        
-        self.setLayout(main_layout)
+        content_widget = QWidget()
+        content_widget.setLayout(main_layout)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setWidget(content_widget)
+
+        root_layout = QVBoxLayout()
+        root_layout.addWidget(self.content_scroll, 1)
+        root_layout.addWidget(self.button_box)
+        self.setLayout(root_layout)
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(600, 500),
+            minimum_size=(420, 340),
+        )
         
         # Initialize with default zones
         self.on_num_zones_changed(3)

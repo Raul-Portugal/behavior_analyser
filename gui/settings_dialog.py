@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox,
                              QMessageBox)
 
 from core.video import VideoHandler
+from gui.dialog_layout import fit_dialog_to_available_screen
 from mazes.tst import TST
 
 class SettingsDialog(QDialog):
@@ -19,7 +20,6 @@ class SettingsDialog(QDialog):
     def __init__(self, video_path: str, settings, is_verification=False, parent=None):
         super().__init__(parent)
         self.setWindowTitle("Analysis Settings")
-        self.resize(700, 600)
         
         self.video_info = VideoHandler(video_path)
         self.cap = cv2.VideoCapture(str(video_path))
@@ -156,9 +156,21 @@ class SettingsDialog(QDialog):
         else:
             self.accept_btn = self.button_box.addButton("OK", QDialogButtonBox.ButtonRole.AcceptRole)
         self.cancel_btn = self.button_box.addButton("Cancel", QDialogButtonBox.ButtonRole.RejectRole)
-        main_layout.addWidget(self.button_box)
+        content_widget = QWidget()
+        content_widget.setLayout(main_layout)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setWidget(content_widget)
 
-        self.setLayout(main_layout)
+        root_layout = QVBoxLayout()
+        root_layout.addWidget(self.content_scroll, 1)
+        root_layout.addWidget(self.button_box)
+        self.setLayout(root_layout)
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(700, 600),
+            minimum_size=(480, 360),
+        )
         
         self.accept_btn.clicked.connect(self.on_accept)
         self.cancel_btn.clicked.connect(self.reject)

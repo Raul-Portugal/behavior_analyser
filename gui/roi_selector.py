@@ -5,12 +5,13 @@ Updated to use the MIDDLE frame of the video to ensure animals are visible.
 import cv2
 import numpy as np
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QGuiApplication, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
                              QPushButton, QScrollArea, QVBoxLayout)
 
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
+from gui.dialog_layout import fit_dialog_to_available_screen
 
 
 class ReferenceLineDialog(QDialog):
@@ -44,14 +45,14 @@ class ReferenceLineDialog(QDialog):
         layout.addWidget(self.image_scroll, 1)
         layout.addLayout(button_layout)
         self.setLayout(layout)
-        self.setMinimumSize(480, 360)
-        screen = self.screen() or QGuiApplication.primaryScreen()
-        if screen:
-            available = screen.availableGeometry()
-            self.resize(
-                min(self.base_pixmap.width() + 50, available.width() - 40),
-                min(self.base_pixmap.height() + 130, available.height() - 40),
-            )
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(
+                self.base_pixmap.width() + 50,
+                self.base_pixmap.height() + 130,
+            ),
+            minimum_size=(480, 360),
+        )
         self.image_label.mousePressEvent = self.add_point
         self.reset_button.clicked.connect(self.reset)
         self.accept_button.clicked.connect(self.accept_line)
@@ -149,8 +150,6 @@ class RoiSelectorDialog(QDialog):
         self.base_pixmap = QPixmap.fromImage(QImage(self.base_frame.data, w, h, ch * w, QImage.Format.Format_RGB888))
         
         self.setWindowTitle("ROI Selection")
-        self.setMinimumSize(480, 360)
-        self.resize(w + 50, h + 150)
         
         layout = QVBoxLayout()
         self.instruction_label = QLabel()
@@ -177,14 +176,14 @@ class RoiSelectorDialog(QDialog):
         layout.addWidget(self.image_scroll, 1)
         layout.addLayout(button_layout)
         self.setLayout(layout)
-        self.setMinimumSize(480, 360)
-        screen = self.screen() or QGuiApplication.primaryScreen()
-        if screen:
-            available = screen.availableGeometry()
-            self.resize(
-                min(self.base_pixmap.width() + 50, available.width() - 40),
-                min(self.base_pixmap.height() + 130, available.height() - 40),
-            )
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(
+                self.base_pixmap.width() + 50,
+                self.base_pixmap.height() + 130,
+            ),
+            minimum_size=(480, 360),
+        )
         
         self.next_button.clicked.connect(self.next_roi)
         self.undo_button.clicked.connect(self.undo_point)
