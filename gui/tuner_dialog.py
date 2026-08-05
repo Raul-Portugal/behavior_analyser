@@ -9,11 +9,12 @@ from PyQt6.QtCore import Qt, QTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QSlider, QVBoxLayout,
-                             QGroupBox)
+                             QGroupBox, QScrollArea, QWidget)
 
 from core.models import DetectionConfig
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.video import VideoHandler
+from gui.dialog_layout import fit_dialog_to_available_screen
 from roi_manager import ROIManager
 
 
@@ -32,7 +33,12 @@ class TunerDialog(QDialog):
         self.current_frame_idx = self.video_info.total_frames // 2
         
         # Quality monitoring
-        self.quality_monitor = DetectionQualityMonitor(window_size=30)
+        self.quality_monitor = DetectionQualityMonitor(
+            window_size=50,
+            frame_diagonal=float(
+                np.hypot(self.video_info.width, self.video_info.height)
+            )
+        )
         
         self.init_ui()
         self.frame_slider.setValue(self.current_frame_idx)
@@ -44,7 +50,6 @@ class TunerDialog(QDialog):
 
     def init_ui(self):
         self.setWindowTitle("Interactive Detection Tuner - Enhanced")
-        self.setMinimumSize(1400, 900)
 
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
@@ -83,6 +88,9 @@ class TunerDialog(QDialog):
         self._add_slider(param_grid, "Threshold (x10)", 950, 999, int(self.config.threshold_percentile * 10))
         self._add_slider(param_grid, "Weight Omega (x100)", 0, 100, int(self.config.weight_omega * 100))
         self._add_slider(param_grid, "Window Size", 20, 300, self.config.window_size)
+        self._add_slider(param_grid, "Min Component Area", 5, 2000, self.config.min_component_area)
+        self._add_slider(param_grid, "Morphology Kernel", 0, 9, self.config.morphology_kernel_size)
+        self._add_slider(param_grid, "Min Confidence (x100)", 0, 100, int(self.config.min_detection_confidence * 100))
         right_layout.addLayout(param_grid)
 
         # Frame Navigation
@@ -108,10 +116,23 @@ class TunerDialog(QDialog):
         self.accept_button.clicked.connect(self.accept)
         button_layout.addWidget(self.accept_button)
         
-        right_layout.addLayout(button_layout)
+        right_panel = QWidget()
+        right_panel.setLayout(right_layout)
+        self.control_scroll = QScrollArea()
+        self.control_scroll.setWidgetResizable(True)
+        self.control_scroll.setWidget(right_panel)
         main_layout.addLayout(left_layout, 3)
-        main_layout.addLayout(right_layout, 1)
-        self.setLayout(main_layout)
+        main_layout.addWidget(self.control_scroll, 1)
+
+        root_layout = QVBoxLayout()
+        root_layout.addLayout(main_layout, 1)
+        root_layout.addLayout(button_layout)
+        self.setLayout(root_layout)
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(1400, 900),
+            minimum_size=(640, 480),
+        )
 
     def _create_image_label(self, title: str) -> QLabel:
         label = QLabel(title)
@@ -136,34 +157,51 @@ class TunerDialog(QDialog):
             self.update_detection()
 
     def update_detection(self):
+        if self.sender() in self.sliders.values():
+            self.quality_monitor.reset()
+
         # Update config
         self.config.threshold_percentile = self.sliders["Threshold (x10)"].value() / 10.0
         self.config.weight_omega = self.sliders["Weight Omega (x100)"].value() / 100.0
         self.config.window_size = self.sliders["Window Size"].value()
+        self.config.min_component_area = self.sliders["Min Component Area"].value()
+        self.config.morphology_kernel_size = self.sliders["Morphology Kernel"].value()
+        self.config.min_detection_confidence = self.sliders["Min Confidence (x100)"].value() / 100.0
 
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
         ret, frame = self.cap.read()
         if not ret: return
 
-        # Engine & Detection
+        # Run the same segmentation and component scoring as production.
         engine = DetectionEngine(self.ref_frame, self.config)
-        gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        
-        # --- FIX: Updated parameter name 'use_last_pos' ---
-        position = engine.detect_position(gray, use_last_pos=False)
-        
-        # Monitor Update
-        diff = cv2.absdiff(gray, self.ref_frame)
-        confidence_map = self._calculate_confidence_map(diff)
-        detected = position is not None
-        confidence = 0.8 if detected else 0.0
-        self.quality_monitor.update(detected, confidence, position)
+        detection = engine.detect(frame, use_last_pos=False)
+        position = detection.position
+        debug_images = engine.get_intermediate_images()
+        detected = detection.detected
+        self.quality_monitor.update(
+            detected, detection.confidence, position
+        )
 
         # Drawing
         display_frame = frame.copy()
         if position:
             cv2.circle(display_frame, position, 15, (0, 255, 0), 3)
             cv2.circle(display_frame, position, 3, (0, 0, 255), -1)
+            status_text = f"Confidence: {detection.confidence:.2f}"
+            status_color = (0, 255, 0)
+        else:
+            status_text = f"Not detected: {detection.failure_reason}"
+            status_color = (0, 0, 255)
+        cv2.putText(
+            display_frame,
+            status_text,
+            (15, 35),
+            cv2.FONT_HERSHEY_SIMPLEX,
+            0.8,
+            status_color,
+            2,
+            cv2.LINE_AA
+        )
         
         for category, rois in self.roi_manager.rois.items():
             for roi in rois:
@@ -172,14 +210,18 @@ class TunerDialog(QDialog):
 
         self._update_image(self.main_view, display_frame)
         
-        diff_colored = cv2.cvtColor(diff, cv2.COLOR_GRAY2BGR)
+        diff_colored = cv2.cvtColor(
+            debug_images['diff'], cv2.COLOR_GRAY2BGR
+        )
         self._update_image(self.diff_view, diff_colored)
-        
-        if confidence_map is not None:
-            thresh_vis = (confidence_map * 255).astype(np.uint8)
-            thresh_colored = cv2.applyColorMap(thresh_vis, cv2.COLORMAP_JET)
-            if position: cv2.circle(thresh_colored, position, 15, (255, 255, 255), 2)
-            self._update_image(self.thresh_view, thresh_colored)
+
+        threshold_colored = cv2.cvtColor(
+            debug_images['threshold'], cv2.COLOR_GRAY2BGR
+        )
+        selected_component = debug_images.get('selected_component')
+        if selected_component is not None:
+            threshold_colored[selected_component > 0] = (0, 255, 0)
+        self._update_image(self.thresh_view, threshold_colored)
 
         self.frame_label.setText(f"Frame: {self.current_frame_idx} / {self.video_info.total_frames - 1}")
 
@@ -192,6 +234,7 @@ class TunerDialog(QDialog):
                       f"Detection Rate: <b>{stats['detection_rate']:.1f}%</b><br>"
                       f"Confidence: <b>{stats['confidence']:.1f}%</b><br>"
                       f"Stability: <b>{stats['tracking_stability']:.1f}%</b><br><br>"
+                      f"Implausible jumps: <b>{stats['implausible_jump_rate']:.1f}%</b><br><br>"
                       f"Status: <b>{status}</b>")
         
         self.stats_label.setText(stats_text)
@@ -212,32 +255,33 @@ class TunerDialog(QDialog):
         self.quality_monitor.reset()
         
         total_frames = self.video_info.total_frames
-        test_indices = np.random.choice(total_frames, min(50, total_frames), replace=False)
-        engine = DetectionEngine(self.ref_frame, self.config)
-        
-        for idx in test_indices:
-            self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-            ret, frame = self.cap.read()
-            if not ret: continue
-            
-            gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-            
-            # --- FIX: Updated parameter name 'use_last_pos' ---
-            position = engine.detect_position(gray, use_last_pos=False)
-            
-            detected = position is not None
-            self.quality_monitor.update(detected, 0.8 if detected else 0.0, position)
+        window_length = min(15, total_frames)
+        starts = sorted({
+            0,
+            max(0, total_frames // 2 - window_length // 2),
+            max(0, total_frames - window_length)
+        })
+
+        # Deterministic sequential windows exercise temporal weighting while
+        # sampling the beginning, middle, and end of the recording.
+        for start in starts:
+            engine = DetectionEngine(self.ref_frame, self.config)
+            for idx in range(start, min(total_frames, start + window_length)):
+                self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
+                ret, frame = self.cap.read()
+                if not ret:
+                    continue
+
+                detection = engine.detect(frame, use_last_pos=True)
+                self.quality_monitor.update(
+                    detection.detected,
+                    detection.confidence,
+                    detection.position
+                )
         
         self.update_quality_stats()
         self.test_scan_button.setEnabled(True)
         self.test_scan_button.setText("Quick Scan Test")
-
-    def _calculate_confidence_map(self, diff_image: np.ndarray) -> np.ndarray:
-        window_size = self.config.window_size
-        if window_size % 2 == 0: window_size += 1
-        window_size = max(3, window_size)
-        blurred = cv2.GaussianBlur(diff_image, (window_size, window_size), 0)
-        return blurred.astype(np.float32) / 255.0
 
     def _update_image(self, label: QLabel, image: np.ndarray):
         if image.ndim == 2: image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)

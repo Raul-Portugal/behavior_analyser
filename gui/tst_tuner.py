@@ -2,40 +2,83 @@
 High-Performance TST Tuner Dialog with Matplotlib Blitting.
 Optimized for real-time video playback and graph synchronization.
 """
+import copy
+import json
 import cv2
+import logging
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QElapsedTimer
 from PyQt6.QtGui import QImage, QPixmap
-from PyQt6.QtWidgets import (QDialog, QVBoxLayout, QHBoxLayout, QLabel, 
-                             QSlider, QPushButton, QGroupBox, QProgressBar,
-                             QSizePolicy)
+from PyQt6.QtWidgets import (
+    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
+    QProgressBar, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget,
+)
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 import matplotlib.pyplot as plt
 
-from core.analysis_engine import MotionEngine
+from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
+from core.tst_events import smooth_tst_immobility_states
+from gui.dialog_layout import fit_dialog_to_available_screen
+from roi_manager import ROI
+
+logger = logging.getLogger(__name__)
 
 
 class EnergyScanner(QThread):
     """
-    Background thread for video scanning and frame buffering.
-    Optimized for full video scanning with complete frame buffering.
-    Uses compression to handle longer videos efficiently.
+    Background thread for a bounded evidence scan.
+    Only source frame indices are retained; preview images are decoded on
+    demand so the tuner remains memory-bounded for long recordings.
     """
     progress = pyqtSignal(int)
-    finished = pyqtSignal(dict, list, tuple, float)
+    scan_complete = pyqtSignal(dict, list, tuple, float)
     
-    def __init__(self, video_path, rois, target_mouse, max_frames=None):
+    def __init__(
+        self,
+        video_path,
+        rois,
+        motion_config,
+        review_segments,
+        preview_width=480,
+        target_fps=12.0,
+    ):
         super().__init__()
         self.video_path = video_path
-        self.rois = {target_mouse: rois[target_mouse]}
-        self.max_frames = max_frames  # None means scan entire video
+        self.rois = dict(rois)
+        self.motion_config = TSTMotionConfig(**motion_config.__dict__)
+        self.review_segments = list(review_segments)
+        self.preview_width = max(160, int(preview_width))
+        self.target_fps = max(1.0, float(target_fps))
+        self.state_data = {name: [] for name in self.rois}
+        self.evidence_data = {name: [] for name in self.rois}
+        self._capture = None
+
+    @staticmethod
+    def _scale_rois(rois, scale_x, scale_y):
+        scaled = {}
+        for name, roi in rois.items():
+            points = roi.points.astype(np.float32)
+            points[:, 0] *= scale_x
+            points[:, 1] *= scale_y
+            scaled[name] = ROI(np.rint(points).astype(np.int32), name)
+        return scaled
+
+    def cancel(self):
+        """Request cancellation and unblock a pending local video read."""
+        self.requestInterruption()
+        capture = self._capture
+        if capture is not None:
+            capture.release()
         
     def run(self):
         cap = cv2.VideoCapture(str(self.video_path))
+        self._capture = cap
         if not cap.isOpened():
-            self.finished.emit({}, [], (1, 1), 30.0)
+            self._capture = None
+            self.scan_complete.emit({}, [], (1, 1), 30.0)
             return
         
         # Get video properties
@@ -44,77 +87,119 @@ class EnergyScanner(QThread):
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
         
-        # Determine how many frames to scan
-        frames_to_scan = self.max_frames if self.max_frames else total_frames
-        
-        ret, prev = cap.read()
-        if not ret:
+        if total_frames < 2:
             cap.release()
-            self.finished.emit({}, [], (orig_w, orig_h), fps)
+            self._capture = None
+            self.scan_complete.emit({}, [], (orig_w, orig_h), fps)
             return
-        
-        engine = MotionEngine(self.rois)
+        source_step = max(1, int(round(fps / self.target_fps)))
+        analysis_fps = fps / source_step
+        preview_height = max(
+            1, int(round(orig_h * min(1.0, self.preview_width / orig_w)))
+        )
+        preview_width = max(
+            1, int(round(orig_w * min(1.0, self.preview_width / orig_w)))
+        )
+        scale_x = preview_width / max(1, orig_w)
+        scale_y = preview_height / max(1, orig_h)
+        scaled_rois = self._scale_rois(self.rois, scale_x, scale_y)
+
+        segments = []
+        for start_frame, end_frame in self.review_segments:
+            start = max(0, int(start_frame))
+            end = min(total_frames, int(end_frame))
+            if end - start > source_step:
+                segments.append((start, end))
+        if not segments:
+            segments = [(0, total_frames)]
+        expected_intervals = sum(
+            max(0, (end - start - 1) // source_step)
+            for start, end in segments
+        )
+
         energy_data = {name: [] for name in self.rois}
-        frame_buffer = []
-        
-        # Buffer first frame with JPEG compression for memory efficiency
-        self._buffer_frame_compressed(prev, frame_buffer)
-        
+        frame_indices = []
         count = 0
         
-        while count < frames_to_scan:
-            ret, curr = cap.read()
-            if not ret:
-                break
-            
-            # Calculate energy for EVERY frame
-            energies = engine.calculate_motion(curr, prev)
-            for name, val in energies.items():
-                energy_data[name].append(val)
-            
-            # Buffer ALL frames but with compression
-            self._buffer_frame_compressed(curr, frame_buffer)
-            
-            prev = curr.copy()
-            count += 1
-            
-            # Progress updates
-            if count % 100 == 0:
-                progress = int(count / frames_to_scan * 100)
-                self.progress.emit(progress)
-        
-        cap.release()
-        self.finished.emit(energy_data, frame_buffer, (orig_w, orig_h), fps)
+        try:
+            for segment_number, (start, end) in enumerate(segments):
+                if self.isInterruptionRequested():
+                    break
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+                ret, previous_source = cap.read()
+                if not ret or previous_source is None:
+                    continue
+                previous = cv2.resize(
+                    previous_source, (preview_width, preview_height),
+                    interpolation=cv2.INTER_AREA,
+                )
+                engine = TSTMotionEngine(
+                    scaled_rois,
+                    self.motion_config,
+                    fps=analysis_fps,
+                )
+                current_source_frame = start
+                first_interval = True
+                while (
+                    current_source_frame + source_step < end
+                    and not self.isInterruptionRequested()
+                ):
+                    current_source = None
+                    for _ in range(source_step):
+                        ret, current_source = cap.read()
+                        if not ret:
+                            break
+                    if not ret or current_source is None:
+                        break
+                    current_source_frame += source_step
+                    current = cv2.resize(
+                        current_source, (preview_width, preview_height),
+                        interpolation=cv2.INTER_AREA,
+                    )
+                    observations = engine.calculate_observations(
+                        current, previous
+                    )
+                    for name, observation in observations.items():
+                        evidence = observation.to_dict()
+                        if segment_number and first_interval:
+                            evidence.update({
+                                "state": "uncertain",
+                                "confidence": 0.0,
+                                "qc_flag": "review_segment_boundary",
+                            })
+                        contour = engine.get_last_mask_contour(name)
+                        if contour:
+                            evidence["mask_contour"] = [
+                                [
+                                    int(round(point[0] / scale_x)),
+                                    int(round(point[1] / scale_y)),
+                                ]
+                                for point in contour
+                            ]
+                        evidence["source_frame"] = current_source_frame
+                        evidence["timestamp_s"] = current_source_frame / fps
+                        energy_data[name].append(observation.activity_score)
+                        self.state_data[name].append(evidence["state"])
+                        self.evidence_data[name].append(evidence)
+                    frame_indices.append(current_source_frame)
+                    previous = current
+                    first_interval = False
+                    count += 1
+                    if count % 25 == 0 or count == expected_intervals:
+                        self.progress.emit(int(
+                            count / max(1, expected_intervals) * 100
+                        ))
+        finally:
+            cap.release()
+            self._capture = None
+        if not self.isInterruptionRequested():
+            self.scan_complete.emit(
+                energy_data,
+                frame_indices,
+                (orig_w, orig_h),
+                fps,
+            )
     
-    def _buffer_frame_compressed(self, frame, buffer):
-        """
-        Buffer frames with JPEG compression to reduce memory usage.
-        This allows us to store more frames in memory for smooth playback.
-        """
-        h, w = frame.shape[:2]
-        if h == 0 or w == 0:
-            return
-        
-        # Resize to reasonable preview size
-        target_height = 480  # Higher res than before for better quality
-        scale = target_height / h
-        new_w = int(w * scale)
-        
-        # Use INTER_LINEAR for good quality
-        resized = cv2.resize(frame, (new_w, target_height), 
-                            interpolation=cv2.INTER_LINEAR)
-        
-        # Compress frame using JPEG encoding (reduces memory by ~10x)
-        # Quality 85 provides good balance between size and quality
-        encode_param = [int(cv2.IMWRITE_JPEG_QUALITY), 85]
-        _, encoded = cv2.imencode('.jpg', resized, encode_param)
-        
-        # Store compressed data
-        buffer.append(encoded)
-
-
-
-
 class OptimizedCanvas(FigureCanvasQTAgg):
     """
     Custom canvas with blitting support for high-performance updates.
@@ -135,11 +220,11 @@ class TstTunerDialog(QDialog):
     def __init__(self, video_path, roi_manager, tst_maze_instance, parent=None):
         super().__init__(parent)
         self.setWindowTitle("TST Parameter Tuner - High Performance")
-        self.resize(1400, 900)
         
         self.video_path = video_path
         self.roi_manager = roi_manager
         self.tst = tst_maze_instance
+        self.preview_motion_config = copy.deepcopy(tst_maze_instance.motion_config)
         
         # Initialize ROI selection
         self.roi_dict = {cat: rois[0] for cat, rois in roi_manager.rois.items() if rois}
@@ -154,11 +239,13 @@ class TstTunerDialog(QDialog):
         
         # Data storage
         self.energy_data = {}
-        self.frame_buffer = []  # Stores compressed frames
+        self.evidence_data = {}
+        self.frame_buffer = []  # Source frame indices for preview decoding
         self.decoded_frame_cache = {}  # Cache for decoded frames
         self.max_decoded_cache = 200  # Keep more decoded frames
         self.orig_dims = (1, 1)
         self.fps = 30.0
+        self.analysis_fps = 12.0
         self.scan_len = 0
         
         # Playback state
@@ -190,10 +277,12 @@ class TstTunerDialog(QDialog):
         self.timestamps = []
         self.filtered_immobile = None
         self.raw_immobile = None
+        self.state_data = {}
         
         # Frame cache for processed video frames
         self.processed_frame_cache = {}
         self.cache_size = 100  # Keep last N processed frames in cache
+        self.preview_cap = cv2.VideoCapture(str(self.video_path))
         
         self.init_ui()
         
@@ -234,6 +323,24 @@ class TstTunerDialog(QDialog):
         self.frame_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.frame_label.setStyleSheet("font-size: 12px; color: #888;")
         video_layout.addWidget(self.frame_label)
+
+        self.mouse_selector = QComboBox()
+        for mouse_name in sorted(self.roi_dict):
+            self.mouse_selector.addItem(
+                mouse_name.replace("_", " ").title(),
+                mouse_name,
+            )
+        if self.selected_mouse:
+            selected_index = self.mouse_selector.findData(
+                self.selected_mouse
+            )
+            if selected_index >= 0:
+                self.mouse_selector.setCurrentIndex(selected_index)
+        self.mouse_selector.setEnabled(False)
+        self.mouse_selector.currentIndexChanged.connect(
+            self.on_mouse_change
+        )
+        video_layout.addWidget(self.mouse_selector)
         
         # FPS counter
         self.fps_label = QLabel("FPS: 0.0")
@@ -245,7 +352,9 @@ class TstTunerDialog(QDialog):
         
         # Graph Section
         display_name = self.selected_mouse.replace('_', ' ').title() if self.selected_mouse else "None"
-        graph_group = QGroupBox(f"Motion Energy Profile: {display_name}")
+        self.graph_group = QGroupBox(
+            f"Active-Motion Evidence: {display_name}"
+        )
         graph_layout = QVBoxLayout()
         
         # Initialize Matplotlib with optimization settings
@@ -255,7 +364,7 @@ class TstTunerDialog(QDialog):
         
         # Configure axes
         self.ax.set_xlabel("Time (s)", fontsize=10)
-        self.ax.set_ylabel("Motion Energy", fontsize=10)
+        self.ax.set_ylabel("Active-Motion Evidence", fontsize=10)
         self.ax.grid(True, alpha=0.3, linewidth=0.5)
         self.figure.tight_layout(pad=1.0)
         
@@ -302,10 +411,10 @@ class TstTunerDialog(QDialog):
         """)
         graph_layout.addWidget(self.progress_bar)
         
-        graph_group.setLayout(graph_layout)
+        self.graph_group.setLayout(graph_layout)
         
         top_layout.addWidget(video_group)
-        top_layout.addWidget(graph_group, 1)  # Graph takes more space
+        top_layout.addWidget(self.graph_group, 1)  # Graph takes more space
         main_layout.addLayout(top_layout)
         
         # === MIDDLE SECTION: CONTROLS ===
@@ -371,14 +480,17 @@ class TstTunerDialog(QDialog):
         param_group = QGroupBox("Detection Parameters")
         param_layout = QHBoxLayout()
         
-        # Energy Threshold
+        # The classifier is automatic; this disabled indicator replaces the
+        # legacy manually tuned pixel-difference threshold.
         energy_layout = QVBoxLayout()
-        self.energy_label = QLabel("Energy Threshold: 10.0")
+        self.energy_label = QLabel(
+            "Classifier: rigid/articulated motion decomposition"
+        )
         self.energy_label.setStyleSheet("font-weight: bold;")
         self.energy_slider = QSlider(Qt.Orientation.Horizontal)
         self.energy_slider.setRange(0, 100)
-        self.energy_slider.setValue(10)
-        self.energy_slider.valueChanged.connect(self.on_param_change)
+        self.energy_slider.setValue(50)
+        self.energy_slider.setEnabled(False)
         energy_layout.addWidget(self.energy_label)
         energy_layout.addWidget(self.energy_slider)
         
@@ -388,7 +500,9 @@ class TstTunerDialog(QDialog):
         self.time_label.setStyleSheet("font-weight: bold;")
         self.time_slider = QSlider(Qt.Orientation.Horizontal)
         self.time_slider.setRange(1, 50)  # 0.1s to 5.0s
-        self.time_slider.setValue(5)
+        self.time_slider.setValue(int(round(
+            np.clip(self.tst.min_time_seconds * 10.0, 1, 50)
+        )))
         self.time_slider.valueChanged.connect(self.on_param_change)
         time_layout.addWidget(self.time_label)
         time_layout.addWidget(self.time_slider)
@@ -399,6 +513,8 @@ class TstTunerDialog(QDialog):
         
         controls_layout.addWidget(param_group, 1)
         main_layout.addLayout(controls_layout)
+
+        self._add_advanced_controls(main_layout)
         
         # === BOTTOM SECTION: ACTION BUTTONS ===
         button_layout = QHBoxLayout()
@@ -438,8 +554,131 @@ class TstTunerDialog(QDialog):
         button_layout.addWidget(self.accept_button)
         button_layout.addWidget(self.cancel_button)
         
-        main_layout.addLayout(button_layout)
-        self.setLayout(main_layout)
+        # Keep the final actions permanently visible. Only the large preview,
+        # graph, and parameter area scroll when the display is short.
+        content_widget = QWidget()
+        content_widget.setLayout(main_layout)
+        self.content_scroll = QScrollArea()
+        self.content_scroll.setWidgetResizable(True)
+        self.content_scroll.setWidget(content_widget)
+        self.content_scroll.setVerticalScrollBarPolicy(
+            Qt.ScrollBarPolicy.ScrollBarAsNeeded
+        )
+
+        root_layout = QVBoxLayout()
+        root_layout.addWidget(self.content_scroll, 1)
+        root_layout.addLayout(button_layout)
+        self.setLayout(root_layout)
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(1400, 900),
+            minimum_size=(640, 480),
+        )
+
+    def _add_advanced_controls(self, main_layout):
+        """Keep expert classifier settings available without cluttering basics."""
+        group = QGroupBox("Advanced classifier settings")
+        group.setCheckable(True)
+        group.setChecked(False)
+        form = QFormLayout()
+        self.advanced_controls = {}
+        fields = (
+            ("segmentation_contrast", "Segmentation contrast", 0.0, 255.0, 1.0, 1),
+            ("min_mouse_area_ratio", "Minimum body area ratio", 0.0001, 0.5, 0.0001, 4),
+            ("max_mouse_area_ratio", "Maximum body area ratio", 0.01, 1.0, 0.001, 3),
+            ("static_rigid_threshold", "Static-motion threshold", 0.0, 0.1, 0.0005, 4),
+            ("active_residual_threshold", "Articulated-motion threshold", 0.001, 0.2, 0.001, 3),
+            ("passive_pendulum_score_threshold", "Passive-swing threshold", 0.0, 1.0, 0.01, 2),
+            ("temporal_window_seconds", "Motion history window (s)", 0.25, 10.0, 0.25, 2),
+        )
+        for name, label, low, high, step, decimals in fields:
+            control = QDoubleSpinBox()
+            control.setRange(low, high)
+            control.setSingleStep(step)
+            control.setDecimals(decimals)
+            control.setValue(float(getattr(self.preview_motion_config, name)))
+            control.valueChanged.connect(self._on_advanced_changed)
+            self.advanced_controls[name] = control
+            form.addRow(label, control)
+        buttons = QHBoxLayout()
+        rescan = QPushButton("Rescan preview")
+        rescan.clicked.connect(self._rescan_preview)
+        save_profile = QPushButton("Save profile…")
+        save_profile.clicked.connect(self._save_profile)
+        load_profile = QPushButton("Load profile…")
+        load_profile.clicked.connect(self._load_profile)
+        buttons.addWidget(rescan)
+        buttons.addWidget(save_profile)
+        buttons.addWidget(load_profile)
+        form.addRow(buttons)
+        self.advanced_note = QLabel(
+            "Advanced changes apply to the full analysis only after acceptance. "
+            "Use Rescan preview to inspect their effect."
+        )
+        self.advanced_note.setWordWrap(True)
+        form.addRow(self.advanced_note)
+        group.setLayout(form)
+        main_layout.addWidget(group)
+
+    def _on_advanced_changed(self):
+        for name, control in self.advanced_controls.items():
+            setattr(self.preview_motion_config, name, float(control.value()))
+        if self.preview_motion_config.min_mouse_area_ratio >= self.preview_motion_config.max_mouse_area_ratio:
+            self.advanced_note.setText("Minimum body area must be lower than maximum body area.")
+            return
+        self.advanced_note.setText("Settings changed. Rescan preview to inspect them; accept to use them in analysis.")
+
+    def _rescan_preview(self):
+        if hasattr(self, "scanner") and self.scanner.isRunning():
+            return
+        try:
+            self.preview_motion_config.validate()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid classifier settings", str(exc))
+            return
+        self.energy_data = {}
+        self.evidence_data = {}
+        self.processed_frame_cache.clear()
+        self.start_scan()
+
+    def _save_profile(self):
+        filename, _ = QFileDialog.getSaveFileName(self, "Save TST profile", "", "JSON files (*.json)")
+        if not filename:
+            return
+        payload = {
+            "engine_id": TSTMotionEngine.ENGINE_ID,
+            "min_immobility_seconds": self.time_slider.value() / 10.0,
+            "motion_config": self.preview_motion_config.__dict__,
+        }
+        try:
+            with open(filename, "w", encoding="utf-8") as profile_file:
+                json.dump(payload, profile_file, indent=2)
+        except OSError as exc:
+            QMessageBox.warning(self, "Could not save profile", str(exc))
+
+    def _load_profile(self):
+        filename, _ = QFileDialog.getOpenFileName(self, "Load TST profile", "", "JSON files (*.json)")
+        if not filename:
+            return
+        try:
+            with open(filename, encoding="utf-8") as profile_file:
+                payload = json.load(profile_file)
+            if payload.get("engine_id") != TSTMotionEngine.ENGINE_ID:
+                raise ValueError("This profile was made for a different TST engine.")
+            config = TSTMotionConfig(**payload["motion_config"])
+            config.validate()
+            if config.min_mouse_area_ratio >= config.max_mouse_area_ratio:
+                raise ValueError("Profile has an invalid body-area range.")
+        except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
+            QMessageBox.warning(self, "Could not load profile", str(exc))
+            return
+        self.preview_motion_config = config
+        for name, control in self.advanced_controls.items():
+            control.blockSignals(True)
+            control.setValue(float(getattr(config, name)))
+            control.blockSignals(False)
+        self.time_slider.setValue(int(round(float(payload.get("min_immobility_seconds", 0.5)) * 10)))
+        self._on_advanced_changed()
     
     def start_scan(self):
         """Start background video scanning."""
@@ -452,22 +691,20 @@ class TstTunerDialog(QDialog):
         fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
         cap.release()
         
-        # For TST, scan the entire video up to reasonable limits
-        # With compression, we can handle longer videos
-        max_frames_to_scan = min(total_frames, 54000)  # Cap at 30 minutes @ 30fps
-        
-        # Show info to user
-        duration_sec = max_frames_to_scan / fps
-        self.image_label.setText(f"Scanning {duration_sec:.1f} seconds of video...")
+        review_segments = self._build_review_segments(total_frames, fps)
+        reviewed_seconds = sum(end - start for start, end in review_segments) / fps
+        self.image_label.setText(
+            f"Preparing a fast {reviewed_seconds:.0f}s representative review…"
+        )
         
         self.scanner = EnergyScanner(
             self.video_path,
             self.roi_dict,
-            self.selected_mouse,
-            max_frames=max_frames_to_scan
+            self.preview_motion_config,
+            review_segments,
         )
         self.scanner.progress.connect(self.on_scan_progress)
-        self.scanner.finished.connect(self.on_scan_complete)
+        self.scanner.scan_complete.connect(self.on_scan_complete)
         self.scanner.start()
     
     def on_scan_progress(self, value):
@@ -482,9 +719,12 @@ class TstTunerDialog(QDialog):
             return
         
         self.energy_data = energy_data
-        self.frame_buffer = frame_buffer  # Compressed frames
+        self.state_data = dict(self.scanner.state_data)
+        self.evidence_data = dict(self.scanner.evidence_data)
+        self.frame_buffer = frame_buffer
         self.orig_dims = orig_dims
         self.fps = fps
+        self.analysis_fps = fps / max(1, int(round(fps / self.scanner.target_fps)))
         self.scan_len = len(frame_buffer)
         
         # Hide progress bar
@@ -494,21 +734,21 @@ class TstTunerDialog(QDialog):
         self.accept_button.setEnabled(True)
         self.play_button.setEnabled(True)
         self.scrub_slider.setEnabled(True)
+        self.mouse_selector.setEnabled(len(self.roi_dict) > 1)
         
         # Set slider range based on actual frames
         self.scrub_slider.setRange(0, self.scan_len - 1)
         
-        # Auto-scale energy threshold
         trace = energy_data[self.selected_mouse]
-        if trace:
-            max_energy = max(trace)
-            self.energy_slider.setRange(0, int(max_energy * 1.2))
-            self.energy_slider.setValue(int(max_energy * 0.3))
         
         # Show scan info
-        duration = self.scan_len / self.fps
-        memory_mb = sum(len(f) for f in frame_buffer) / (1024 * 1024)
-        print(f"Scanned {duration:.1f}s, {self.scan_len} frames, ~{memory_mb:.1f}MB in memory")
+        duration = sum(
+            end - start for start, end in self.scanner.review_segments
+        ) / self.fps
+        self.frame_label.setText(
+            f"Fast review: {duration:.1f}s sampled at {self.analysis_fps:.1f} fps "
+            f"({self.scan_len} motion intervals)"
+        )
         
         # Initialize plot with blitting support
         self.init_plot_optimized(trace)
@@ -518,28 +758,70 @@ class TstTunerDialog(QDialog):
         
         # Show first frame
         self.update_frame(0)
+
+    @staticmethod
+    def _build_review_segments(total_frames, fps):
+        """Return short start/middle/end windows for a responsive tuner."""
+        window = max(1, int(round(fps * 20.0)))
+        if total_frames <= window * 3:
+            return [(0, total_frames)]
+        middle = max(0, total_frames // 2 - window // 2)
+        return [
+            (0, window),
+            (middle, min(total_frames, middle + window)),
+            (max(0, total_frames - window), total_frames),
+        ]
+
+    def on_mouse_change(self, _index):
+        """Switch the evidence trace and overlay to another mouse."""
+        mouse_name = self.mouse_selector.currentData()
+        if not mouse_name or mouse_name not in self.energy_data:
+            return
+        try:
+            self.selected_mouse = mouse_name
+            self.graph_group.setTitle(
+                "Active-Motion Evidence: "
+                f"{mouse_name.replace('_', ' ').title()}"
+            )
+            self.processed_frame_cache.clear()
+            self.init_plot_optimized(self.energy_data[mouse_name])
+            self.on_param_change()
+            self.update_frame(min(self.current_frame, self.scan_len - 1))
+        except Exception as exc:
+            logger.exception("Could not switch TST tuner mouse")
+            self.image_label.setText(
+                f"Could not display {mouse_name.replace('_', ' ')}: {exc}"
+            )
     
     def init_plot_optimized(self, trace):
         """
         Initialize the plot with blitting optimization in mind.
         Sets up static elements and prepares for dynamic updates.
         """
+        # Existing fill artists belong to the previous trace. Remove them
+        # before clearing the axes; after ``Axes.clear`` they are already
+        # detached and a second remove can raise inside the Qt callback.
+        self._clear_fill_regions()
         self.ax.clear()
+        self.fill_immobile = None
+        self.fill_pause = None
         
         # Pre-compute timestamps
-        self.timestamps = np.array([i / self.fps for i in range(len(trace))])
+        self.timestamps = np.array([
+            frame / self.fps for frame in self.frame_buffer[:len(trace)]
+        ])
         
-        # Plot motion energy trace (static)
+        # Plot active-motion evidence trace (static)
         self.line_trace, = self.ax.plot(
             self.timestamps, trace,
             'k-', linewidth=1, alpha=0.7,
-            label="Motion Energy"
+            label="Active-motion evidence"
         )
         
         # Initialize threshold line (dynamic but less frequent)
         self.line_thresh = self.ax.axhline(
             y=0, color='blue', linestyle='--',
-            linewidth=1.5, label="Threshold", animated=True  # Mark as animated
+            linewidth=1.5, label="Reference level", animated=True
         )
         
         # Initialize cursor line (dynamic and frequent)
@@ -550,7 +832,7 @@ class TstTunerDialog(QDialog):
         
         # Setup axes
         self.ax.set_xlim(0, self.timestamps[-1] if len(self.timestamps) > 0 else 1)
-        y_max = max(trace) * 1.1 if trace else 10
+        y_max = max(100.0, max(trace) * 1.1) if trace else 100.0
         self.ax.set_ylim(0, y_max)
         
         # Add legend
@@ -577,33 +859,38 @@ class TstTunerDialog(QDialog):
         if not self.energy_data or self.line_thresh is None:
             return
         
-        energy_thresh = self.energy_slider.value()
         time_thresh = self.time_slider.value() / 10.0
         
         # Update labels
-        self.energy_label.setText(f"Energy Threshold: {energy_thresh:.1f}")
+        self.energy_label.setText(
+            "Classifier: rigid/articulated motion decomposition"
+        )
         self.time_label.setText(f"Min Immobility: {time_thresh:.1f}s")
         
         # Calculate immobility zones
         trace = self.energy_data[self.selected_mouse]
-        min_frames = int(time_thresh * self.fps)
-        
-        # Compute raw and filtered immobility
-        self.raw_immobile = np.array(trace) < energy_thresh
-        self.filtered_immobile = self.tst._apply_temporal_filter(
-            self.raw_immobile, min_frames
+        min_frames = max(1, int(round(time_thresh * self.analysis_fps)))
+        gap_frames = max(
+            0, int(round(self.tst.max_motion_gap_seconds * self.analysis_fps))
         )
         
-        # Remove old fill regions if they exist
-        if self.fill_immobile:
-            self.fill_immobile.remove()
-            self.fill_immobile = None
-        if self.fill_pause:
-            self.fill_pause.remove()
-            self.fill_pause = None
+        states = self.state_data.get(self.selected_mouse, [])
+        self.raw_immobile = np.array([
+            state in {"immobile_static", "passive_swing"}
+            for state in states
+        ])
+        smoothed = smooth_tst_immobility_states(
+            states, min_frames, gap_frames
+        )
+        self.filtered_immobile = np.array([
+            value is True for value in smoothed
+        ])
+        uncertain = np.array([value is None for value in smoothed])
+        
+        self._clear_fill_regions()
         
         # Create new fill regions
-        y_max = max(trace) * 1.1 if trace else 10
+        y_max = max(100.0, max(trace) * 1.1) if trace else 100.0
         
         # Immobile zones (red)
         self.fill_immobile = self.ax.fill_between(
@@ -613,17 +900,16 @@ class TstTunerDialog(QDialog):
             interpolate=True, step='mid'
         )
         
-        # Pause zones (yellow) - below threshold but not long enough
-        potential_pause = self.raw_immobile & (~self.filtered_immobile)
+        # Unscorable/ambiguous zones (yellow)
         self.fill_pause = self.ax.fill_between(
             self.timestamps, 0, y_max,
-            where=potential_pause,
+            where=uncertain,
             color='yellow', alpha=0.2,
             interpolate=True, step='mid'
         )
         
         # Update threshold line position (it's animated so won't be in background)
-        self.line_thresh.set_ydata([energy_thresh, energy_thresh])
+        self.line_thresh.set_ydata([50.0, 50.0])
         
         # Full redraw required for fill changes
         self.canvas.draw()
@@ -655,6 +941,19 @@ class TstTunerDialog(QDialog):
         
         # Update current frame visualization
         self.update_frame(self.current_frame)
+
+    def _clear_fill_regions(self):
+        """Remove plot fills defensively across trace/axis changes."""
+        for attribute in ("fill_immobile", "fill_pause"):
+            artist = getattr(self, attribute, None)
+            if artist is not None:
+                try:
+                    artist.remove()
+                except (ValueError, NotImplementedError):
+                    # Matplotlib already detached the artist when the axes
+                    # were cleared. The replacement trace can proceed.
+                    pass
+            setattr(self, attribute, None)
     
     def update_cursor_blit(self, frame_idx):
         """
@@ -665,7 +964,9 @@ class TstTunerDialog(QDialog):
             return
         
         # Calculate time position
-        time_pos = frame_idx / self.fps
+        if frame_idx >= len(self.timestamps):
+            return
+        time_pos = self.timestamps[frame_idx]
         
         # Restore background (removes old cursor)
         self.canvas.restore_region(self.graph_background)
@@ -687,7 +988,7 @@ class TstTunerDialog(QDialog):
     
     def get_decoded_frame(self, frame_idx):
         """
-        Get a decoded frame from the buffer, using cache when possible.
+        Decode a source frame on demand, using the preview cache when possible.
         """
         if frame_idx in self.decoded_frame_cache:
             return self.decoded_frame_cache[frame_idx]
@@ -695,9 +996,24 @@ class TstTunerDialog(QDialog):
         if frame_idx >= len(self.frame_buffer):
             return None
         
-        # Decode compressed frame
-        compressed = self.frame_buffer[frame_idx]
-        frame = cv2.imdecode(compressed, cv2.IMREAD_COLOR)
+        source_frame_idx = int(self.frame_buffer[frame_idx])
+        if not self.preview_cap.isOpened():
+            self.preview_cap = cv2.VideoCapture(str(self.video_path))
+        self.preview_cap.set(cv2.CAP_PROP_POS_FRAMES, source_frame_idx)
+        ret, frame = self.preview_cap.read()
+        if not ret or frame is None:
+            return None
+        height, width = frame.shape[:2]
+        if height > 0 and width > 0:
+            target_height = 480
+            target_width = max(1, int(round(
+                width * target_height / height
+            )))
+            frame = cv2.resize(
+                frame,
+                (target_width, target_height),
+                interpolation=cv2.INTER_LINEAR,
+            )
         
         # Cache decoded frame
         self.decoded_frame_cache[frame_idx] = frame
@@ -715,13 +1031,13 @@ class TstTunerDialog(QDialog):
     def update_frame(self, frame_idx):
         """
         Update video frame with ROI visualization.
-        Handles compressed frames with caching for smooth playback.
+        Uses on-demand decoding and bounded caches for smooth playback.
         """
         if not self.frame_buffer or frame_idx >= len(self.frame_buffer):
             return
         
         # Check processed frame cache first
-        cache_key = (frame_idx, 
+        cache_key = (self.selected_mouse, frame_idx,
                     self.energy_slider.value() if hasattr(self, 'energy_slider') else 0,
                     self.time_slider.value() if hasattr(self, 'time_slider') else 0)
         
@@ -741,19 +1057,41 @@ class TstTunerDialog(QDialog):
                 if frame_idx < len(trace):
                     energy_val = trace[frame_idx]
                     
-                    # Determine mobility state
-                    is_below_thresh = self.raw_immobile[frame_idx] if (self.raw_immobile is not None and frame_idx < len(self.raw_immobile)) else False
-                    is_immobile = self.filtered_immobile[frame_idx] if (self.filtered_immobile is not None and frame_idx < len(self.filtered_immobile)) else False
-                    
-                    if not is_below_thresh:
-                        color = (0, 255, 0)  # Green - Mobile
-                        status = "MOBILE"
-                    elif is_below_thresh and not is_immobile:
-                        color = (255, 200, 0)  # Yellow - Pause
-                        status = "PAUSE"
+                    behavior_trace = self.state_data.get(
+                        self.selected_mouse, []
+                    )
+                    behavior_state = (
+                        behavior_trace[frame_idx]
+                        if frame_idx < len(behavior_trace)
+                        else "uncertain"
+                    )
+                    is_immobile = (
+                        self.filtered_immobile[frame_idx]
+                        if (
+                            self.filtered_immobile is not None
+                            and frame_idx < len(self.filtered_immobile)
+                        )
+                        else False
+                    )
+
+                    if behavior_state == "uncertain":
+                        color = (0, 165, 255)
+                        status = "UNCERTAIN"
+                    elif is_immobile:
+                        if behavior_state == "passive_swing":
+                            color = (180, 0, 180)
+                            status = "PASSIVE SWING"
+                        else:
+                            color = (0, 0, 255)
+                            status = "IMMOBILE STATIC"
+                    elif behavior_state in {
+                        "immobile_static", "passive_swing"
+                    }:
+                        color = (0, 215, 255)
+                        status = "SHORT PAUSE"
                     else:
-                        color = (255, 50, 50)  # Red - Immobile
-                        status = "IMMOBILE"
+                        color = (0, 255, 0)
+                        status = "ACTIVE ESCAPE"
                     
                     # Draw ROI visualization
                     roi = self.roi_dict[self.selected_mouse]
@@ -773,9 +1111,38 @@ class TstTunerDialog(QDialog):
                         
                         # Draw ROI border
                         cv2.polylines(frame, [scaled_pts], True, color, 2, cv2.LINE_AA)
+
+                        # The white outline is the actual segmented mouse body
+                        # used by the classifier, not an inferred ROI fill.
+                        evidence = self.evidence_data.get(
+                            self.selected_mouse, []
+                        )
+                        if frame_idx < len(evidence):
+                            contour = evidence[frame_idx].get("mask_contour", [])
+                            if len(contour) >= 3:
+                                body = np.asarray(contour, dtype=np.float32)
+                                body *= [scale_x, scale_y]
+                                body = np.rint(body).astype(np.int32)
+                                body_overlay = frame.copy()
+                                cv2.fillPoly(body_overlay, [body], color)
+                                cv2.addWeighted(
+                                    body_overlay, 0.35, frame, 0.65, 0, frame
+                                )
+                                cv2.polylines(
+                                    frame, [body], True, (255, 255, 255), 2,
+                                    cv2.LINE_AA,
+                                )
                         
                         # Add status text with background
-                        text = f"{status} | Energy: {energy_val:.1f}"
+                        confidence = 0.0
+                        qc_flag = ""
+                        if frame_idx < len(self.evidence_data.get(self.selected_mouse, [])):
+                            record = self.evidence_data[self.selected_mouse][frame_idx]
+                            confidence = float(record.get("confidence", 0.0))
+                            qc_flag = str(record.get("qc_flag", ""))
+                        text = f"{status} | Evidence: {energy_val:.1f} | Confidence: {confidence:.2f}"
+                        if qc_flag:
+                            text += f" | QC: {qc_flag}"
                         font = cv2.FONT_HERSHEY_SIMPLEX
                         font_scale = 0.7
                         thickness = 2
@@ -826,8 +1193,12 @@ class TstTunerDialog(QDialog):
         self.image_label.setPixmap(pixmap)
         
         # Update frame counter with time
-        time_sec = frame_idx / self.fps
-        self.frame_label.setText(f"Frame: {frame_idx + 1} / {self.scan_len} | Time: {time_sec:.1f}s")
+        source_frame = int(self.frame_buffer[frame_idx])
+        time_sec = source_frame / self.fps
+        self.frame_label.setText(
+            f"Frame: {source_frame} | Reviewed interval: "
+            f"{frame_idx + 1} / {self.scan_len} | Time: {time_sec:.1f}s"
+        )
         
         # Store current frame index
         self.current_frame = frame_idx
@@ -855,7 +1226,7 @@ class TstTunerDialog(QDialog):
         if self.is_playing:
             # Restart timer with new interval
             self.play_timer.stop()
-            interval = int(1000 / (self.fps * speed))
+            interval = int(1000 / (self.analysis_fps * speed))
             self.play_timer.start(max(1, interval))
     
     def toggle_playback(self):
@@ -867,7 +1238,7 @@ class TstTunerDialog(QDialog):
             
             # Calculate timer interval based on speed
             speed = self.speed_slider.value() / 100.0
-            interval = int(1000 / (self.fps * speed))
+            interval = int(1000 / (self.analysis_fps * speed))
             
             # Start timer and elapsed timer
             self.elapsed_timer.start()
@@ -893,7 +1264,7 @@ class TstTunerDialog(QDialog):
         speed = self.speed_slider.value() / 100.0
         
         # Calculate which frame we should be showing based on elapsed time
-        target_frame = int((elapsed_ms / 1000.0) * self.fps * speed)
+        target_frame = int((elapsed_ms / 1000.0) * self.analysis_fps * speed)
         
         # Skip frames if we're behind (frame dropping for smooth playback)
         if target_frame > self.current_frame:
@@ -947,7 +1318,7 @@ class TstTunerDialog(QDialog):
         if not self.timestamps.size:
             return
         
-        current_time = self.current_frame / self.fps
+        current_time = self.timestamps[min(self.current_frame, len(self.timestamps) - 1)]
         xlim = self.ax.get_xlim()
         zoom_factor = 0.5
         
@@ -973,7 +1344,7 @@ class TstTunerDialog(QDialog):
         if not self.timestamps.size:
             return
         
-        current_time = self.current_frame / self.fps
+        current_time = self.timestamps[min(self.current_frame, len(self.timestamps) - 1)]
         xlim = self.ax.get_xlim()
         zoom_factor = 2.0
         
@@ -992,10 +1363,15 @@ class TstTunerDialog(QDialog):
     def accept(self):
         """Save parameters and close dialog."""
         # Set parameters in the TST instance
-        energy_threshold = float(self.energy_slider.value())
         time_threshold = self.time_slider.value() / 10.0
         
-        self.tst.set_parameters(energy_threshold, time_threshold)
+        try:
+            self.preview_motion_config.validate()
+        except ValueError as exc:
+            QMessageBox.warning(self, "Invalid classifier settings", str(exc))
+            return
+        self.tst.motion_config = copy.deepcopy(self.preview_motion_config)
+        self.tst.set_parameters(time_threshold)
         
         # Clean up
         self.cleanup()
@@ -1012,6 +1388,14 @@ class TstTunerDialog(QDialog):
         if self.is_playing:
             self.play_timer.stop()
             self.is_playing = False
+        if hasattr(self, "scanner") and self.scanner.isRunning():
+            self.scanner.cancel()
+            if not self.scanner.wait(5000):
+                logger.warning(
+                    "TST review scanner did not stop within five seconds"
+                )
+        if self.preview_cap.isOpened():
+            self.preview_cap.release()
         
         # Clear frame buffer and caches to free memory
         self.frame_buffer = []

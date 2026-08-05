@@ -7,18 +7,21 @@ import numpy as np
 from PyQt6.QtCore import QPointF, Qt
 from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
-                             QPushButton, QVBoxLayout)
+                             QPushButton, QScrollArea, QVBoxLayout)
 
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
+from gui.dialog_layout import fit_dialog_to_available_screen
 
 
 class ReferenceLineDialog(QDialog):
     """A dialog to draw a single line for distance calibration."""
-    def __init__(self, pixmap, parent=None):
+    def __init__(self, pixmap, source_scale=(1.0, 1.0), parent=None):
         super().__init__(parent)
         self.setWindowTitle("Draw Reference Line")
         self.base_pixmap = pixmap
+        self.source_scale_x = float(source_scale[0])
+        self.source_scale_y = float(source_scale[1])
         self.points = []
         self.line_length = 0.0
         self.init_ui()
@@ -28,15 +31,28 @@ class ReferenceLineDialog(QDialog):
         self.instruction_label = QLabel("Click two points to define a line of known length (e.g., an arm width).")
         self.image_label = QLabel()
         self.image_label.setPixmap(self.base_pixmap)
+        self.image_label.setFixedSize(self.base_pixmap.size())
+        self.image_scroll = QScrollArea()
+        self.image_scroll.setWidgetResizable(False)
+        self.image_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_scroll.setWidget(self.image_label)
         button_layout = QHBoxLayout()
         self.reset_button = QPushButton("Reset")
         self.accept_button = QPushButton("Accept")
         button_layout.addWidget(self.reset_button)
         button_layout.addWidget(self.accept_button)
         layout.addWidget(self.instruction_label)
-        layout.addWidget(self.image_label)
+        layout.addWidget(self.image_scroll, 1)
         layout.addLayout(button_layout)
         self.setLayout(layout)
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(
+                self.base_pixmap.width() + 50,
+                self.base_pixmap.height() + 130,
+            ),
+            minimum_size=(480, 360),
+        )
         self.image_label.mousePressEvent = self.add_point
         self.reset_button.clicked.connect(self.reset)
         self.accept_button.clicked.connect(self.accept_line)
@@ -71,9 +87,11 @@ class ReferenceLineDialog(QDialog):
             p1, p2 = self.points[0], self.points[1]
             painter.drawEllipse(p2, 3, 3)
             painter.drawLine(p1, p2)
-            self.line_length = np.sqrt((p2.x() - p1.x())**2 + (p2.y() - p1.y())**2)
+            dx = (p2.x() - p1.x()) * self.source_scale_x
+            dy = (p2.y() - p1.y()) * self.source_scale_y
+            self.line_length = np.sqrt(dx**2 + dy**2)
             mid_point = QPointF((p1.x() + p2.x()) / 2, (p1.y() + p2.y()) / 2 - 10)
-            painter.drawText(mid_point, f"{self.line_length:.2f} pixels")
+            painter.drawText(mid_point, f"{self.line_length:.2f} source pixels")
             
         painter.end()
         self.image_label.setPixmap(pixmap)
@@ -111,17 +129,27 @@ class RoiSelectorDialog(QDialog):
             
         self.base_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
         h, w, ch = self.base_frame.shape
+        self.source_width = w
+        self.source_height = h
+        self.display_width = w
+        self.display_height = h
         
-        # Limit size if video is 4K to fit on screen
+        # Bound very large source images once. The pixmap and click canvas
+        # remain identical in size after this conversion.
         if w > 1280:
             scale = 1280 / w
             w, h = int(w * scale), int(h * scale)
             self.base_frame = cv2.resize(self.base_frame, (w, h))
+            self.display_width = w
+            self.display_height = h
+
+        self.display_to_source_x = self.source_width / self.display_width
+        self.display_to_source_y = self.source_height / self.display_height
+        self.roi_manager.set_source_dimensions((self.source_width, self.source_height))
             
         self.base_pixmap = QPixmap.fromImage(QImage(self.base_frame.data, w, h, ch * w, QImage.Format.Format_RGB888))
         
         self.setWindowTitle("ROI Selection")
-        self.setMinimumSize(w + 50, h + 150)
         
         layout = QVBoxLayout()
         self.instruction_label = QLabel()
@@ -129,6 +157,11 @@ class RoiSelectorDialog(QDialog):
         
         self.image_label = QLabel()
         self.image_label.setPixmap(self.base_pixmap)
+        self.image_label.setFixedSize(self.base_pixmap.size())
+        self.image_scroll = QScrollArea()
+        self.image_scroll.setWidgetResizable(False)
+        self.image_scroll.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.image_scroll.setWidget(self.image_label)
         
         button_layout = QHBoxLayout()
         self.undo_button = QPushButton("Undo Last Point")
@@ -140,9 +173,17 @@ class RoiSelectorDialog(QDialog):
         button_layout.addWidget(self.next_button)
         
         layout.addWidget(self.instruction_label)
-        layout.addWidget(self.image_label)
+        layout.addWidget(self.image_scroll, 1)
         layout.addLayout(button_layout)
         self.setLayout(layout)
+        fit_dialog_to_available_screen(
+            self,
+            preferred_size=(
+                self.base_pixmap.width() + 50,
+                self.base_pixmap.height() + 130,
+            ),
+            minimum_size=(480, 360),
+        )
         
         self.next_button.clicked.connect(self.next_roi)
         self.undo_button.clicked.connect(self.undo_point)
@@ -168,7 +209,11 @@ class RoiSelectorDialog(QDialog):
                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                        QMessageBox.StandardButton.Yes)
         if reply == QMessageBox.StandardButton.Yes:
-            ref_dialog = ReferenceLineDialog(self.image_label.pixmap(), self)
+            ref_dialog = ReferenceLineDialog(
+                self.image_label.pixmap(),
+                source_scale=(self.display_to_source_x, self.display_to_source_y),
+                parent=self
+            )
             if ref_dialog.exec():
                 length = ref_dialog.get_line_length()
                 if length > 0:
@@ -176,7 +221,23 @@ class RoiSelectorDialog(QDialog):
         self.accept()
 
     def next_roi(self):
-        if len(self.current_polygon_points) >= 3: self.finalize_polygon()
+        category, description = self.roi_definitions[self.current_roi_index]
+        if 0 < len(self.current_polygon_points) < 3:
+            QMessageBox.warning(
+                self,
+                "Incomplete ROI",
+                f"{description} needs at least three points."
+            )
+            return
+        if len(self.current_polygon_points) >= 3:
+            self.finalize_polygon()
+        if not self.roi_manager.rois.get(category):
+            QMessageBox.warning(
+                self,
+                "Missing ROI",
+                f"Draw at least one polygon for {description} before continuing."
+            )
+            return
         self.current_roi_index += 1
         self.start_next_roi_selection()
 
@@ -199,7 +260,10 @@ class RoiSelectorDialog(QDialog):
         self.update()
 
     def finalize_polygon(self):
-        points = np.array([(p.x(), p.y()) for p in self.current_polygon_points], dtype=np.int32)
+        points = np.array([
+            (p.x() * self.display_to_source_x, p.y() * self.display_to_source_y)
+            for p in self.current_polygon_points
+        ], dtype=np.int32)
         category, _ = self.roi_definitions[self.current_roi_index]
         self.roi_manager.add_roi(category, points)
         self.current_polygon_points = []
@@ -219,7 +283,13 @@ class RoiSelectorDialog(QDialog):
             painter.setPen(QPen(color.darker(150), 2))
             painter.setBrush(color)
             for roi in roi_list:
-                poly = QPolygonF([QPointF(p[0], p[1]) for p in roi.points])
+                poly = QPolygonF([
+                    QPointF(
+                        p[0] / self.display_to_source_x,
+                        p[1] / self.display_to_source_y
+                    )
+                    for p in roi.points
+                ])
                 painter.drawPolygon(poly)
         
         # Draw current polygon being drawn

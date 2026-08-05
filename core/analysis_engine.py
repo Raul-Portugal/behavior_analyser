@@ -1,67 +1,24 @@
 """
 core/analysis_engine.py
 Unified Analysis Engine.
-Contains logic for both Positional Tracking (Analyzer) and Motion Energy (MotionEngine).
+Contains positional tracking and the TST motion-decomposition engine.
 Replaces analysis.py and motion_engine.py.
 """
 import logging
 import cv2
 import numpy as np
 from pathlib import Path
-from typing import Optional, Tuple, Generator, List, Dict
+from typing import Optional, Tuple, Generator, List
 
 from core.video import BufferedVideoReader, VideoHandler
 from core.detection import DetectionEngine
 from core.models import AppConfig
 # We still import ROI manager from root for now, to be moved later
-from roi_manager import ROIManager, ROI
+from roi_manager import ROIManager
 from mazes.base_maze import BaseAnalysisResult
+from core.tracking_quality import quality_grade_label, summarize_tracking_quality
 
 logger = logging.getLogger(__name__)
-
-# ============================================================================
-# MOTION ENGINE (TST / Activity)
-# ============================================================================
-
-class MotionEngine:
-    """Calculates pixel-wise motion energy within specific ROIs (For TST)."""
-    
-    def __init__(self, rois: Dict[str, ROI]):
-        self.rois = rois
-        self.masks = {}
-        self._initialized = False
-
-    def _init_masks(self, shape: Tuple[int, int]):
-        h, w = shape[:2]
-        for name, roi in self.rois.items():
-            mask = np.zeros((h, w), dtype=np.uint8)
-            cv2.fillPoly(mask, [roi.points.astype(np.int32)], 255)
-            self.masks[name] = mask
-        self._initialized = True
-
-    def calculate_motion(self, frame: np.ndarray, prev_frame: np.ndarray) -> Dict[str, float]:
-        if frame is None or prev_frame is None:
-            return {n: 0.0 for n in self.rois}
-            
-        if not self._initialized:
-            self._init_masks(frame.shape)
-
-        g1 = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-        g2 = cv2.cvtColor(prev_frame, cv2.COLOR_BGR2GRAY)
-        
-        # Simple absdiff for energy
-        diff = cv2.absdiff(g1, g2)
-        
-        # Noise floor
-        _, thresh = cv2.threshold(diff, 15, 255, cv2.THRESH_BINARY)
-        
-        results = {}
-        for name, mask in self.masks.items():
-            # Mean intensity inside the mask
-            val = cv2.mean(thresh, mask=mask)[0]
-            results[name] = val
-            
-        return results
 
 # ============================================================================
 # POSITIONAL ANALYZER (Tracking)
@@ -70,8 +27,10 @@ class MotionEngine:
 class Analyzer:
     """Positional tracking engine using DetectionEngine."""
 
-    def __init__(self, video_path: Path, detection_engine: DetectionEngine, 
-                 roi_manager: ROIManager, start_frame: int = 0, end_frame: Optional[int] = None):
+    def __init__(self, video_path: Path, detection_engine: DetectionEngine,
+                 roi_manager: ROIManager, start_frame: int = 0,
+                 end_frame: Optional[int] = None,
+                 result_start_frame: Optional[int] = None):
         
         self.video_path = Path(video_path)
         self.engine = detection_engine
@@ -85,6 +44,11 @@ class Analyzer:
         total_frames = handler.total_frames
         
         self.start_frame = max(0, start_frame)
+        self.result_start_frame = (
+            max(0, result_start_frame)
+            if result_start_frame is not None
+            else self.start_frame
+        )
         self.end_frame = min(end_frame or total_frames, total_frames)
         
         # Optimization: Downscaling
@@ -132,7 +96,7 @@ class Analyzer:
                 
                 # 3. Upscale & Map
                 final_pos = None
-                zones = ['outside']
+                zones = ['undetected']
                 
                 if raw_pos:
                     upscaled_x = int(raw_pos[0] * self.scale_ratio)
@@ -166,38 +130,65 @@ class Analyzer:
     def finalize_result(self, result: BaseAnalysisResult):
         """Populates summary metrics in result object."""
         result.fps = self.fps
-        result.start_frame = self.start_frame
-        result.end_frame = self.end_frame
+        result.start_frame = self.result_start_frame
+        result.end_frame = self.result_start_frame + len(result.positions)
         
         # Calculate distances
         total_dist = 0.0
         result.distance_in_roi.clear()
         result.time_in_roi.clear()
         
-        valid_positions = [p for p in result.positions if p]
-        if not valid_positions: return
+        result.undetected_frames = 0
+        result.undetected_time_s = 0.0
+        result.excluded_jump_count = 0
+        result.excluded_jump_distance = 0.0
+        jump_limit = (
+            float(np.hypot(self.orig_w, self.orig_h))
+            * self.engine.config.max_expected_jump_ratio
+        )
 
-        # Simple distance accumulation
-        prev = valid_positions[0]
+        # Distance is accumulated only across consecutive valid observations.
+        # A missing observation breaks the trajectory instead of creating a
+        # synthetic jump from the last known point to the next known point.
+        prev = None
+        prev_idx = None
         for i, pos in enumerate(result.positions):
-            # Time
-            zone = result.roi_labels[i] if i < len(result.roi_labels) else 'outside'
+            zone = result.roi_labels[i] if i < len(result.roi_labels) else 'undetected'
+
+            if pos is None or zone == 'undetected':
+                result.undetected_frames += 1
+                result.undetected_time_s += (1.0 / self.fps)
+                prev = None
+                prev_idx = None
+                continue
+
+            # Only valid spatial observations contribute to zone occupancy.
             result.time_in_roi[zone] = result.time_in_roi.get(zone, 0.0) + (1.0/self.fps)
-            
-            # Distance
-            if pos:
+
+            if prev is not None and prev_idx == i - 1:
                 dist = np.sqrt((pos[0]-prev[0])**2 + (pos[1]-prev[1])**2)
-                # Jump filter
-                if dist < (self.orig_w / 3): 
+                if dist <= jump_limit:
                     total_dist += dist
                     result.distance_in_roi[zone] = result.distance_in_roi.get(zone, 0.0) + dist
-                prev = pos
+                else:
+                    result.excluded_jump_count += 1
+                    result.excluded_jump_distance += float(dist)
+            prev = pos
+            prev_idx = i
                 
         result.total_distance = total_dist
         
         # Detection rate
-        detected = sum(1 for p in result.positions if p)
-        result.detection_rate = detected / len(result.positions) if result.positions else 0.0
+        result.tracking_quality = summarize_tracking_quality(
+            result.positions,
+            result.detection_confidences,
+            frame_diagonal=float(np.hypot(self.orig_w, self.orig_h)),
+            implausible_jump_ratio=self.engine.config.max_expected_jump_ratio
+        )
+        result.detection_rate = result.tracking_quality['detection_rate']
+        result.tracking_quality_grade = quality_grade_label(
+            result.tracking_quality['quality_grade']
+        )
 
 def apply_scale_to_result(result: BaseAnalysisResult, scale_factor: float) -> None:
     """
@@ -210,11 +201,11 @@ def apply_scale_to_result(result: BaseAnalysisResult, scale_factor: float) -> No
     if scale_factor <= 0:
         return
     
-    try:
-        result.scale_factor = scale_factor
-        for category in result.distance_in_roi:
-            result.distance_in_roi[category] *= scale_factor
-        result.total_distance *= scale_factor
-        logger.info(f"Distances converted to {result.distance_unit} using scale factor {scale_factor:.4f}")
-    except Exception as e:
-        logger.error(f"Error applying scale factor: {e}")
+    result.scale_factor = scale_factor
+    for category in result.distance_in_roi:
+        result.distance_in_roi[category] *= scale_factor
+    result.total_distance *= scale_factor
+    logger.info(
+        f"Distances converted to {result.distance_unit} "
+        f"using scale factor {scale_factor:.4f}"
+    )

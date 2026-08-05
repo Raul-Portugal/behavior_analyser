@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple, Type
 import logging
+import csv
 
 # Thread-safe plotting imports
 from matplotlib.figure import Figure
@@ -14,6 +15,12 @@ from matplotlib.patches import Patch
 import numpy as np
 
 from mazes.base_maze import BaseAnalysisResult, Maze
+from core.zone_events import (
+    debounce_zone_labels,
+    dwell_frames,
+    extract_center_mediated_entries,
+    overlapping_zones_to_candidates,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -59,6 +66,7 @@ def _generate_sequence_plot(result: 'YMazeAnalysisResult', output_path: Path):
         fig.savefig(output_path, dpi=150)
     except Exception as e:
         logger.error(f"Failed to generate sequence plot: {e}")
+        raise
 
 def _generate_transition_matrix(result: 'YMazeAnalysisResult', output_path: Path):
     """Generates a heatmap of the arm-to-arm transition counts."""
@@ -109,6 +117,7 @@ def _generate_transition_matrix(result: 'YMazeAnalysisResult', output_path: Path
         fig.savefig(output_path, dpi=150)
     except Exception as e:
         logger.error(f"Failed to generate transition matrix: {e}")
+        raise
 
 # --- CLASS IMPLEMENTATIONS ---
 
@@ -183,43 +192,78 @@ class YMazeAnalysisResult(BaseAnalysisResult):
 class YMaze(Maze):
     name = "Y-Maze"
 
+    def __init__(self):
+        self.min_dwell_seconds = 0.10
+        self.count_initial_arm = True
+
     def get_roi_definitions(self) -> List[Tuple[str, str]]:
         return [('arm_a', "Arm A"), ('arm_b', "Arm B"), ('arm_c', "Arm C"), ('center', "Center")]
 
     def get_result_class(self) -> Type[BaseAnalysisResult]:
         return YMazeAnalysisResult
 
+    def resolve_tracking_labels(self, result: BaseAnalysisResult) -> None:
+        candidates = overlapping_zones_to_candidates(result.overlapping_zones)
+        resolved = debounce_zone_labels(
+            candidates,
+            dwell_frames(self.min_dwell_seconds, result.fps)
+        )
+        result.roi_labels = resolved
+        result.visual_labels = list(resolved)
+
     def calculate_metrics(self, result: BaseAnalysisResult) -> None:
         if not isinstance(result, YMazeAnalysisResult):
             raise TypeError("YMaze logic requires a YMazeAnalysisResult instance.")
 
-        # --- HYSTERESIS LOGIC FOR VISUAL TIMELAPSE AND PLOTTING ---
-        definitive_zone = 'outside'
-        result.visual_labels = []
+        arm_labels = {'arm_a', 'arm_b', 'arm_c'}
+        result.arm_entries = extract_center_mediated_entries(
+            result.roi_labels,
+            result.timestamps,
+            arm_labels=arm_labels,
+            count_initial_arm=self.count_initial_arm
+        )
+        sequence = [
+            arm.split('_')[-1].upper()
+            for arm, _ in result.arm_entries
+        ]
+        result.arm_sequence = "".join(sequence)
+        result.total_arm_entries = len(sequence)
 
-        for i, zones in enumerate(result.overlapping_zones):
-            # Only change state if cleanly inside a single zone (excluding 'outside')
-            if len(zones) == 1 and zones[0] != 'outside':
-                definitive_zone = zones[0]
-            
-            # If in an overlap (len(zones) > 1), definitive_zone retains its previous state automatically!
-            result.visual_labels.append(definitive_zone)
-        
-        # --- EXISTING STRICT SEQUENCE TRACKER LOGIC ---
-        tracker = _YMazeSequenceTracker()
-        for i, timestamp in enumerate(result.timestamps):
-            zones = result.overlapping_zones[i]
-            tracker.update(zones, timestamp)
+        result.possible_alternations = max(0, len(sequence) - 2)
+        result.correct_alternations = sum(
+            len(set(sequence[index:index + 3])) == 3
+            for index in range(result.possible_alternations)
+        )
+        result.alternation_score = (
+            result.correct_alternations / result.possible_alternations * 100
+            if result.possible_alternations else 0.0
+        )
 
-        result.arm_sequence = tracker.get_sequence_string()
-        result.arm_entries = list(zip(tracker.full_sequence, tracker.entry_timestamps))
-        result.total_arm_entries = len(tracker.sequence)
+        total_transitions = max(0, len(sequence) - 1)
+        result.same_arm_return_count = sum(
+            sequence[index] == sequence[index + 1]
+            for index in range(total_transitions)
+        )
+        result.same_arm_returns = (
+            result.same_arm_return_count / total_transitions * 100
+            if total_transitions else 0.0
+        )
 
-        alt_pct, alt_correct, alt_total = tracker.calculate_alternation()
-        result.alternation_score, result.correct_alternations, result.possible_alternations = alt_pct, alt_correct, alt_total
+    def get_algorithm_parameters(self) -> dict:
+        return {
+            'min_dwell_seconds': self.min_dwell_seconds,
+            'count_initial_arm': self.count_initial_arm
+        }
 
-        sar_pct, sar_count = tracker.calculate_same_arm_returns()
-        result.same_arm_returns, result.same_arm_return_count = sar_pct, sar_count
+    def configure_algorithm_parameters(self, parameters: dict) -> None:
+        if not parameters:
+            return
+        self.min_dwell_seconds = float(
+            parameters.get('min_dwell_seconds', self.min_dwell_seconds)
+        )
+        self.count_initial_arm = bool(
+            parameters.get('count_initial_arm', self.count_initial_arm)
+        )
 
     def get_batch_summary_headers(self) -> List[str]:
         return [
@@ -243,3 +287,18 @@ class YMaze(Maze):
         if not isinstance(result, YMazeAnalysisResult): return
         _generate_sequence_plot(result, output_dir / f"{base_name}_sequence_plot.png")
         _generate_transition_matrix(result, output_dir / f"{base_name}_transition_matrix.png")
+
+    def export_specific_data(
+        self,
+        result: BaseAnalysisResult,
+        output_dir: Path,
+        base_name: str
+    ) -> None:
+        if not isinstance(result, YMazeAnalysisResult):
+            return
+        output_path = output_dir / f"{base_name}_arm_entries.csv"
+        with open(output_path, 'w', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            writer.writerow(['entry_number', 'arm', 'timestamp_s'])
+            for index, (arm, timestamp) in enumerate(result.arm_entries, 1):
+                writer.writerow([index, arm, f"{timestamp:.3f}"])

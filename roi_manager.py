@@ -162,11 +162,34 @@ class ROIManager:
     Enhanced with validation and error handling.
     """
 
-    def __init__(self):
+    def __init__(self, source_dimensions: Optional[Tuple[int, int]] = None):
         """Initialize an empty ROI manager."""
         self.rois: Dict[str, List[ROI]] = {}
         self._reference_length_pixels = 0.0
         self._reference_name = "N/A"
+        self._source_dimensions: Optional[Tuple[int, int]] = None
+        if source_dimensions is not None:
+            self.set_source_dimensions(source_dimensions)
+
+    def set_source_dimensions(self, dimensions: Tuple[int, int]) -> None:
+        """Record the source video dimensions for which ROI pixels are defined."""
+        if not isinstance(dimensions, (tuple, list)) or len(dimensions) != 2:
+            raise ValueError("Source dimensions must be a (width, height) pair")
+        width, height = int(dimensions[0]), int(dimensions[1])
+        if width <= 0 or height <= 0:
+            raise ValueError("Source dimensions must be positive")
+        self._source_dimensions = (width, height)
+
+    @property
+    def source_dimensions(self) -> Optional[Tuple[int, int]]:
+        """Return the source video dimensions associated with these ROIs."""
+        return self._source_dimensions
+
+    def is_compatible_with(self, dimensions: Tuple[int, int]) -> bool:
+        """Return whether raw ROI pixels can be used on the supplied dimensions."""
+        if self._source_dimensions is None:
+            return False
+        return self._source_dimensions == (int(dimensions[0]), int(dimensions[1]))
 
     def add_roi(self, category: str, points: np.ndarray) -> None:
         """
@@ -227,7 +250,10 @@ class ROIManager:
                 cat for cat, roi_list in self.rois.items()
                 for roi in roi_list if roi.contains_point(point)
             ]
-            return zones if zones else ['outside']
+            # Multiple polygons may belong to the same category. Preserve
+            # category insertion order without returning duplicate zone names.
+            unique_zones = list(dict.fromkeys(zones))
+            return unique_zones if unique_zones else ['outside']
         except Exception as e:
             logger.warning(f"Error determining overlapping zones for point {point}: {e}")
             return ['outside']
@@ -380,7 +406,8 @@ class ROIManager:
             'total_rois': sum(len(roi_list) for roi_list in self.rois.values()),
             'categories': {},
             'reference_length': self._reference_length_pixels,
-            'reference_name': self._reference_name
+            'reference_name': self._reference_name,
+            'source_dimensions': self._source_dimensions
         }
         
         for category, roi_list in self.rois.items():
@@ -395,9 +422,11 @@ class ROIManager:
     def to_dict(self) -> Dict:
         """Serializes the entire ROIManager to a dictionary."""
         return {
+            'schema_version': 2,
             'rois': {cat: [r.to_dict() for r in r_list] for cat, r_list in self.rois.items()},
             '_reference_length_pixels': self._reference_length_pixels,
-            '_reference_name': self._reference_name
+            '_reference_name': self._reference_name,
+            'source_dimensions': list(self._source_dimensions) if self._source_dimensions else None
         }
 
     @classmethod
@@ -417,7 +446,8 @@ class ROIManager:
         if not isinstance(data, dict):
             raise ValueError("Data must be a dictionary")
         
-        manager = cls()
+        raw_dimensions = data.get('source_dimensions')
+        manager = cls(tuple(raw_dimensions) if raw_dimensions else None)
         
         try:
             for category, roi_list_data in data.get('rois', {}).items():

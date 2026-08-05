@@ -44,6 +44,7 @@ class PreflightChecker:
         
         # Settings validation
         self._validate_settings(settings)
+        self._validate_roi_geometry(video_paths, settings)
         
         # Output directory validation
         self._validate_output_dir(output_dir)
@@ -172,6 +173,12 @@ class PreflightChecker:
                             f"Invalid time range: end ({settings.end_time}s) "
                             f"<= start ({settings.start_time}s)"
                         )
+            if hasattr(settings, "per_roi_times"):
+                for name, interval in settings.per_roi_times.items():
+                    if len(interval) != 2 or interval[1] <= interval[0]:
+                        self.issues.append(
+                            f"Invalid per-ROI time range for {name}"
+                        )
             
             # Check ROI manager
             if hasattr(settings, 'roi_manager'):
@@ -185,9 +192,78 @@ class PreflightChecker:
                             self.issues.append(
                                 f"ROI '{category}' has fewer than 3 points"
                             )
+
+                source_dims = settings.roi_manager.source_dimensions
+                if source_dims is None and settings.roi_manager.rois:
+                    self.warnings.append(
+                        "ROI configuration has no source-video dimensions. "
+                        "It is a legacy template and should be redrawn before reuse."
+                    )
             
         except Exception as e:
             logger.warning(f"Error validating settings: {e}")
+
+    def _validate_roi_geometry(self, video_paths: List[Path], settings: any):
+        """Ensure pixel-based ROIs are only applied to compatible videos."""
+        if not hasattr(settings, 'roi_manager'):
+            return
+        has_pixel_geometry = (
+            bool(settings.roi_manager.rois)
+            or settings.roi_manager.reference_length_pixels > 0
+        )
+        if not has_pixel_geometry:
+            return
+
+        source_dims = settings.roi_manager.source_dimensions
+
+        for video_path in video_paths:
+            if not video_path.exists():
+                continue
+            cap = cv2.VideoCapture(str(video_path))
+            try:
+                if not cap.isOpened():
+                    continue
+                dimensions = (
+                    int(cap.get(cv2.CAP_PROP_FRAME_WIDTH)),
+                    int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
+                )
+                if source_dims is not None and dimensions != source_dims:
+                    self.issues.append(
+                        f"ROI geometry is {source_dims[0]}x{source_dims[1]}, but "
+                        f"{video_path.name} is {dimensions[0]}x{dimensions[1]}. "
+                        "Redraw ROIs for this video or use matching dimensions."
+                    )
+                fps = float(cap.get(cv2.CAP_PROP_FPS))
+                frame_count = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+                duration = (
+                    frame_count / fps
+                    if fps > 0 and frame_count > 0 else None
+                )
+                if duration is not None:
+                    if settings.start_time >= duration:
+                        self.issues.append(
+                            f"{video_path.name}: analysis start "
+                            f"({settings.start_time:.2f}s) is outside the "
+                            f"{duration:.2f}s video"
+                        )
+                    if (
+                        settings.end_time is not None
+                        and settings.end_time > duration + (1.0 / fps)
+                    ):
+                        self.issues.append(
+                            f"{video_path.name}: analysis end "
+                            f"({settings.end_time:.2f}s) exceeds the "
+                            f"{duration:.2f}s video"
+                        )
+                    for name, interval in settings.per_roi_times.items():
+                        if interval[1] > duration + (1.0 / fps):
+                            self.issues.append(
+                                f"{video_path.name}: {name} end "
+                                f"({interval[1]:.2f}s) exceeds the "
+                                f"{duration:.2f}s video"
+                            )
+            finally:
+                cap.release()
     
     def _validate_output_dir(self, output_dir: Path):
         """Validate output directory."""

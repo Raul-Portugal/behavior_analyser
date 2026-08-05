@@ -3,6 +3,7 @@ gui/main_window.py
 Main GUI Window.
 Updated to use unified Core modules (VideoHandler, Models).
 """
+import copy
 import logging
 import cv2
 from pathlib import Path
@@ -18,20 +19,20 @@ from PyQt6.QtGui import QAction, QImage, QPixmap
 # --- CORE IMPORTS ---
 from core.models import AppConfig, BatchSettings
 from core.video import VideoHandler, ReferenceFrameGenerator
+from core.version import APP_NAME, APP_VERSION
 
 # --- DIALOGS ---
 from gui.roi_selector import RoiSelectorDialog, ReferenceLineDialog
 from gui.settings_dialog import SettingsDialog
 from gui.tuner_dialog import TunerDialog
 from gui.tst_tuner import TstTunerDialog
-from gui.worker import AnalysisWorker
+from gui.worker import AnalysisWorker, BatchRunOutcome
 from gui.roi_preview import ROIPreviewDialog
 from gui.freestyle_config_dialog import FreestyleConfigDialog
 
 # --- UTILS ---
-from output import DataExporter
 from roi_manager import ROIManager
-from mazes import AVAILABLE_MAZES
+from mazes import AVAILABLE_MAZES, create_maze
 from mazes.base_maze import BaseAnalysisResult, Maze
 from mazes.tst import TST
 from preflight_checker import PreflightChecker, ValidationDialog
@@ -60,7 +61,7 @@ class MainWindow(QMainWindow):
     
     def __init__(self):
         super().__init__()
-        self.setWindowTitle("Behavioral Maze Analyzer v2.5 - Core Architecture")
+        self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setGeometry(100, 100, 1000, 750)
         
         # State variables
@@ -139,13 +140,13 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.subtask_label)
         
         # Log output
-        log_handler = QTextEditLogger(self)
-        log_handler.setFormatter(
+        self.log_handler = QTextEditLogger(self)
+        self.log_handler.setFormatter(
             logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
         )
-        logging.getLogger().addHandler(log_handler)
+        logging.getLogger().addHandler(self.log_handler)
         logging.getLogger().setLevel(logging.INFO)
-        main_layout.addWidget(log_handler.widget)
+        main_layout.addWidget(self.log_handler.widget)
 
     def create_menu_bar(self):
         """Create the menu bar."""
@@ -180,6 +181,7 @@ class MainWindow(QMainWindow):
             "Video Files (*.mp4 *.avi *.mov *.mkv);;All Files (*.*)"
         )
         if files:
+            output_was_unset = self.output_dir is None
             added_count = 0
             for file in files:
                 path = Path(file)
@@ -190,6 +192,8 @@ class MainWindow(QMainWindow):
             
             if self.output_dir is None and self.video_paths:
                 self.output_dir = self.video_paths[0].parent
+            if output_was_unset and self.output_dir is not None:
+                self.check_for_resumable_analyses()
             
             logger.info(f"Added {added_count} video(s)")
             self.update_button_states()
@@ -214,6 +218,7 @@ class MainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
+            output_was_unset = self.output_dir is None
             added_count = 0
             for video in sorted(found_videos):
                 if video not in self.video_paths:
@@ -223,6 +228,8 @@ class MainWindow(QMainWindow):
             
             if self.output_dir is None and self.video_paths:
                 self.output_dir = folder_path
+            if output_was_unset and self.output_dir is not None:
+                self.check_for_resumable_analyses()
             
             logger.info(f"Added {added_count} video(s) from folder: {folder_path.name}")
             self.update_button_states()
@@ -323,12 +330,17 @@ class MainWindow(QMainWindow):
 
     def _infer_maze_from_settings(self, settings):
         if not settings or not settings.roi_manager: return
+        if settings.paradigm_id in AVAILABLE_MAZES:
+            self.maze = create_maze(settings.paradigm_id)
+            self.maze.configure_algorithm_parameters(settings.algorithm_parameters)
+            return
+
         keys = set(settings.roi_manager.rois.keys())
-        if 'arm_a' in keys and 'arm_b' in keys: self.maze = AVAILABLE_MAZES["Y-Maze"]
-        elif 'open_arm_1' in keys and 'closed_arm_1' in keys: self.maze = AVAILABLE_MAZES["Elevated Plus Maze"]
-        elif any(k.startswith('mouse_') for k in keys): self.maze = AVAILABLE_MAZES["Tail Suspension Test"]
+        if 'arm_a' in keys and 'arm_b' in keys: self.maze = create_maze("Y-Maze")
+        elif 'open_arm_1' in keys and 'closed_arm_1' in keys: self.maze = create_maze("Elevated Plus Maze")
+        elif any(k.startswith('mouse_') for k in keys): self.maze = create_maze("Tail Suspension Test")
         else:
-            self.maze = AVAILABLE_MAZES["Freestyle / Open Field"]
+            self.maze = create_maze("Freestyle / Open Field")
             zones = [(k, k.replace('_', ' ').title()) for k in keys if k != 'outside']
             self.maze.configure_zones(zones)
 
@@ -336,6 +348,7 @@ class MainWindow(QMainWindow):
         folder = QFileDialog.getExistingDirectory(self, "Select Output Directory", str(self.output_dir) if self.output_dir else "")
         if folder:
             self.output_dir = Path(folder)
+            self.check_for_resumable_analyses()
             logger.info(f"Output directory set to: {self.output_dir}")
             QMessageBox.information(self, "Output Directory Set", f"Results will be saved to:\n{self.output_dir}")
 
@@ -351,7 +364,11 @@ class MainWindow(QMainWindow):
                 if reply == QMessageBox.StandardButton.Yes:
                     msg = "Resumable analyses:\n\n" + "\n".join(f"• {cp.stem.replace('_checkpoint', '')}" for cp in checkpoints)
                     QMessageBox.information(self, 'Resumable Analyses', msg)
-        except: pass
+        except Exception:
+            logger.warning(
+                "Could not inspect resumable analyses",
+                exc_info=True,
+            )
 
     def start_analysis_workflow(self):
         if not self.video_paths:
@@ -369,7 +386,7 @@ class MainWindow(QMainWindow):
         maze_choice, ok = QInputDialog.getItem(self, "Select Maze Type", "Which maze are you analyzing?", maze_names, default_idx, False)
         if not ok or not maze_choice: return
         
-        self.maze = AVAILABLE_MAZES[maze_choice]
+        self.maze = create_maze(maze_choice)
         logger.info(f"Selected maze type: {self.maze.name}")
         ref_video_path = self.video_paths[0]
 
@@ -397,6 +414,10 @@ class MainWindow(QMainWindow):
 
             if use_loaded_config:
                 base_settings = self.current_settings
+                if base_settings.algorithm_parameters:
+                    self.maze.configure_algorithm_parameters(
+                        base_settings.algorithm_parameters
+                    )
                 # Re-configure maze state from settings if needed
                 if maze_choice == "Freestyle / Open Field":
                     zones = [(k, k.replace('_', ' ').title()) for k in base_settings.roi_manager.rois.keys() if k != 'outside']
@@ -449,13 +470,19 @@ class MainWindow(QMainWindow):
                             if reply == QMessageBox.StandardButton.Yes:
                                 # Core: Use VideoHandler
                                 handler = VideoHandler(ref_video_path)
+                                roi_manager.set_source_dimensions(
+                                    handler.dimensions
+                                )
                                 # For line dialog, we need a pixmap. Get a frame from handler.
                                 frame = handler.get_frame(0)
                                 if frame is not None:
                                     rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
                                     h, w, c = rgb.shape
                                     q_img = QImage(rgb.data, w, h, c*w, QImage.Format.Format_RGB888)
-                                    ref_dialog = ReferenceLineDialog(QPixmap.fromImage(q_img), self)
+                                    ref_dialog = ReferenceLineDialog(
+                                        QPixmap.fromImage(q_img),
+                                        parent=self
+                                    )
                                     if ref_dialog.exec() and ref_dialog.get_line_length() > 0:
                                         roi_manager.set_reference_length(ref_dialog.get_line_length(), "User Reference")
                     
@@ -506,27 +533,11 @@ class MainWindow(QMainWindow):
                 return
                 
             base_settings = settings_dialog.get_settings()
+            base_settings.paradigm_id = self.maze.name
+            base_settings.algorithm_parameters = self.maze.get_algorithm_parameters()
             self.current_settings = base_settings
             self.update_button_states()
             
-            # --- PRE-FLIGHT ---
-            self.update_progress_detailed(55, "Pre-flight checks", "Validating...")
-            QApplication.processEvents()
-            checker = PreflightChecker()
-            issues, warnings = checker.validate_all(self.video_paths, base_settings, self.output_dir)
-            
-            if issues:
-                title, msg = ValidationDialog.format_for_messagebox(issues, warnings)
-                QMessageBox.critical(self, title, msg)
-                self.update_progress_detailed(0, "Ready", "")
-                return
-            
-            if warnings:
-                title, msg = ValidationDialog.format_for_messagebox(issues, warnings)
-                if QMessageBox.question(self, title, msg, QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No) != QMessageBox.StandardButton.Yes:
-                    self.update_progress_detailed(0, "Ready", "")
-                    return
-
             # --- EXECUTION ---
             self.update_progress_detailed(0, "Configuration complete", "")
             if len(self.video_paths) > 1:
@@ -586,8 +597,17 @@ class MainWindow(QMainWindow):
                         roi_dialog = RoiSelectorDialog(str(video_path), self.maze, self)
                         if roi_dialog.exec():
                             new_roi_manager = roi_dialog.get_roi_manager()
-                            current_settings = BatchSettings(new_roi_manager, current_settings.detection_config, current_settings.scale_factor, 
-                                                           current_settings.start_time, current_settings.end_time, current_settings.create_timelapse)
+                            current_settings = BatchSettings(
+                                new_roi_manager,
+                                current_settings.detection_config,
+                                current_settings.scale_factor,
+                                current_settings.start_time,
+                                current_settings.end_time,
+                                current_settings.create_timelapse,
+                                current_settings.per_roi_times,
+                                current_settings.paradigm_id,
+                                current_settings.algorithm_parameters
+                            )
             except Exception as e:
                 logger.error(f"Could not verify {video_path.name}: {e}")
                 continue
@@ -606,6 +626,28 @@ class MainWindow(QMainWindow):
         return analysis_plan
 
     def run_worker(self, analysis_plan: Dict[Path, BatchSettings]):
+        first_settings = next(iter(analysis_plan.values()), None)
+        try:
+            if first_settings and first_settings.algorithm_parameters:
+                self.maze.configure_algorithm_parameters(
+                    first_settings.algorithm_parameters
+                )
+        except (TypeError, ValueError) as exc:
+            QMessageBox.critical(
+                self,
+                "Incompatible Configuration",
+                str(exc),
+            )
+            return
+        if not self._validate_analysis_plan(analysis_plan):
+            return
+        effective_parameters = self.maze.get_algorithm_parameters()
+        for settings in analysis_plan.values():
+            settings.paradigm_id = self.maze.name
+            settings.algorithm_parameters = copy.deepcopy(
+                effective_parameters
+            )
+
         optimal_workers = ResourceManager.get_optimal_workers()
         logger.info(f"System optimal parallel workers: {optimal_workers}")
         
@@ -613,7 +655,20 @@ class MainWindow(QMainWindow):
         self.progress_bar.setValue(0)
         
         self.analysis_thread = QThread()
-        self.analysis_worker = AnalysisWorker(analysis_plan, self.output_dir, self.maze)
+        try:
+            self.analysis_worker = AnalysisWorker(
+                analysis_plan, self.output_dir, self.maze
+            )
+        except Exception as exc:
+            self.analysis_thread = None
+            self.analysis_worker = None
+            self.set_ui_state(is_running=False)
+            QMessageBox.critical(
+                self,
+                "Cannot Start Analysis",
+                f"Could not create the run output folder:\n{exc}",
+            )
+            return
         self.analysis_worker.moveToThread(self.analysis_thread)
         
         self.analysis_thread.started.connect(self.analysis_worker.run)
@@ -623,6 +678,103 @@ class MainWindow(QMainWindow):
         self.analysis_worker.log.connect(logging.info)
         
         self.analysis_thread.start()
+
+    def _validate_analysis_plan(
+        self,
+        analysis_plan: Dict[Path, BatchSettings]
+    ) -> bool:
+        """Validate every per-video configuration, including loaded plans."""
+        all_issues = []
+        all_warnings = []
+        expected_parameters = None
+
+        for video_path, settings in analysis_plan.items():
+            checker = PreflightChecker()
+            issues, warnings = checker.validate_all(
+                [video_path], settings, self.output_dir
+            )
+            all_issues.extend(
+                f"{video_path.name}: {issue}" for issue in issues
+            )
+            all_warnings.extend(
+                f"{video_path.name}: {warning}" for warning in warnings
+            )
+
+            required_categories = [
+                internal_name
+                for internal_name, _ in self.maze.get_roi_definitions()
+            ]
+            if required_categories:
+                _, roi_issues = settings.roi_manager.validate_rois(
+                    required_categories
+                )
+                all_issues.extend(
+                    f"{video_path.name}: {issue}" for issue in roi_issues
+                )
+            if isinstance(self.maze, TST):
+                configured_categories = set(
+                    settings.roi_manager.rois
+                )
+                expected_categories = set(required_categories)
+                unexpected = configured_categories - expected_categories
+                if unexpected:
+                    all_issues.append(
+                        f"{video_path.name}: unexpected TST ROI categories: "
+                        f"{', '.join(sorted(unexpected))}"
+                    )
+                for category in expected_categories:
+                    roi_count = len(
+                        settings.roi_manager.rois.get(category, [])
+                    )
+                    if roi_count != 1:
+                        all_issues.append(
+                            f"{video_path.name}: {category} must contain "
+                            f"exactly one ROI, found {roi_count}"
+                        )
+                interval_keys = set(settings.per_roi_times)
+                invalid_interval_keys = interval_keys - expected_categories
+                if invalid_interval_keys:
+                    all_issues.append(
+                        f"{video_path.name}: time ranges reference unknown "
+                        "mice: "
+                        f"{', '.join(sorted(invalid_interval_keys))}"
+                    )
+
+            if settings.paradigm_id and settings.paradigm_id != self.maze.name:
+                all_issues.append(
+                    f"{video_path.name}: configuration is for "
+                    f"'{settings.paradigm_id}', not '{self.maze.name}'"
+                )
+
+            if expected_parameters is None:
+                expected_parameters = settings.algorithm_parameters
+            elif settings.algorithm_parameters != expected_parameters:
+                all_issues.append(
+                    f"{video_path.name}: paradigm parameters differ from the "
+                    "rest of the batch; mixed-parameter batches are not yet supported"
+                )
+
+        if all_issues:
+            title, message = ValidationDialog.format_for_messagebox(
+                all_issues, all_warnings
+            )
+            QMessageBox.critical(self, title, message)
+            return False
+
+        if all_warnings:
+            title, message = ValidationDialog.format_for_messagebox(
+                [], all_warnings
+            )
+            reply = QMessageBox.question(
+                self,
+                title,
+                message,
+                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+            )
+            if reply != QMessageBox.StandardButton.Yes:
+                return False
+
+        return True
 
     def cancel_analysis(self):
         if self.analysis_worker:
@@ -639,18 +791,66 @@ class MainWindow(QMainWindow):
         self.status_label.setText(main_text)
         self.subtask_label.setText(sub_text)
 
-    def analysis_finished(self, all_results):
+    def analysis_finished(self, outcome: BatchRunOutcome):
         logger.info("Analysis run finished.")
-        if len(all_results) > 1:
-            try:
-                DataExporter.export_batch_summary_csv(all_results, self.output_dir, self.maze)
-                logger.info("Batch summary CSV created.")
-            except Exception as e: logger.error(f"Batch summary error: {e}")
+        all_results = outcome.results
+        run_output_dir = outcome.output_dir or self.output_dir
         
-        QMessageBox.information(self, "Complete", f"Analysis finished!\nProcessed: {len(all_results)} video(s)\nSaved to: {self.output_dir}")
+        if outcome.cancelled:
+            QMessageBox.warning(
+                self,
+                "Analysis Cancelled",
+                f"Analysis was cancelled.\n"
+                f"Completed: {len(all_results)} video(s)\n"
+                "The interrupted video can be resumed from its checkpoint."
+            )
+        elif outcome.failures:
+            failure_lines = "\n".join(
+                f"• {path.name}: {message}"
+                for path, message in outcome.failures[:5]
+            )
+            QMessageBox.warning(
+                self,
+                "Analysis Completed with Errors",
+                f"Completed: {len(all_results)} video(s)\n"
+                f"Failed: {len(outcome.failures)} video(s)\n\n"
+                f"{failure_lines}\n\nSaved to: {run_output_dir}"
+            )
+        elif outcome.quality_warnings:
+            warning_lines = "\n".join(
+                f"• {path.name}: {message}"
+                for path, message in outcome.quality_warnings[:5]
+            )
+            QMessageBox.warning(
+                self,
+                "Analysis Requires Quality Review",
+                f"Completed: {len(all_results)} video(s)\n\n"
+                f"{warning_lines}\n\n"
+                "Review the per-frame evidence and, when generated, the "
+                "validation video before "
+                f"interpreting these results.\n\nSaved to: {run_output_dir}"
+            )
+        else:
+            QMessageBox.information(
+                self,
+                "Complete",
+                f"Analysis finished!\nProcessed: {len(all_results)} video(s)\n"
+                f"Saved to: {run_output_dir}"
+            )
         self.set_ui_state(is_running=False)
-        self.progress_bar.setValue(100)
-        self.update_progress_detailed(100, "Finished", "")
+        if outcome.cancelled:
+            self.update_progress_detailed(
+                self.progress_bar.value(), "Cancelled", "Checkpoint saved"
+            )
+        else:
+            self.progress_bar.setValue(100)
+            if outcome.failures:
+                status = "Finished with errors"
+            elif outcome.quality_warnings:
+                status = "Finished — quality review required"
+            else:
+                status = "Finished"
+            self.update_progress_detailed(100, status, "")
         
         if self.analysis_thread:
             self.analysis_thread.quit()
@@ -672,6 +872,18 @@ class MainWindow(QMainWindow):
             if reply == QMessageBox.StandardButton.Yes:
                 self.cancel_analysis()
                 if self.analysis_thread: self.analysis_thread.quit(); self.analysis_thread.wait()
+                self._detach_log_handler()
                 event.accept()
             else: event.ignore()
-        else: event.accept()
+        else:
+            self._detach_log_handler()
+            event.accept()
+
+    def _detach_log_handler(self):
+        """Remove the Qt-backed handler before its widget is destroyed."""
+        handler = getattr(self, "log_handler", None)
+        if handler is None:
+            return
+        logging.getLogger().removeHandler(handler)
+        handler.close()
+        self.log_handler = None

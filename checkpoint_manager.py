@@ -3,7 +3,9 @@ Checkpoint management system for resumable analysis.
 Allows recovery from crashes or cancellations.
 """
 import logging
-import pickle
+import hashlib
+import json
+import os
 import time
 from pathlib import Path
 from typing import Optional, Dict, Any
@@ -19,14 +21,15 @@ class AnalysisCheckpoint:
     last_frame_processed: int
     partial_result: Dict[str, Any]
     settings_hash: str
+    video_fingerprint: str
     timestamp: float
-    version: int = 1
+    version: int = 3
 
 
 class CheckpointManager:
     """Manages analysis checkpoints for resume functionality."""
     
-    CHECKPOINT_VERSION = 1
+    CHECKPOINT_VERSION = 3
     CHECKPOINT_INTERVAL = 300  # Save every 300 frames
     
     def __init__(self, output_dir: Path):
@@ -42,13 +45,42 @@ class CheckpointManager:
     
     def _get_checkpoint_path(self, video_path: Path) -> Path:
         """Get checkpoint file path for a video."""
-        return self.checkpoints_dir / f"{video_path.stem}_checkpoint.pkl"
+        path_id = hashlib.sha256(
+            str(video_path.resolve()).encode('utf-8')
+        ).hexdigest()[:12]
+        return self.checkpoints_dir / f"{video_path.stem}_{path_id}_checkpoint.json"
     
     def _get_settings_hash(self, settings: Any) -> str:
         """Get hash of settings for validation."""
-        import hashlib
-        settings_str = str(settings.__dict__)
-        return hashlib.md5(settings_str.encode()).hexdigest()[:16]
+        if hasattr(settings, 'to_dict'):
+            settings_data = settings.to_dict()
+        else:
+            settings_data = settings.__dict__
+        settings_json = json.dumps(
+            settings_data,
+            sort_keys=True,
+            separators=(',', ':'),
+            default=self._json_default
+        )
+        return hashlib.sha256(settings_json.encode('utf-8')).hexdigest()[:24]
+
+    @staticmethod
+    def _get_video_fingerprint(video_path: Path) -> str:
+        stat = video_path.stat()
+        payload = (
+            f"{video_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
+        )
+        return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:24]
+
+    @staticmethod
+    def _json_default(value):
+        if isinstance(value, Path):
+            return str(value)
+        if hasattr(value, 'tolist'):
+            return value.tolist()
+        if hasattr(value, 'item'):
+            return value.item()
+        raise TypeError(f"Object of type {type(value).__name__} is not JSON serializable")
     
     def save_checkpoint(self, video_path: Path, frame_idx: int,
                        partial_result: Dict[str, Any], settings: Any):
@@ -69,12 +101,24 @@ class CheckpointManager:
                 last_frame_processed=frame_idx,
                 partial_result=partial_result,
                 settings_hash=self._get_settings_hash(settings),
+                video_fingerprint=self._get_video_fingerprint(video_path),
                 timestamp=time.time(),
                 version=self.CHECKPOINT_VERSION
             )
-            
-            with open(checkpoint_path, 'wb') as f:
-                pickle.dump(asdict(checkpoint), f)
+
+            checkpoint_data = asdict(checkpoint)
+            checkpoint_data['video_path'] = str(checkpoint.video_path)
+            temp_path = checkpoint_path.with_suffix('.tmp')
+            with open(temp_path, 'w', encoding='utf-8') as f:
+                json.dump(
+                    checkpoint_data,
+                    f,
+                    separators=(',', ':'),
+                    default=self._json_default
+                )
+                f.flush()
+                os.fsync(f.fileno())
+            temp_path.replace(checkpoint_path)
             
             logger.debug(f"Checkpoint saved at frame {frame_idx}")
             
@@ -98,8 +142,8 @@ class CheckpointManager:
             return None
         
         try:
-            with open(checkpoint_path, 'rb') as f:
-                checkpoint_dict = pickle.load(f)
+            with open(checkpoint_path, 'r', encoding='utf-8') as f:
+                checkpoint_dict = json.load(f)
             
             # Validate version
             if checkpoint_dict.get('version') != self.CHECKPOINT_VERSION:
@@ -111,6 +155,11 @@ class CheckpointManager:
             if checkpoint_dict.get('settings_hash') != current_hash:
                 logger.info("Settings changed, starting fresh")
                 return None
+
+            current_video_fingerprint = self._get_video_fingerprint(video_path)
+            if checkpoint_dict.get('video_fingerprint') != current_video_fingerprint:
+                logger.info("Video changed, starting fresh")
+                return None
             
             # Check if checkpoint is too old (> 7 days)
             age_days = (time.time() - checkpoint_dict.get('timestamp', 0)) / 86400
@@ -118,6 +167,7 @@ class CheckpointManager:
                 logger.info("Checkpoint too old, starting fresh")
                 return None
             
+            checkpoint_dict['video_path'] = Path(checkpoint_dict['video_path'])
             checkpoint = AnalysisCheckpoint(**checkpoint_dict)
             logger.info(f"✓ Found resumable checkpoint at frame {checkpoint.last_frame_processed}")
             return checkpoint
@@ -139,7 +189,7 @@ class CheckpointManager:
     def find_all_checkpoints(self) -> list[Path]:
         """Find all available checkpoints."""
         try:
-            return list(self.checkpoints_dir.glob("*_checkpoint.pkl"))
+            return list(self.checkpoints_dir.glob("*_checkpoint.json"))
         except:
             return []
     

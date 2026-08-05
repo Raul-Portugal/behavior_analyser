@@ -28,10 +28,21 @@ A dialog will appear asking you to select the paradigm (e.g., "Y-Maze", "Elevate
 ### Step C: Tune Detection Parameters
 The Interactive Detection Tuner ensures the software cleanly separates the animal from the background.
 1. Use the **Frame Navigation** slider (or the `N` and `P` keys) to look at different parts of the video.
-2. Adjust the **Threshold** slider until the white mask in the "Threshold View" neatly covers the animal without picking up background noise (like reflections or shadows).
-3. Check the "Detection Quality" panel on the right. If it says "Excellent" or "Fair", you are good to go.
-4. *(Optional)* Click **Quick Scan Test** to automatically test the settings across 50 random frames.
+2. Adjust the **Threshold**, minimum component area, and morphology controls
+   until the green selected component in the "Threshold View" covers the
+   animal without selecting reflections or shadows.
+3. Check the evidence-based confidence and quality panel. “Review” or “Poor”
+   means the validation output must be inspected and the settings may need
+   adjustment.
+4. *(Optional)* Click **Quick Scan Test** to test deterministic sequential
+   windows from the beginning, middle, and end of the video.
 5. Click **Accept Parameters**.
+
+For TST, the evidence tuner is different: select each mouse in turn and review
+the state overlay across the scan. Purple is coherent passive swing, red is
+static immobility, green is active escape, and orange/yellow is uncertain and
+excluded from scoring. The tuner reviews up to five minutes to remain
+responsive; the actual analysis uses the entire selected interval.
 
 ### Step D: Finalize Time & Settings
 The final review dialog allows you to:
@@ -46,11 +57,32 @@ The final review dialog allows you to:
 - Click **Yes** to begin. The progress bar will show the estimated time remaining.
 - *Note: If you need to stop, click **Cancel Analysis**. The software will save a checkpoint, and you can resume from the exact same frame later!*
 
-## 5. Review Your Results
-Once complete, navigate to your output folder. For every video, you will find:
-1. `[video_name]_tracking_data.csv`: Frame-by-frame X/Y coordinates and current zone.
-2. `[video_name]_analysis_summary.csv`: Total distance, time in zones, alternation scores, etc.
-3. `[video_name]_heatmap.png`: A visual density map of where the animal spent the most time.
-4. `[video_name]_timelapse.mp4` (if enabled): A sped-up video showing the tracking dot, drawn ROIs, and text indicating the recognized zone.
+When reusing a saved configuration, the target videos must have the same frame
+dimensions as the video used to draw the ROIs. The preflight check will stop
+the run if the geometry is incompatible.
 
-You will also find a `_BATCH_SUMMARY.csv` containing the final aggregated statistics for all processed videos in one easy-to-copy spreadsheet.
+## 5. Review Your Results
+Once complete, open the new `analysis_run_...` folder inside your chosen
+output directory. It contains `batch_summary.csv`, a `manifest.json` run index,
+and one folder per video. Each video folder separates:
+
+1. `data/`: frame-level data, human-readable summary, complete JSON, and any
+   paradigm-specific event tables.
+2. `plots/`: heatmaps, trajectories, time series, and paradigm-specific plots.
+3. `media/`: optional annotated validation video; this folder is omitted when
+   validation media was not requested.
+
+The batch summary always includes the shared duration, total-distance/unit,
+excluded-jump, and tracking-quality columns before paradigm-specific metrics.
+Unsupported fields, such as centroid distance for TST, are left blank rather
+than reported as zero. See `OUTPUTS.md` for the full per-paradigm output
+matrix.
+
+In tracking CSVs, `zone=undetected` means no reliable position was available
+for that frame. These frames are excluded from zone occupancy, distance,
+transition, and immobility calculations. The same file includes `confidence`
+and `failure_reason` columns for quality review.
+
+Configurations saved by releases before 3.0 cannot be used for TST. Re-open
+the source video, review every mouse with the new temporal evidence tuner, and
+save a new configuration.

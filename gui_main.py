@@ -12,8 +12,24 @@ from PyQt6.QtWidgets import QApplication
 
 from gui.main_window import MainWindow
 
-if __name__ == '__main__':
-    app = QApplication(sys.argv)
+
+def main(arguments=None):
+    """Launch the GUI or perform a packaged dependency/startup check."""
+    arguments = list(sys.argv if arguments is None else arguments)
+    startup_check = "--startup-check" in arguments
+    qt_arguments = [
+        argument for argument in arguments
+        if argument != "--startup-check"
+    ]
+    app = QApplication(qt_arguments)
     main_win = MainWindow()
+    if startup_check:
+        main_win.close()
+        app.processEvents()
+        return 0
     main_win.show()
-    sys.exit(app.exec())
+    return app.exec()
+
+
+if __name__ == '__main__':
+    sys.exit(main())

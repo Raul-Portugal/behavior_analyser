@@ -20,4 +20,9 @@ Thumbs.db
 # PyInstaller folders
 build/
 dist/
-*.spec
+.build-venv/
+
+# Analysis caches, checkpoints, and generated results
+.checkpoints/
+.*_ref_v*.npz
+outputs/
