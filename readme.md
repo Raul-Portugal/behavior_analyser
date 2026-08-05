@@ -10,8 +10,8 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 > validation video and tracking coverage before interpreting results. Formal
 > agreement testing against manually annotated videos is still pending.
 >
-> **3.0 compatibility note:** TST configurations saved by earlier releases are
-> deliberately rejected. TST 3.0 uses a new temporal rigid-motion engine, so
+> **3.1 compatibility note:** TST configurations saved by earlier releases are
+> deliberately rejected. TST 3.1 uses a new temporal rigid-motion engine, so
 > each setup must be reviewed in the tuner and saved again.
 
 ## Key Features
@@ -65,8 +65,8 @@ If you want to modify the code, add new mazes, or run it on macOS/Linux:
 **1. Clone the repository:**
 
 ```bash
-git clone https://github.com/yourusername/behavior_analyzer.git
-cd behavior_analyzer
+git clone https://github.com/Raul-Portugal/behavior_analyser.git
+cd behavior_analyser
 ```
 
 **2. Set up a virtual environment (Recommended):**
