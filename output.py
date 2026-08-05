@@ -226,6 +226,17 @@ class DataExporter:
                         writer.writerow(['Uncertain / Excluded', m, f"{result.uncertain_time.get(m, 0.0):.2f}", 'seconds'])
                         writer.writerow(['Valid Scored Time', m, f"{result.valid_time.get(m, 0.0):.2f}", 'seconds'])
                         writer.writerow(['Mean State Confidence', m, f"{result.mean_state_confidence.get(m, 0.0):.4f}", '0-1'])
+                        for key, label, unit in (
+                            ('mask_area_cv_pct', 'Mask Area Variation', 'percent'),
+                            ('segmentation_failure_pct', 'Segmentation Failures', 'percent'),
+                            ('low_confidence_pct', 'Low Confidence Frames', 'percent'),
+                            ('state_switches_per_min', 'State Switches', 'per minute'),
+                        ):
+                            writer.writerow([
+                                label, m,
+                                f"{result.quality_metrics.get(m, {}).get(key, 0.0):.2f}",
+                                unit,
+                            ])
                         writer.writerow(['Immobility Bouts', m, result.immobility_bouts.get(m, 0), 'count'])
                         writer.writerow([
                             'Latency to Immobile',

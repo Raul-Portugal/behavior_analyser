@@ -7,6 +7,7 @@ from unittest.mock import Mock
 try:
     from gui.worker import AnalysisWorker
     from mazes.epm import EPM
+    from core.version import APP_VERSION
     HAS_RUNTIME = True
 except ModuleNotFoundError:
     HAS_RUNTIME = False
@@ -29,7 +30,7 @@ class WorkerFinalizationTests(unittest.TestCase):
                 )
             )
             self.assertEqual(manifest["schema_version"], 2)
-            self.assertEqual(manifest["application"]["version"], "3.0.1")
+            self.assertEqual(manifest["application"]["version"], APP_VERSION)
 
     def test_manifest_failure_is_reported_without_losing_finished_signal(self):
         with tempfile.TemporaryDirectory() as directory:

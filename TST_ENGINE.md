@@ -64,6 +64,19 @@ Runs with more than 5% uncertain TST time produce a quality warning. The
 validation video distinguishes static immobility, passive swing, active escape,
 and uncertain periods.
 
+The interactive tuner is intentionally a fast review, not a miniature final
+analysis: it samples short start, middle, and end sections at a lower preview
+resolution. The white body outline is the segmentation mask actually supplied
+to the motion classifier. The full analysis always uses every selected source
+frame at its original resolution. Advanced settings can be saved as an
+engine-versioned JSON profile; they should be changed only with a documented
+validation rationale.
+
+The ordinary analysis summary and batch summary also include mask-area
+variation, segmentation-failure percentage, low-confidence percentage, and
+state switches per minute. These are quality-review signals, not corrections
+to the behavioral outcome.
+
 ## Scientific status
 
 Synthetic regression tests verify rigid rotation/translation, non-rigid

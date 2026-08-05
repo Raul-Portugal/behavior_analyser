@@ -65,3 +65,7 @@ explicitly rather than silently inflating totals.
 
 Validation media is optional and lives in `media/`; it is not created merely
 because plots or tabular outputs are generated.
+
+For TST, the existing summaries include quality-control fields for body-mask
+stability, segmentation failures, low-confidence frames, and state switching.
+They are deliberately not written as an additional per-video QC file.

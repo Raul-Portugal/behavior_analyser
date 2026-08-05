@@ -202,6 +202,19 @@ class AnalysisWorker(QObject):
                                 f"{mouse_name}: low mean TST state confidence "
                                 f"({mean_confidence:.2f})"
                             ))
+                        qc = result.quality_metrics.get(mouse_name, {})
+                        if qc.get("segmentation_failure_pct", 0.0) > 5.0:
+                            quality_warnings.append((
+                                video_path,
+                                f"{mouse_name}: segmentation failed in "
+                                f"{qc['segmentation_failure_pct']:.1f}% of TST frames",
+                            ))
+                        if qc.get("mask_area_cv_pct", 0.0) > 35.0:
+                            quality_warnings.append((
+                                video_path,
+                                f"{mouse_name}: unstable TST body-mask area "
+                                f"(CV {qc['mask_area_cv_pct']:.1f}%)",
+                            ))
                     
                     self.emit_progress(to_batch_pct(70), f"Video: {base_name}", "Exporting Data...")
                     self._export_all_data(result, base_name, settings, data_dir)
@@ -468,9 +481,14 @@ class AnalysisWorker(QObject):
                     result.activity_scores[name].append(
                         observation.activity_score
                     )
-                    result.motion_evidence[name].append(
-                        observation.to_dict()
+                    evidence = observation.to_dict()
+                    # A compact contour gives the optional validation video a
+                    # direct view of the body segmentation that produced this
+                    # classification, without exporting full frame masks.
+                    evidence["mask_contour"] = engine.get_last_mask_contour(
+                        name
                     )
+                    result.motion_evidence[name].append(evidence)
 
                 processed_frame_idx = curr
                 prev_frame = frame
@@ -803,8 +821,42 @@ class AnalysisWorker(QObject):
                                     else:
                                         color = (0, 255, 0)
                                         status = "ACTIVE ESCAPE"
+                                    evidence_trace = result.motion_evidence.get(
+                                        name, []
+                                    )
+                                    evidence = (
+                                        evidence_trace[curr_idx]
+                                        if curr_idx < len(evidence_trace)
+                                        else {}
+                                    )
+                                    contour = evidence.get("mask_contour", [])
+                                    if len(contour) >= 3:
+                                        contour_points = np.asarray(
+                                            contour, dtype=np.int32
+                                        ).reshape(-1, 1, 2)
+                                        mask_overlay = frame.copy()
+                                        cv2.fillPoly(
+                                            mask_overlay,
+                                            [contour_points],
+                                            color,
+                                        )
+                                        cv2.addWeighted(
+                                            mask_overlay, 0.35, frame, 0.65,
+                                            0, frame,
+                                        )
+                                        cv2.polylines(
+                                            frame, [contour_points], True,
+                                            (255, 255, 255), 1,
+                                        )
                                     cv2.polylines(frame, [pts], True, color, 2)
-                                    cv2.putText(frame, status, (pts[0][0], pts[0][1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.6, color, 2)
+                                    confidence = float(
+                                        evidence.get("confidence", 0.0)
+                                    )
+                                    qc_flag = str(evidence.get("qc_flag", ""))
+                                    label = f"{status} ({confidence:.2f})"
+                                    if qc_flag:
+                                        label += f" | {qc_flag}"
+                                    cv2.putText(frame, label, (pts[0][0], pts[0][1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.55, color, 2)
                         
                         writer.write(frame)
                     curr_idx += 1

@@ -131,6 +131,11 @@ class TSTMotionEngine:
             raise ValueError("fps must be a positive finite value")
         self.fps = float(fps)
         self.masks: Dict[str, np.ndarray] = {}
+        # Current segmented mouse masks are retained only for visual quality
+        # control. They are deliberately not used as persistent model state.
+        self.last_mouse_masks: Dict[str, Optional[np.ndarray]] = {
+            name: None for name in rois
+        }
         self.histories = {name: _MouseHistory() for name in rois}
         self.last_observations: Dict[str, TSTMotionObservation] = {}
         self._initialized = False
@@ -771,10 +776,12 @@ class TSTMotionEngine:
                 current_gray, roi_mask, history.centroid
             )
             if previous_mask is None or current_mask is None:
+                self.last_mouse_masks[name] = None
                 observations[name] = self._uncertain(
                     area_ratio, current_error or previous_error
                 )
                 continue
+            self.last_mouse_masks[name] = current_mask.copy()
             observations[name] = self._decompose(
                 flow,
                 aligned_previous,
@@ -788,6 +795,25 @@ class TSTMotionEngine:
 
         self.last_observations = observations
         return observations
+
+    def get_last_mask_contour(self, name: str) -> list[list[int]]:
+        """Return a compact contour for the latest segmentation of ``name``.
+
+        The contour supports preview/validation overlays without retaining a
+        full raster mask for every processed frame.
+        """
+        mask = self.last_mouse_masks.get(name)
+        if mask is None:
+            return []
+        contours, _ = cv2.findContours(
+            mask, cv2.RETR_EXTERNAL, cv2.CHAIN_APPROX_SIMPLE
+        )
+        if not contours:
+            return []
+        contour = max(contours, key=cv2.contourArea)
+        epsilon = max(1.0, 0.01 * cv2.arcLength(contour, True))
+        simplified = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2)
+        return [[int(point[0]), int(point[1])] for point in simplified]
 
     def export_state(self) -> Dict[str, object]:
         """Serialize temporal state for checkpoint-equivalent resume."""

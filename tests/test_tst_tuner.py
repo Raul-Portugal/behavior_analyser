@@ -49,6 +49,45 @@ class TSTTunerTests(unittest.TestCase):
             dialog.cleanup()
             dialog.close()
 
+    def test_switching_between_populated_mouse_traces_does_not_raise(self):
+        roi_manager = ROIManager(source_dimensions=(100, 100))
+        roi_manager.add_roi(
+            "mouse_1",
+            np.array([[5, 5], [45, 5], [45, 95], [5, 95]]),
+        )
+        roi_manager.add_roi(
+            "mouse_2",
+            np.array([[55, 5], [95, 5], [95, 95], [55, 95]]),
+        )
+        tst = TST()
+        tst.configure_mice(2)
+        with patch.object(TstTunerDialog, "start_scan"):
+            dialog = TstTunerDialog(Path("not-opened.mp4"), roi_manager, tst)
+        try:
+            dialog.fps = 10.0
+            dialog.scan_len = 4
+            dialog.frame_buffer = [0, 1, 2, 3]
+            dialog.energy_data = {
+                "mouse_1": [2.0, 3.0, 4.0, 5.0],
+                "mouse_2": [8.0, 7.0, 6.0, 5.0],
+            }
+            dialog.state_data = {
+                "mouse_1": ["immobile_static"] * 4,
+                "mouse_2": ["active_escape"] * 4,
+            }
+            dialog.init_plot_optimized(dialog.energy_data["mouse_1"])
+            dialog.on_param_change()
+
+            dialog.mouse_selector.setCurrentIndex(1)
+            self.app.processEvents()
+
+            self.assertEqual(dialog.selected_mouse, "mouse_2")
+            self.assertIs(dialog.fill_immobile.axes, dialog.ax)
+            self.assertIs(dialog.fill_pause.axes, dialog.ax)
+        finally:
+            dialog.cleanup()
+            dialog.close()
+
 
 if __name__ == "__main__":
     unittest.main()

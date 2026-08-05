@@ -37,6 +37,7 @@ class TSTResult(BaseAnalysisResult):
     valid_time: Dict[str, float] = field(default_factory=dict)
     immobility_percentage: Dict[str, float] = field(default_factory=dict)
     mean_state_confidence: Dict[str, float] = field(default_factory=dict)
+    quality_metrics: Dict[str, Dict[str, float]] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -58,6 +59,7 @@ class TSTResult(BaseAnalysisResult):
                 "uncertain_time_s": self.uncertain_time,
                 "valid_time_s": self.valid_time,
                 "mean_state_confidence": self.mean_state_confidence,
+                "quality_metrics": self.quality_metrics,
                 "immobility_bouts": self.immobility_bouts,
                 "latency_to_first_immobility_s": (
                     self.latency_to_first_immobility
@@ -228,6 +230,32 @@ class TST(Maze):
             result.mean_state_confidence[mouse_name] = (
                 float(np.mean(confidences)) if confidences else 0.0
             )
+            areas = [float(item.get("mask_area_ratio", 0.0)) for item in valid_evidence]
+            known_states = {"immobile_static", "passive_swing", "active_escape"}
+            flags = [str(item.get("qc_flag", "")) for item in valid_evidence]
+            state_switches = sum(
+                current != previous
+                for previous, current in zip(states, states[1:])
+                if previous in known_states and current in known_states
+            )
+            valid_minutes = max(len(valid_evidence) / fps / 60.0, 1e-9)
+            mean_area = float(np.mean(areas)) if areas else 0.0
+            result.quality_metrics[mouse_name] = {
+                "mean_mask_area_ratio": mean_area,
+                "mask_area_cv_pct": (
+                    float(np.std(areas) / mean_area * 100.0)
+                    if mean_area > 0 else 0.0
+                ),
+                "segmentation_failure_pct": (
+                    sum("segmentation" in flag or "mouse_pixels" in flag for flag in flags)
+                    / len(valid_evidence) * 100.0
+                ),
+                "low_confidence_pct": (
+                    sum(value < 0.60 for value in confidences)
+                    / len(valid_evidence) * 100.0
+                ),
+                "state_switches_per_min": state_switches / valid_minutes,
+            }
             
             immobile_count = sum(value is True for value in filtered_immobility)
             result.total_immobility_time[mouse_name] = immobile_count / fps
@@ -288,7 +316,9 @@ class TST(Maze):
             'static_immobility_s', 'passive_swing_s',
             'bridged_gap_immobility_s', 'mobile_s', 'uncertain_s',
             'valid_time_s', 'bouts', 'latency_s',
-            'mean_state_confidence', 'window_start', 'window_end'
+            'mean_state_confidence', 'mask_area_cv_pct',
+            'segmentation_failure_pct', 'low_confidence_pct',
+            'state_switches_per_min', 'window_start', 'window_end'
         ]
 
     def get_batch_summary_row(self, result: BaseAnalysisResult) -> List[List[any]]:
@@ -313,6 +343,7 @@ class TST(Maze):
             total = result.total_immobility_time.get(mouse, 0)
             bouts = result.immobility_bouts.get(mouse, 0)
             lat = result.latency_to_first_immobility.get(mouse)
+            quality = result.quality_metrics.get(mouse, {})
             
             row = [
                 mouse,
@@ -327,6 +358,10 @@ class TST(Maze):
                 bouts,
                 "" if lat is None else f"{lat:.2f}",
                 f"{result.mean_state_confidence.get(mouse, 0.0):.4f}",
+                f"{quality.get('mask_area_cv_pct', 0.0):.2f}",
+                f"{quality.get('segmentation_failure_pct', 0.0):.2f}",
+                f"{quality.get('low_confidence_pct', 0.0):.2f}",
+                f"{quality.get('state_switches_per_min', 0.0):.2f}",
                 f"{start_t:.1f}",
                 f"{end_t:.1f}"
             ]
