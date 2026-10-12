@@ -8,6 +8,7 @@ import numpy as np
 try:
     from PyQt6.QtWidgets import QApplication
     from gui.main_window import MainWindow
+    from tests.gui_support import temp_app_settings
     HAS_RUNTIME = True
 except ModuleNotFoundError:
     HAS_RUNTIME = False
@@ -38,7 +39,7 @@ class BatchPlanWorkflowTests(unittest.TestCase):
         self.b = root / "day2" / "mouse1.mp4"
         self.new = root / "day3" / "mouse9.mp4"
 
-        self.window = MainWindow()
+        self.window = MainWindow(temp_app_settings(self))
         self.addCleanup(self.window.deleteLater)
         self.addCleanup(self.window._detach_log_handler)
         from mazes import create_maze

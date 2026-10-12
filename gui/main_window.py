@@ -25,6 +25,7 @@ from core.video import VideoHandler, ReferenceFrameGenerator
 from core.version import APP_NAME, APP_VERSION
 
 # --- DIALOGS ---
+from gui.app_settings import AppSettings
 from gui.roi_selector import (REFERENCE_LINE_PROMPT, RoiSelectorDialog,
                               offer_reference_line)
 from gui.arm_entry_dialog import ArmEntryParametersDialog
@@ -85,14 +86,19 @@ class MainWindow(QMainWindow):
     # to force quit.
     FORCE_QUIT_DELAY_MS = 10_000
 
-    def __init__(self):
+    def __init__(self, app_settings: Optional[AppSettings] = None):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
         self.setGeometry(100, 100, 1000, 750)
+        # What the app remembers between sessions (folders, geometry, ...).
+        self.app_settings = app_settings or AppSettings()
         
         # State variables
         self.video_paths: List[Path] = []
         self.output_dir: Optional[Path] = None
+        # True once the user picked the output folder; otherwise it follows
+        # the first video and is not remembered.
+        self._output_dir_explicit = False
         self.analysis_thread: Optional[QThread] = None
         self.analysis_worker: Optional[AnalysisWorker] = None
         self.maze: Optional[Maze] = None
@@ -111,7 +117,42 @@ class MainWindow(QMainWindow):
 
         self.init_ui()
         self.create_menu_bar()
+        self._restore_session()
         self.check_for_resumable_analyses()
+
+    def _restore_session(self):
+        """Re-apply the remembered window layout and output folder."""
+        geometry = self.app_settings.window_geometry()
+        if geometry is not None:
+            self.restoreGeometry(geometry)
+        state = self.app_settings.window_state()
+        if state is not None:
+            self.restoreState(state)
+        remembered = self.app_settings.output_dir()
+        if remembered is not None:
+            self._set_output_dir(remembered, explicit=True, persist=False)
+
+    def _save_session(self):
+        self.app_settings.save_window(self.saveGeometry(), self.saveState())
+        self.app_settings.sync()
+
+    def _set_output_dir(self, folder: Optional[Path], explicit: bool,
+                        persist: bool = True):
+        """Change the output folder and keep the label (and settings) in step."""
+        self.output_dir = folder
+        self._output_dir_explicit = explicit and folder is not None
+        if persist and self._output_dir_explicit:
+            self.app_settings.set_output_dir(folder)
+        self._refresh_output_label()
+
+    def _refresh_output_label(self):
+        if self.output_dir is None:
+            text = "Output folder: same folder as the first video"
+        else:
+            suffix = "" if self._output_dir_explicit else " (from the first video)"
+            text = f"Output folder: {self.output_dir}{suffix}"
+        self.output_label.setText(text)
+        self.output_label.setToolTip(str(self.output_dir or ""))
         
     def init_ui(self):
         """Initialize the user interface."""
@@ -137,6 +178,19 @@ class MainWindow(QMainWindow):
         # Video list
         self.video_list_widget = QListWidget()
         main_layout.addWidget(self.video_list_widget)
+
+        # Output folder
+        output_layout = QHBoxLayout()
+        self.output_label = QLabel()
+        self.output_label.setTextInteractionFlags(
+            Qt.TextInteractionFlag.TextSelectableByMouse
+        )
+        self.change_output_button = QPushButton("Change…")
+        self.change_output_button.clicked.connect(self.set_output_directory)
+        output_layout.addWidget(self.output_label, 1)
+        output_layout.addWidget(self.change_output_button)
+        main_layout.addLayout(output_layout)
+        self._refresh_output_label()
         
         # Action buttons layout
         action_layout = QHBoxLayout()
@@ -194,6 +248,9 @@ class MainWindow(QMainWindow):
         
         file_menu.addAction(save_config_action)
         file_menu.addAction(load_config_action)
+        self.recent_menu = file_menu.addMenu('&Recent')
+        self.recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
+        self._rebuild_recent_menu()
         file_menu.addSeparator()
         
         exit_action = QAction('E&xit', self)
@@ -206,32 +263,44 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(set_output_action)
         self.set_output_action = set_output_action
 
+    def _rebuild_recent_menu(self):
+        """List the most recently used templates and plans."""
+        self.recent_menu.clear()
+        recent = self.app_settings.recent_files()
+        for path in recent:
+            action = self.recent_menu.addAction(path.name)
+            action.setToolTip(str(path))
+            action.setStatusTip(str(path))
+            action.triggered.connect(
+                lambda _checked=False, p=path: self.load_configuration_file(p)
+            )
+        if not recent:
+            empty = self.recent_menu.addAction("(none)")
+            empty.setEnabled(False)
+        else:
+            self.recent_menu.addSeparator()
+            clear = self.recent_menu.addAction("Clear list")
+            clear.triggered.connect(self.app_settings.clear_recent_files)
+        self.recent_menu.setEnabled(not self._analysis_running())
+
     def add_videos(self):
         files, _ = QFileDialog.getOpenFileNames(
-            self, "Select Video Files", "", 
+            self, "Select Video Files",
+            self.app_settings.dialog_dir("video"),
             "Video Files (*.mp4 *.avi *.mov *.mkv);;All Files (*.*)"
         )
         if files:
-            output_was_unset = self.output_dir is None
-            added_count = 0
-            for file in files:
-                path = Path(file)
-                if path not in self.video_paths:
-                    self.video_paths.append(path)
-                    self.video_list_widget.addItem(file)
-                    added_count += 1
-            
-            if self.output_dir is None and self.video_paths:
-                self.output_dir = self.video_paths[0].parent
-            if output_was_unset and self.output_dir is not None:
-                self.check_for_resumable_analyses()
-            
+            self.app_settings.set_last_video_dir(Path(files[0]).parent)
+            added_count = self._add_video_paths([Path(file) for file in files])
             logger.info(f"Added {added_count} video(s)")
-            self.update_button_states()
 
     def add_folder(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Folder Containing Videos")
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Folder Containing Videos",
+            self.app_settings.dialog_dir("video")
+        )
         if not folder: return
+        self.app_settings.set_last_video_dir(Path(folder))
         
         folder_path = Path(folder)
         video_extensions = {'.mp4', '.avi', '.mov', '.mkv'}
@@ -249,21 +318,24 @@ class MainWindow(QMainWindow):
         )
         
         if reply == QMessageBox.StandardButton.Yes:
-            output_was_unset = self.output_dir is None
-            added_count = 0
-            for video in sorted(found_videos):
-                if video not in self.video_paths:
-                    self.video_paths.append(video)
-                    self.video_list_widget.addItem(str(video))
-                    added_count += 1
-            
-            if self.output_dir is None and self.video_paths:
-                self.output_dir = folder_path
-            if output_was_unset and self.output_dir is not None:
-                self.check_for_resumable_analyses()
-            
+            added_count = self._add_video_paths(sorted(found_videos))
             logger.info(f"Added {added_count} video(s) from folder: {folder_path.name}")
-            self.update_button_states()
+
+    def _add_video_paths(self, paths: List[Path]) -> int:
+        """Append new videos to the list; returns how many were new."""
+        output_was_unset = self.output_dir is None
+        added_count = 0
+        for path in paths:
+            if path not in self.video_paths:
+                self.video_paths.append(path)
+                self.video_list_widget.addItem(str(path))
+                added_count += 1
+        if self.output_dir is None and self.video_paths:
+            self._set_output_dir(self.video_paths[0].parent, explicit=False)
+        if output_was_unset and self.output_dir is not None:
+            self.check_for_resumable_analyses()
+        self.update_button_states()
+        return added_count
 
     def clear_list(self):
         if self.video_paths:
@@ -321,12 +393,15 @@ class MainWindow(QMainWindow):
         
         filename, _ = QFileDialog.getSaveFileName(
             self, "Save Master Template",
-            str(self.output_dir / "template_config.json") if self.output_dir else "template_config.json",
+            str(Path(self.app_settings.dialog_dir("config", self.output_dir))
+                / "template_config.json"),
             "JSON Files (*.json);;All Files (*.*)"
         )
         if filename:
             try:
                 self.current_settings.save_to_file(Path(filename))
+                self.app_settings.set_last_config_dir(Path(filename).parent)
+                self.app_settings.add_recent_file(filename)
                 logger.info(f"Template saved to: {filename}")
                 QMessageBox.information(self, "Saved", f"Master Template saved to:\n{filename}")
             except Exception as e:
@@ -336,12 +411,15 @@ class MainWindow(QMainWindow):
     def load_configuration(self):
         filename, _ = QFileDialog.getOpenFileName(
             self, "Load Configuration",
-            str(self.output_dir) if self.output_dir else "",
+            self.app_settings.dialog_dir("config", self.output_dir),
             "JSON Files (*.json);;All Files (*.*)"
         )
         if not filename: return
-        
-        file_path = Path(filename)
+        self.load_configuration_file(Path(filename))
+
+    def load_configuration_file(self, file_path: Path):
+        """Load a template or batch plan from a known path."""
+        filename = str(file_path)
         try:
             file_type = BatchSettings.detect_file_type(file_path)
             
@@ -369,10 +447,14 @@ class MainWindow(QMainWindow):
                 msg = ("Master Template loaded.\nThis configuration will be applied to ALL videos.")
 
             self.update_button_states()
+            self.app_settings.set_last_config_dir(file_path.parent)
+            self.app_settings.add_recent_file(file_path)
+            self._rebuild_recent_menu()
             logger.info(f"Configuration loaded from: {filename}")
             QMessageBox.information(self, "Configuration Loaded", msg)
             
         except Exception as e:
+            self.app_settings.remove_recent_file(file_path)
             logger.error(f"Failed to load configuration: {e}", exc_info=True)
             QMessageBox.critical(self, "Load Failed", f"Failed to load configuration:\n{e}")
 
@@ -409,9 +491,13 @@ class MainWindow(QMainWindow):
             self.maze.configure_zones(zones)
 
     def set_output_directory(self):
-        folder = QFileDialog.getExistingDirectory(self, "Select Output Directory", str(self.output_dir) if self.output_dir else "")
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select Output Directory",
+            str(self.output_dir) if self.output_dir
+            else self.app_settings.dialog_dir("output")
+        )
         if folder:
-            self.output_dir = Path(folder)
+            self._set_output_dir(Path(folder), explicit=True)
             self.check_for_resumable_analyses()
             logger.info(f"Output directory set to: {self.output_dir}")
             QMessageBox.information(self, "Output Directory Set", f"Results will be saved to:\n{self.output_dir}")
@@ -443,15 +529,15 @@ class MainWindow(QMainWindow):
         # --- MAZE SELECTION ---
         maze_names = list(AVAILABLE_MAZES.keys())
         default_idx = 0
-        if self.maze:
-            for i, name in enumerate(maze_names):
-                if name == self.maze.name:
-                    default_idx = i; break
+        preferred = self.maze.name if self.maze else self.app_settings.last_paradigm()
+        if preferred in maze_names:
+            default_idx = maze_names.index(preferred)
 
         maze_choice, ok = QInputDialog.getItem(self, "Select Maze Type", "Which maze are you analyzing?", maze_names, default_idx, False)
         if not ok or not maze_choice: return
 
         self.maze = create_maze(maze_choice)
+        self.app_settings.set_last_paradigm(maze_choice)
         logger.info(f"Selected maze type: {self.maze.name}")
         ref_video_path = self.video_paths[0]
 
@@ -1109,6 +1195,7 @@ class MainWindow(QMainWindow):
 
     def closeEvent(self, event):
         if not self._analysis_running():
+            self._save_session()
             self._detach_log_handler()
             event.accept()
             return
@@ -1116,6 +1203,7 @@ class MainWindow(QMainWindow):
         if self._force_close:
             # Last resort after the worker failed to stop in time.
             self._stop_thread_forcefully()
+            self._save_session()
             self._detach_log_handler()
             event.accept()
             return

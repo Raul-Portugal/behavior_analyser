@@ -8,6 +8,7 @@ try:
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QMessageBox
     from gui.main_window import MainWindow
+    from tests.gui_support import temp_app_settings
     from gui.worker import BatchRunOutcome
     HAS_RUNTIME = True
 except ModuleNotFoundError:
@@ -56,7 +57,7 @@ class RunLifecycleTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        self.window = MainWindow()
+        self.window = MainWindow(temp_app_settings(self))
         self.addCleanup(self.window.deleteLater)
         self.addCleanup(self.window._detach_log_handler)
         self.window.FORCE_QUIT_DELAY_MS = 60
@@ -193,7 +194,7 @@ class RealThreadLifecycleTests(unittest.TestCase):
     def test_worker_and_thread_are_released_after_finish(self):
         import tempfile
 
-        window = MainWindow()
+        window = MainWindow(temp_app_settings(self))
         self.addCleanup(window.deleteLater)
         self.addCleanup(window._detach_log_handler)
         from mazes import create_maze
