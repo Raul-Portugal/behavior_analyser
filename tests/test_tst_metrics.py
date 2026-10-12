@@ -127,6 +127,9 @@ class TSTMetricTests(unittest.TestCase):
         rows = tst.get_batch_summary_row(result)
         self.assertEqual(len(rows[0]), len(tst.get_batch_summary_headers()))
 
+    def test_tst_skips_the_reference_line_calibration_prompt(self):
+        self.assertFalse(TST().needs_reference_line())
+
     def test_bouts_split_only_by_uncertainty_are_counted(self):
         self.assertEqual(
             count_bouts_split_by_uncertainty(

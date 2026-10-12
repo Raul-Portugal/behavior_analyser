@@ -139,6 +139,10 @@ class TST(Maze):
         if not self._custom_rois: return [("mouse_1", "Mouse 1")]
         return self._custom_rois
 
+    def needs_reference_line(self) -> bool:
+        """TST is motion-based and always runs with scale_factor = 0."""
+        return False
+
     def get_result_class(self) -> Type[BaseAnalysisResult]:
         return TSTResult
 
