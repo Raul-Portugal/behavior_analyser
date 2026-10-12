@@ -30,6 +30,7 @@ from gui.arm_entry_dialog import ArmEntryParametersDialog
 from gui.settings_dialog import SettingsDialog
 from gui.tuner_dialog import TunerDialog
 from gui.tst_tuner import TstTunerDialog
+from gui.background_task import TaskCancelled, run_with_progress
 from gui.worker import AnalysisWorker, BatchRunOutcome
 from gui.roi_preview import ROIPreviewDialog
 from gui.freestyle_config_dialog import FreestyleConfigDialog
@@ -578,6 +579,19 @@ class MainWindow(QMainWindow):
                 count = sum(1 for k in rois.keys() if k.startswith('mouse_'))
             self.maze.configure_mice(count)
 
+    def _generate_reference_frame(self, ref_video_path: Path):
+        """Build the reference frame off the UI thread (raises TaskCancelled)."""
+        samples = AppConfig().video.ref_frame_samples
+        return run_with_progress(
+            self,
+            f"Generating reference frame for {ref_video_path.name}...",
+            lambda should_cancel: ReferenceFrameGenerator.generate(
+                ref_video_path, samples, use_cache=True,
+                should_cancel=should_cancel
+            ),
+            title="Reference Frame",
+        )
+
     def _run_setup_wizard(self, ref_video_path: Path, maze_choice: str) -> Optional[BatchSettings]:
         """Interactive ROI / reference-line / detection setup; None if cancelled."""
         # --- WIZARD SETUP ---
@@ -634,11 +648,11 @@ class MainWindow(QMainWindow):
                         VideoHandler(ref_video_path).dimensions
                     )
             
-            config = AppConfig()
-            # Core: Reference generation
-            ref_frame = ReferenceFrameGenerator.generate(
-                ref_video_path, config.video.ref_frame_samples, use_cache=True
-            )
+            try:
+                ref_frame = self._generate_reference_frame(ref_video_path)
+            except TaskCancelled:
+                self.update_progress_detailed(0, "Ready", "")
+                return
             tuner_dialog = TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)
             if not tuner_dialog.exec(): return
             detection_config = tuner_dialog.get_detection_config()
@@ -656,15 +670,13 @@ class MainWindow(QMainWindow):
                 if not arm_dialog.exec(): return
                 self.maze.configure_algorithm_parameters(arm_dialog.get_parameters())
             
-            config = AppConfig()
             self.update_progress_detailed(20, "Configuration", "Generating reference frame...")
-            QApplication.processEvents()
-            
-            # Core: Reference generation
-            ref_frame = ReferenceFrameGenerator.generate(
-                ref_video_path, config.video.ref_frame_samples, use_cache=True
-            )
-            
+            try:
+                ref_frame = self._generate_reference_frame(ref_video_path)
+            except TaskCancelled:
+                self.update_progress_detailed(0, "Ready", "")
+                return
+
             self.update_progress_detailed(35, "Configuration", "Tuning detection parameters...")
             tuner_dialog = TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)
             if not tuner_dialog.exec(): return
