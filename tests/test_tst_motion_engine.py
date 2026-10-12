@@ -461,5 +461,78 @@ class TSTRateNormalizationTests(unittest.TestCase):
         )
 
 
+@unittest.skipUnless(HAS_OPENCV, "OpenCV runtime is not installed")
+class TSTHistoryResetTests(unittest.TestCase):
+    ROI = np.array([[10, 10], [190, 10], [190, 150], [10, 150]], np.int32)
+
+    @staticmethod
+    def _frame(x=None):
+        rng = np.random.default_rng(3)
+        gray = np.clip(
+            215 + rng.integers(-5, 6, (160, 200, 1)), 0, 255
+        ).astype(np.uint8)
+        image = np.repeat(gray, 3, axis=2)
+        if x is not None:
+            cv2.ellipse(image, (int(x), 80), (18, 30), 0, 0, 360,
+                        (35, 35, 35), -1)
+            for dx, dy in [(-6, -12), (7, -4), (-4, 10), (6, 16)]:
+                cv2.circle(image, (int(x) + dx, 80 + dy), 3,
+                           (130, 130, 130), -1)
+        return image
+
+    def _run(self, positions):
+        engine = TSTMotionEngine({"mouse_1": ROI(self.ROI, "mouse_1")})
+        frames = [self._frame(x) for x in positions]
+        return engine, [
+            engine.calculate_observations(current, previous)["mouse_1"]
+            for previous, current in zip(frames, frames[1:])
+        ]
+
+    def test_velocity_change_without_gap_is_an_injection(self):
+        slow = [60 + 2 * index for index in range(8)]
+        fast = [slow[-1] + 7 * (index + 1) for index in range(3)]
+        _, observations = self._run(slow + fast)
+        self.assertGreater(
+            observations[len(slow) - 1].motion_injection,
+            TSTMotionConfig().active_injection_threshold,
+        )
+
+    def test_segmentation_gap_resets_history_before_new_velocity(self):
+        slow = [60 + 2 * index for index in range(8)]
+        fast = [90 + 7 * index for index in range(5)]
+        positions = slow + [None, None] + fast
+        engine, observations = self._run(positions)
+
+        gap_start = len(slow) - 1
+        self.assertEqual(
+            observations[gap_start].qc_flag, "mouse_segmentation_failed"
+        )
+        history = engine.histories["mouse_1"]
+        first_valid = observations[gap_start + 3]
+        self.assertEqual(first_valid.motion_injection, 0.0)
+        self.assertEqual(first_valid.angular_injection, 0.0)
+        self.assertFalse(first_valid.temporal_ready)
+        # Only the post-gap frames remain in the pendulum window.
+        valid_after_gap = len(fast) - 1
+        self.assertEqual(len(history.centroid_trace), valid_after_gap)
+        self.assertEqual(len(history.rotation_delta_trace), valid_after_gap)
+
+    def test_reset_clears_every_temporal_trace(self):
+        engine, _ = self._run([60 + 2 * index for index in range(6)])
+        history = engine.histories["mouse_1"]
+        self.assertIsNotNone(history.rigid_vector)
+        self.assertTrue(history.centroid_trace)
+        engine.calculate_observations(None, None)
+        for name in (
+            "rigid_vector", "angular_velocity",
+        ):
+            self.assertIsNone(getattr(history, name))
+        for name in (
+            "centroid_trace", "rotation_delta_trace", "coherence_trace",
+            "residual_trace", "deformation_trace",
+        ):
+            self.assertEqual(getattr(history, name), [])
+
+
 if __name__ == "__main__":
     unittest.main()
