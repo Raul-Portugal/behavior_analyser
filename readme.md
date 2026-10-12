@@ -29,6 +29,16 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 > open the video in the TST tuner, review the evidence and save a new
 > configuration. Checkpoints from v2 runs cannot be resumed.
 
+## What's new in 3.4
+
+3.4.0 adds parallel batch processing, a headless command line, an open-field
+arena analysis (center, periphery, thigmotaxis), sample-sheet metadata,
+per-time-bin outputs and ROI template alignment. **Results for existing
+analyses are unchanged compared with 3.3.0**; the new metrics and files appear
+only when the new features are used, and parallel and sequential runs produce
+byte-identical outputs. See [Running several videos at once](#running-several-videos-at-once),
+[Command line](#command-line) and [CHANGELOG.md](CHANGELOG.md).
+
 ## What's new in 3.3
 
 3.3.0 is a performance and usability release. **Analysis results are identical
@@ -58,6 +68,12 @@ interrupted run after a restart, and has keyboard shortcuts. See
     (cm/s), the speed smoothing window (s), the minimum immobility bout (s)
     and the minimum zone dwell (s). Immobility is reported as N/A when the
     video is not calibrated.
+    With **Open field arena** enabled you draw the arena boundary first and
+    choose how the center is defined: a distance from the wall in cm, or a
+    share of the arena area. The run then also reports center time, center
+    entries and latency, thigmotaxis (percentage of time and of distance),
+    mean distance to the wall and center versus periphery speed, plus a
+    per-frame `*_arena_zones.csv`. Detection is restricted to the arena.
 - **Distance Calibration**: Always draw a reference line over something of known
   length, and enter its length in cm, to get distances and speeds in cm. Without
   it, distances are reported in pixels and Freestyle immobility is N/A. There is
@@ -68,6 +84,12 @@ interrupted run after a restart, and has keyboard shortcuts. See
   compares each video's background with the template's, flags the ones that no
   longer fit, and aligns them automatically or from landmarks you click; the
   reference line and cm calibration follow the alignment.
+- **Parallel Batches and Command Line**: Analyze several videos at once with
+  the **Parallel videos** control, or run a saved plan without the GUI with
+  `python -m core.cli run` (see below).
+- **Sample Sheet and Time Bins**: Attach animal metadata (`animal_id`, `group`,
+  ...) from a CSV to the batch summary, and optionally report every metric in
+  fixed-length time bins (`*_time_bins.csv`, `batch_time_bins.csv`).
 - **Interactive Detection Tuning**: Fine-tune detection against the production
   segmentation mask, selected-component overlay, and deterministic Quick Scan
   quality monitor.
@@ -107,6 +129,43 @@ explains are ignored.
 
 **File > Load settings from previous run...** loads the plan of an earlier run
 folder to apply the same settings to new videos.
+
+## Running several videos at once
+
+The **Parallel videos** control next to the Start button sets how many videos
+are analysed at the same time. **Auto** (the default) uses the smaller of
+CPU cores / 4, the number of videos and RAM in GB / 3, and at least 1; set 1 to
+run the videos one after another. Each video runs in its own spawned process,
+and the outputs are byte-identical to a sequential run (about 2.2x faster on a
+3-video batch). The setting is remembered between sessions.
+
+## Command line
+
+A saved batch plan (File > Save Configuration, or the `run_plan.json` of an
+earlier run) can be run without the GUI and without Qt:
+
+```bash
+python -m core.cli run --plan plan.json --out results     --workers 2 --sample-sheet sheet.csv --bin-seconds 60
+```
+
+It writes the same run folder, batch summary, manifest and `run_plan.json` as a
+GUI run. `--workers N` sets the parallel videos (default: Auto, as above),
+`--sample-sheet` attaches a metadata CSV, `--bin-seconds N` turns on time-bin
+outputs, `--quiet` prints only failures and the result. A template (instead of
+a plan) needs `--videos` (files or folders), and `--paradigm` when it does not
+name one. Exit codes: `0` success, `1` at least one video failed, `2` bad
+arguments or plan, `130` cancelled. The packaged executable has a hidden
+`--selftest-parallel` flag that checks that its process pool starts.
+
+## Sample sheet and time bins
+
+**Sample sheet...** (or `--sample-sheet`) takes a CSV whose first column is
+`video` and whose other columns are free metadata (`animal_id`, `group`, ...).
+They are added to `batch_summary.csv`, each `*_summary.json` and the manifest;
+videos are matched to rows, never guessed. **Time bins** (or `--bin-seconds`)
+also writes each metric per bin in long format; each metric summed over the
+bins equals the total. Both are off by default and change nothing when off.
+See [OUTPUTS.md](OUTPUTS.md) for the formats.
 
 ## Keyboard shortcuts
 
@@ -222,7 +281,8 @@ with status 0.
 
 ROI templates are tied to the source video dimensions on which they were
 drawn. The preflight check blocks reuse on videos with incompatible
-dimensions; redraw the ROIs for those videos.
+dimensions; use *Tools > Align template to videos...* to align the template to
+those videos (or to a camera that has moved), or redraw the ROIs.
 
 The detector tuner displays the actual production segmentation mask. The
 selected component is green, and Quick Scan uses deterministic sequential
