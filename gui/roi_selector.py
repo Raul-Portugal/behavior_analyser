@@ -5,13 +5,14 @@ Updated to use the MIDDLE frame of the video to ensure animals are visible.
 import cv2
 import numpy as np
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
                              QPushButton, QScrollArea, QVBoxLayout)
 
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
 from gui.dialog_layout import fit_dialog_to_available_screen
+from gui.qt_image import bgr_to_qpixmap
 
 
 class ReferenceLineDialog(QDialog):
@@ -125,25 +126,25 @@ def offer_reference_line(parent, video_path, roi_manager: ROIManager) -> bool:
     if not ret:
         return False
 
-    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-    source_h, source_w = rgb.shape[:2]
+    source_h, source_w = frame.shape[:2]
     roi_manager.set_source_dimensions((source_w, source_h))
     if source_w > 1280:
         scale = 1280 / source_w
-        rgb = cv2.resize(rgb, (int(source_w * scale), int(source_h * scale)))
-    h, w, ch = rgb.shape
-    pixmap = QPixmap.fromImage(
-        QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
-    )
+        frame = cv2.resize(frame, (int(source_w * scale), int(source_h * scale)))
+    h, w = frame.shape[:2]
+    pixmap = bgr_to_qpixmap(frame)
     dialog = ReferenceLineDialog(
         pixmap, source_scale=(source_w / w, source_h / h), parent=parent
     )
-    if dialog.exec() and dialog.get_line_length() > 0:
-        roi_manager.set_reference_length(
-            dialog.get_line_length(), REFERENCE_LINE_NAME
-        )
-        return True
-    return False
+    try:
+        if dialog.exec() and dialog.get_line_length() > 0:
+            roi_manager.set_reference_length(
+                dialog.get_line_length(), REFERENCE_LINE_NAME
+            )
+            return True
+        return False
+    finally:
+        dialog.deleteLater()
 
 
 class RoiSelectorDialog(QDialog):
@@ -173,8 +174,8 @@ class RoiSelectorDialog(QDialog):
         if not ret: 
             raise IOError("Could not read frame from video.")
             
-        self.base_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = self.base_frame.shape
+        self.base_frame = frame
+        h, w = self.base_frame.shape[:2]
         self.source_width = w
         self.source_height = h
         self.display_width = w
@@ -193,7 +194,7 @@ class RoiSelectorDialog(QDialog):
         self.display_to_source_y = self.source_height / self.display_height
         self.roi_manager.set_source_dimensions((self.source_width, self.source_height))
             
-        self.base_pixmap = QPixmap.fromImage(QImage(self.base_frame.data, w, h, ch * w, QImage.Format.Format_RGB888))
+        self.base_pixmap = bgr_to_qpixmap(self.base_frame)
         
         self.setWindowTitle("ROI Selection")
         

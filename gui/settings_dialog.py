@@ -6,7 +6,6 @@ from typing import Optional
 
 import cv2
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox,
                              QDoubleSpinBox, QFormLayout, QHBoxLayout, QLabel,
                              QSlider, QVBoxLayout, QGroupBox, QWidget, QScrollArea,
@@ -16,6 +15,7 @@ from core.calibration import (LEGACY_REFERENCE_WARNING, NO_CALIBRATION_NOTE,
                               real_world_cm_from_scale, scale_factor_from_cm)
 from core.video import VideoHandler
 from gui.dialog_layout import fit_dialog_to_available_screen
+from gui.qt_image import bgr_to_qpixmap
 from mazes.tst import TST
 
 SLIDER_STEPS_PER_SECOND = 10  # sliders move in 0.1 s units
@@ -310,10 +310,7 @@ class SettingsDialog(QDialog):
         ret, frame = self.cap.read()
         if ret:
             vis_frame = self.settings.roi_manager.draw_on_frame(frame)
-            img = cv2.cvtColor(vis_frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = img.shape
-            q_img = QImage(img.data, w, h, ch * w, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(q_img)
+            pixmap = bgr_to_qpixmap(vis_frame)
             self.preview_label.setPixmap(pixmap.scaled(
                 self.preview_label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 

@@ -5,6 +5,7 @@ Updated to use unified Core modules (VideoHandler, Models).
 """
 import copy
 import logging
+from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -46,6 +47,20 @@ from preflight_checker import PreflightChecker, ValidationDialog
 from checkpoint_manager import CheckpointManager
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _disposed(dialog):
+    """Yield a modal dialog and schedule its deletion on leaving the block.
+
+    Dialogs are created with ``parent=self`` and run via ``exec()``; without
+    ``deleteLater()`` every one of them (and what it holds) stays alive as a
+    child of the main window until the window itself closes.
+    """
+    try:
+        yield dialog
+    finally:
+        dialog.deleteLater()
 
 
 class QTextEditLogger(logging.Handler, QObject):
@@ -601,12 +616,12 @@ class MainWindow(QMainWindow):
             if not ok: return
             self.maze.configure_mice(num)
             
-            roi_dialog = RoiSelectorDialog(str(ref_video_path), self.maze, self)
-            if not roi_dialog.exec(): return
-            roi_manager = roi_dialog.get_roi_manager()
-            
-            tst_tuner = TstTunerDialog(str(ref_video_path), roi_manager, self.maze, self)
-            if not tst_tuner.exec(): return
+            with _disposed(RoiSelectorDialog(str(ref_video_path), self.maze, self)) as roi_dialog:
+                if not roi_dialog.exec(): return
+                roi_manager = roi_dialog.get_roi_manager()
+
+            with _disposed(TstTunerDialog(str(ref_video_path), roi_manager, self.maze, self)) as tst_tuner:
+                if not tst_tuner.exec(): return
             
             # Core: Create default settings
             base_settings = BatchSettings(roi_manager, AppConfig().detection, 0.0)
@@ -615,20 +630,19 @@ class MainWindow(QMainWindow):
         elif maze_choice == "Freestyle / Open Field":
             self.update_progress_detailed(5, "Configuration", "Configuring freestyle zones...")
             QApplication.processEvents()
-            freestyle_dialog = FreestyleConfigDialog(self, maze=self.maze)
-            if not freestyle_dialog.exec(): return
-            
-            zone_definitions = freestyle_dialog.get_zone_definitions()
-            is_zone_free_mode = freestyle_dialog.is_zone_free_mode()
+            with _disposed(FreestyleConfigDialog(self, maze=self.maze)) as freestyle_dialog:
+                if not freestyle_dialog.exec(): return
+                zone_definitions = freestyle_dialog.get_zone_definitions()
+                is_zone_free_mode = freestyle_dialog.is_zone_free_mode()
             self.maze.configure_zones(zone_definitions)
             
             self.update_progress_detailed(10, "Configuration", "Defining regions of interest...")
             roi_manager = ROIManager()
             
             if not is_zone_free_mode:
-                roi_dialog = RoiSelectorDialog(str(ref_video_path), self.maze, self)
-                if not roi_dialog.exec(): return
-                roi_manager = roi_dialog.get_roi_manager()
+                with _disposed(RoiSelectorDialog(str(ref_video_path), self.maze, self)) as roi_dialog:
+                    if not roi_dialog.exec(): return
+                    roi_manager = roi_dialog.get_roi_manager()
             else:
                 if self.maze.needs_reference_line():
                     reply = QMessageBox.question(
@@ -651,23 +665,23 @@ class MainWindow(QMainWindow):
             except TaskCancelled:
                 self.update_progress_detailed(0, "Ready", "")
                 return
-            tuner_dialog = TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)
-            if not tuner_dialog.exec(): return
-            detection_config = tuner_dialog.get_detection_config()
+            with _disposed(TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)) as tuner_dialog:
+                if not tuner_dialog.exec(): return
+                detection_config = tuner_dialog.get_detection_config()
             base_settings = BatchSettings(roi_manager, detection_config, 0.0)
 
         # 3. STANDARD CONFIGURATION
         else:
             self.update_progress_detailed(10, "Configuration", "Defining regions of interest...")
-            roi_dialog = RoiSelectorDialog(str(ref_video_path), self.maze, self)
-            if not roi_dialog.exec(): return
-            roi_manager = roi_dialog.get_roi_manager()
+            with _disposed(RoiSelectorDialog(str(ref_video_path), self.maze, self)) as roi_dialog:
+                if not roi_dialog.exec(): return
+                roi_manager = roi_dialog.get_roi_manager()
 
             if isinstance(self.maze, (YMaze, EPM)):
-                arm_dialog = ArmEntryParametersDialog(self.maze, self)
-                if not arm_dialog.exec(): return
-                self.maze.configure_algorithm_parameters(arm_dialog.get_parameters())
-            
+                with _disposed(ArmEntryParametersDialog(self.maze, self)) as arm_dialog:
+                    if not arm_dialog.exec(): return
+                    self.maze.configure_algorithm_parameters(arm_dialog.get_parameters())
+
             self.update_progress_detailed(20, "Configuration", "Generating reference frame...")
             try:
                 ref_frame = self._generate_reference_frame(ref_video_path)
@@ -676,9 +690,9 @@ class MainWindow(QMainWindow):
                 return
 
             self.update_progress_detailed(35, "Configuration", "Tuning detection parameters...")
-            tuner_dialog = TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)
-            if not tuner_dialog.exec(): return
-            detection_config = tuner_dialog.get_detection_config()
+            with _disposed(TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)) as tuner_dialog:
+                if not tuner_dialog.exec(): return
+                detection_config = tuner_dialog.get_detection_config()
 
             base_settings = BatchSettings(roi_manager, detection_config, 0.0)
 
@@ -763,14 +777,14 @@ class MainWindow(QMainWindow):
                         carried = dialog.get_settings()
                         real_world_cm = dialog.get_real_world_cm()
                         dialog.deleteLater()
-                        roi_dialog = RoiSelectorDialog(str(video_path), self.maze, self)
-                        if roi_dialog.exec():
-                            current_settings = self.settings_after_redraw(
-                                carried,
-                                roi_dialog.get_roi_manager(),
-                                real_world_cm,
-                            )
-                            redraw_cm = real_world_cm or None
+                        with _disposed(RoiSelectorDialog(str(video_path), self.maze, self)) as roi_dialog:
+                            if roi_dialog.exec():
+                                current_settings = self.settings_after_redraw(
+                                    carried,
+                                    roi_dialog.get_roi_manager(),
+                                    real_world_cm,
+                                )
+                                redraw_cm = real_world_cm or None
             except Exception as e:
                 logger.error(f"Could not verify {video_path.name}: {e}", exc_info=True)
                 QMessageBox.warning(

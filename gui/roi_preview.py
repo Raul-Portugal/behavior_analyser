@@ -5,7 +5,6 @@ Allows users to preview configured ROIs before starting analysis.
 import cv2
 from pathlib import Path
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QLabel, QPushButton, QSlider,
                              QVBoxLayout, QHBoxLayout, QGroupBox,
                              QScrollArea, QWidget)
@@ -13,6 +12,7 @@ from PyQt6.QtWidgets import (QDialog, QLabel, QPushButton, QSlider,
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
 from gui.dialog_layout import fit_dialog_to_available_screen
+from gui.qt_image import bgr_to_qpixmap
 
 
 class ROIPreviewDialog(QDialog):
@@ -178,11 +178,7 @@ class ROIPreviewDialog(QDialog):
         vis_frame = self.roi_manager.draw_on_frame(frame, thickness=2)
         
         # Convert to QPixmap
-        rgb_frame = cv2.cvtColor(vis_frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_frame.shape
-        bytes_per_line = ch * w
-        q_img = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_img)
+        pixmap = bgr_to_qpixmap(vis_frame)
         
         # Scale to fit
         scaled_pixmap = pixmap.scaled(

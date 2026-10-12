@@ -9,7 +9,6 @@ from typing import Callable, List, Optional, Tuple
 import cv2
 import numpy as np
 from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
-from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QSlider, QVBoxLayout,
                              QGroupBox, QScrollArea, QWidget)
@@ -19,6 +18,7 @@ from core.models import AppConfig, DetectionConfig
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.video import VideoHandler
 from gui.dialog_layout import fit_dialog_to_available_screen
+from gui.qt_image import bgr_to_qpixmap
 from roi_manager import ROIManager
 
 
@@ -380,11 +380,7 @@ class TunerDialog(QDialog):
         self.test_scan_button.setText("Quick Scan Test")
 
     def _update_image(self, label: QLabel, image: np.ndarray):
-        if image.ndim == 2: image = cv2.cvtColor(image, cv2.COLOR_GRAY2RGB)
-        elif image.shape[2] == 3: image = cv2.cvtColor(image, cv2.COLOR_BGR2RGB)
-        h, w = image.shape[:2]
-        q_image = QImage(image.data, w, h, 3 * w, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_image)
+        pixmap = bgr_to_qpixmap(image)
         label.setPixmap(pixmap.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def keyPressEvent(self, event):

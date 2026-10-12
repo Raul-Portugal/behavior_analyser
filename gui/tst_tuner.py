@@ -8,7 +8,6 @@ import cv2
 import logging
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QElapsedTimer
-from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
@@ -22,6 +21,7 @@ from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
 from core.tst_display import tst_display_style
 from core.tst_events import smooth_tst_immobility_states
 from gui.dialog_layout import fit_dialog_to_available_screen
+from gui.qt_image import bgr_to_qpixmap
 
 logger = logging.getLogger(__name__)
 
@@ -1150,14 +1150,7 @@ class TstTunerDialog(QDialog):
                                   font, font_scale, (255, 255, 255),
                                   thickness, cv2.LINE_AA)
             
-            # Convert BGR to RGB for Qt
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = frame_rgb.shape
-            bytes_per_line = ch * w
-            
-            # Create QImage and pixmap
-            qimg = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(qimg)
+            pixmap = bgr_to_qpixmap(frame)
             
             # Scale to fit label if needed
             if pixmap.width() > self.image_label.width() or pixmap.height() > self.image_label.height():
@@ -1358,16 +1351,14 @@ class TstTunerDialog(QDialog):
             return
         self.tst.motion_config = copy.deepcopy(self.preview_motion_config)
         self.tst.set_parameters(time_threshold)
-        
-        # Clean up
-        self.cleanup()
         super().accept()
-    
-    def reject(self):
-        """Cancel and close dialog."""
+
+    def done(self, result: int):
+        """Release the video capture and worker on every way of closing."""
+        # accept()/reject()/Esc all end up here without going through closeEvent.
         self.cleanup()
-        super().reject()
-    
+        super().done(result)
+
     def cleanup(self):
         """Clean up resources before closing."""
         # Stop playback
