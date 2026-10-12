@@ -402,9 +402,12 @@ class TunerDialog(QDialog):
     def _release_resources(self):
         """Stop background work and free the capture (safe to repeat)."""
         self.stats_timer.stop()
-        if self.scan_worker is not None and self.scan_worker.isRunning():
+        if self.scan_worker is not None:
+            # Always join: the worker's finished signal can be delivered
+            # before the thread has fully exited, and destroying a QThread
+            # that is still running aborts the process.
             self.scan_worker.requestInterruption()
-            self.scan_worker.wait(5000)
+            self.scan_worker.wait()
         if self.cap is not None:
             self.cap.release()
 
