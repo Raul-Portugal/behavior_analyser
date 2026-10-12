@@ -71,11 +71,13 @@ class AnalysisWorker(QObject):
         maze: Maze,
         workers: int = 1,
         sample_metadata: Optional[SampleMetadata] = None,
+        bin_seconds: float = 0.0,
     ):
         """``workers`` > 1 analyses several videos at once in child processes.
 
-        ``sample_metadata`` is the run's optional sample sheet; it is a
-        run-level option and does not affect the checkpoint settings hash.
+        ``sample_metadata`` (an optional sample sheet) and ``bin_seconds``
+        (time-bin length, 0 = off) are run-level options: neither is part of
+        the settings, so neither affects the checkpoint settings hash.
         """
         super().__init__()
         self.analysis_plan = analysis_plan
@@ -83,6 +85,7 @@ class AnalysisWorker(QObject):
         self.maze = maze
         self.workers = max(1, int(workers))
         self.sample_metadata = sample_metadata
+        self.bin_seconds = max(0.0, float(bin_seconds or 0.0))
         apply_effective_parameters(self.analysis_plan, self.maze)
         self.is_cancelled = False
         self.checkpoint_mgr = CheckpointManager(output_dir)
@@ -116,6 +119,7 @@ class AnalysisWorker(QObject):
             write_plan=self._write_run_plan,
             write_manifest=self._write_run_manifest,
             sample_metadata=self.sample_metadata,
+            bin_seconds=self.bin_seconds,
         )
         outcome: Optional[BatchRunOutcome] = None
         try:

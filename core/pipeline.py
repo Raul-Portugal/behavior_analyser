@@ -27,6 +27,7 @@ from core.video import (
 )
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.analysis_engine import Analyzer
+from core.time_bins import TimeBinTable, compute_time_bins
 from core.tst_display import blend_polygon, tst_display_style
 from core.tst_motion_engine import (
     TST_VALIDATION_FRAME_STEP, TSTFramePipeline, TSTMotionEngine,
@@ -116,6 +117,9 @@ class VideoJob:
     # Sample-sheet values of this video (run-level, not part of the settings
     # hash); None when the run has no sample sheet.
     animal_metadata: Optional[Dict[str, str]] = None
+    # Time-bin length in seconds (0 = no time bins). Run-level, like the
+    # metadata: not part of the settings, so not part of the checkpoint hash.
+    bin_seconds: float = 0.0
 
 
 @dataclass
@@ -127,6 +131,9 @@ class VideoOutcome:
     failure: Optional[str] = None
     cancelled: bool = False
     frames_done: int = 0
+    # Per-bin metrics when the job asked for time bins (computed once here so
+    # a parallel batch can write the batch-level file from the parent).
+    time_bins: Optional[TimeBinTable] = None
 
     @property
     def succeeded(self) -> bool:
@@ -190,6 +197,8 @@ class VideoPipeline:
         self.base_name = job.base_name
         self.global_est = job.batch_estimator
         self.global_offset = job.batch_frame_offset
+        self.time_bins: Optional[TimeBinTable] = None
+        self._export_warnings: List[str] = []
 
     def _raise_if_cancelled(self):
         """Cooperative cancellation point for phases outside the frame loops."""
@@ -469,6 +478,7 @@ class VideoPipeline:
                     )
                 self.checkpoint_mgr.clear_checkpoint(video_path)
 
+            quality_warnings.extend(self._export_warnings)
             self.reporter.log(f"✓ Successfully processed: {video_path.name}")
             if quality_warnings:
                 self.reporter.status("warning", "; ".join(quality_warnings[:3]))
@@ -476,7 +486,7 @@ class VideoPipeline:
                 self.reporter.status("done", "")
             return VideoOutcome(
                 video_path, result=result, warnings=quality_warnings,
-                frames_done=frames_done,
+                frames_done=frames_done, time_bins=self.time_bins,
             )
 
         except InterruptedError:
@@ -886,7 +896,30 @@ class VideoPipeline:
         )
         self._raise_if_cancelled()
         self.maze.export_specific_data(result, output_dir, base_name)
+        self._export_time_bins(result, base_name, output_dir)
         self.reporter.log("✓ Data exported")
+
+    def _export_time_bins(self, result, base_name, output_dir):
+        """Per-bin metrics (only when the run asked for time bins).
+
+        A failure here costs the bin files, not the video: it is reported as
+        a quality warning like a failed plot.
+        """
+        if not self.job.bin_seconds or self.job.bin_seconds <= 0:
+            return
+        self._raise_if_cancelled()
+        try:
+            table = compute_time_bins(result, self.job.bin_seconds)
+            if table is None:
+                return
+            DataExporter.export_time_bins_csv(
+                table, output_dir / f"{base_name}_time_bins.csv"
+            )
+            self.time_bins = table
+        except Exception as exc:
+            message = f"time bins failed: {exc}"
+            self._export_warnings.append(message)
+            logger.error(message, exc_info=True)
 
     def _generate_all_visualizations(
         self, result, handler, base_name, cb, output_dir

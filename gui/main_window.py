@@ -1681,6 +1681,7 @@ class MainWindow(QMainWindow):
                 analysis_plan, self.output_dir, self.maze,
                 workers=self._worker_count(len(analysis_plan)),
                 sample_metadata=sample_metadata,
+                bin_seconds=self.run_options.bin_seconds(),
             )
         except Exception as exc:
             self.analysis_thread = None

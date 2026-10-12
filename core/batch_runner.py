@@ -17,7 +17,7 @@ from concurrent.futures import (
 )
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Callable, List, Mapping, Optional, Protocol, Tuple
+from typing import Callable, Dict, List, Mapping, Optional, Protocol, Tuple
 
 from checkpoint_manager import CheckpointManager, ProgressEstimator
 from core.models import BatchSettings
@@ -26,6 +26,7 @@ from core.pipeline import (
 )
 from core.run_outputs import write_run_manifest, write_run_plan
 from core.sample_sheet import SampleMetadata
+from core.time_bins import TimeBinTable
 from core.video import VideoHandler
 from mazes import create_maze
 from mazes.base_maze import BaseAnalysisResult, Maze
@@ -199,6 +200,7 @@ class BatchRunner:
         write_plan: Optional[Callable[[], None]] = None,
         write_manifest: Optional[Callable[..., None]] = None,
         sample_metadata: Optional[SampleMetadata] = None,
+        bin_seconds: float = 0.0,
     ):
         self.analysis_plan = analysis_plan
         self.output_root = output_root
@@ -213,6 +215,8 @@ class BatchRunner:
         # Run-level options: neither is part of BatchSettings, so neither
         # changes the checkpoint settings hash.
         self.sample_metadata = sample_metadata
+        self.bin_seconds = max(0.0, float(bin_seconds or 0.0))
+        self.time_bins: Dict[Path, TimeBinTable] = {}
         self._write_plan = write_plan or (
             lambda: write_run_plan(self.analysis_plan, self.run_dir)
         )
@@ -248,6 +252,7 @@ class BatchRunner:
                 None if self.sample_metadata is None
                 else self.sample_metadata.values_for(video_path)
             ),
+            bin_seconds=self.bin_seconds,
             video_number=video_number,
             total_videos=total_videos,
             **extra,
@@ -263,6 +268,8 @@ class BatchRunner:
             self.failures.append((video_path, outcome.failure))
         elif outcome.result is not None:
             self.results.append((video_path, outcome.result))
+            if outcome.time_bins is not None:
+                self.time_bins[video_path] = outcome.time_bins
 
     # -- public --------------------------------------------------------
     def run(self) -> BatchRunOutcome:
@@ -297,6 +304,20 @@ class BatchRunner:
             except Exception as exc:
                 self.failures.append((Path("batch_summary.csv"), str(exc)))
                 logger.error("Batch summary export failed", exc_info=True)
+
+        tables = [
+            (path, self.time_bins[path]) for path, _ in self.results
+            if path in self.time_bins
+        ]
+        if tables:
+            try:
+                DataExporter.export_batch_time_bins_csv(
+                    tables, self.run_dir, self.maze.name,
+                    metadata=self.sample_metadata,
+                )
+            except Exception as exc:
+                self.failures.append((Path("batch_time_bins.csv"), str(exc)))
+                logger.error("Batch time bins export failed", exc_info=True)
 
         try:
             self._write_manifest(

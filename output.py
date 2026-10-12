@@ -18,6 +18,7 @@ from scipy.ndimage import gaussian_filter
 from mazes.base_maze import BaseAnalysisResult, Maze
 from core.output_contract import COMMON_BATCH_HEADERS, common_batch_row
 from core.sample_sheet import SampleMetadata
+from core.time_bins import TIME_BIN_HEADERS, TimeBinTable
 
 logger = logging.getLogger(__name__)
 
@@ -77,6 +78,55 @@ class DataExporter:
                         
         except IOError as e:
             logger.error(f"Failed to write batch summary file: {e}")
+            raise
+
+    @staticmethod
+    def export_time_bins_csv(table: TimeBinTable, output_path: Path):
+        """Write one video's long-format ``*_time_bins.csv``."""
+        logger.info(f"Exporting time bins: {output_path}")
+        try:
+            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(TIME_BIN_HEADERS)
+                writer.writerows(table.rows())
+        except IOError as e:
+            logger.error(f"Failed to write time bins file: {e}")
+            raise
+
+    @staticmethod
+    def export_batch_time_bins_csv(
+        tables: List[Tuple[Path, TimeBinTable]],
+        output_dir: Path,
+        paradigm_name: str,
+        metadata: Optional[SampleMetadata] = None,
+    ):
+        """Write the run's long-format ``batch_time_bins.csv``.
+
+        Every row of every video's table, in video order, led by the video
+        filename and paradigm and then (with a sample sheet) its metadata.
+        """
+        if not tables:
+            return
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "batch_time_bins.csv"
+        metadata_columns = list(metadata.columns) if metadata else []
+        headers = (
+            ["video_filename", "paradigm"] + metadata_columns
+            + TIME_BIN_HEADERS
+        )
+        try:
+            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+                for video_path, table in tables:
+                    lead = [video_path.name, paradigm_name]
+                    if metadata:
+                        values = metadata.values_for(video_path)
+                        lead += [values[column] for column in metadata_columns]
+                    for row in table.rows():
+                        writer.writerow(lead + row)
+        except IOError as e:
+            logger.error(f"Failed to write batch time bins file: {e}")
             raise
 
     @staticmethod

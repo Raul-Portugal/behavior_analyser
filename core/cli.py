@@ -4,7 +4,7 @@ Headless batch analysis, without Qt.
 
     python -m core.cli run --plan plan.json --out DIR [--workers N]
                            [--paradigm NAME] [--videos PATH ...]
-                           [--sample-sheet SHEET.csv]
+                           [--sample-sheet SHEET.csv] [--bin-seconds N]
 
 ``plan.json`` is a saved batch plan (File > Save Configuration, or the
 ``run_plan.json`` of an earlier run) or a single template. A plan names its
@@ -295,6 +295,7 @@ def run_plan(
     reporter: ConsoleReporter,
     cancel: threading.Event,
     sample_metadata: Optional[SampleMetadata] = None,
+    bin_seconds: float = 0.0,
 ) -> Tuple[BatchRunOutcome, Path]:
     """Run an already validated plan; returns the outcome and the run folder."""
     output_dir = Path(output_dir)
@@ -313,6 +314,7 @@ def run_plan(
         workers=count,
         started_at=run_timestamp(),
         sample_metadata=sample_metadata,
+        bin_seconds=bin_seconds,
     )
     return runner.run(), run_dir
 
@@ -342,6 +344,10 @@ def _build_parser() -> argparse.ArgumentParser:
                      help="CSV of animal metadata: first column 'video', "
                           "other columns (animal_id, group, ...) are added "
                           "to the batch summary, summary.json and manifest")
+    run.add_argument("--bin-seconds", type=float, default=0.0,
+                     help="also write per-time-bin metrics (data/<video>_"
+                          "time_bins.csv and batch_time_bins.csv) with bins "
+                          "of this many seconds; 0 (default) turns it off")
     run.add_argument("--quiet", action="store_true",
                      help="print only failures, warnings and the result")
     return parser
@@ -350,6 +356,8 @@ def _build_parser() -> argparse.ArgumentParser:
 def _command_run(args, reporter: ConsoleReporter) -> int:
     if args.workers is not None and args.workers < 1:
         raise CliError("--workers must be at least 1")
+    if args.bin_seconds < 0:
+        raise CliError("--bin-seconds cannot be negative (0 turns bins off)")
     videos = find_videos(args.videos) if args.videos else []
     plan = load_analysis_plan(args.plan, videos)
     maze = resolve_maze(plan, args.paradigm)
@@ -385,6 +393,7 @@ def _command_run(args, reporter: ConsoleReporter) -> int:
         outcome, run_dir = run_plan(
             plan, maze, args.out, args.workers, reporter, cancel,
             sample_metadata=sample_metadata,
+            bin_seconds=args.bin_seconds,
         )
     finally:
         signal.signal(signal.SIGINT, previous)

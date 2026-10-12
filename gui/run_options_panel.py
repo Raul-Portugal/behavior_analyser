@@ -1,7 +1,7 @@
 """
 gui/run_options_panel.py
 Run-level options shown under the Start button: the sample sheet (animal
-metadata) and, later, the time-bin length.
+metadata) and the time-bin length.
 
 These are options of the *run*, not of a video's settings: they are never part
 of ``BatchSettings`` and so never change the checkpoint settings hash. The
@@ -11,7 +11,8 @@ from pathlib import Path
 from typing import Callable, Optional, Sequence, Tuple
 
 from PyQt6.QtWidgets import (
-    QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QWidget,
+    QFileDialog, QHBoxLayout, QLabel, QMessageBox, QPushButton, QSpinBox,
+    QWidget,
 )
 
 from core.output_contract import COMMON_BATCH_HEADERS
@@ -21,6 +22,10 @@ from core.sample_sheet import (
     reserved_column_conflicts,
 )
 from gui.app_settings import AppSettings
+
+
+# Longest bin offered in the spinbox (the CLI accepts any number of seconds).
+MAX_BIN_MINUTES = 240
 
 
 class RunOptionsPanel(QWidget):
@@ -55,6 +60,21 @@ class RunOptionsPanel(QWidget):
         layout.addWidget(self.sheet_button)
         layout.addWidget(self.clear_button)
         layout.addWidget(self.sheet_label, 1)
+
+        self.bins_label = QLabel("Time bins:")
+        self.bins_spin = QSpinBox()
+        self.bins_spin.setRange(0, MAX_BIN_MINUTES)
+        self.bins_spin.setSpecialValueText("Off")
+        self.bins_spin.setSuffix(" min")
+        self.bins_spin.setToolTip(
+            "Also report distance, time per zone and the paradigm's own "
+            "metrics in consecutive bins of this many minutes (per video in "
+            "data/<video>_time_bins.csv and for the whole run in "
+            "batch_time_bins.csv). Off leaves the outputs exactly as they "
+            "are without this option."
+        )
+        layout.addWidget(self.bins_label)
+        layout.addWidget(self.bins_spin)
 
         remembered = app_settings.sample_sheet()
         if remembered is not None:
@@ -147,6 +167,10 @@ class RunOptionsPanel(QWidget):
         self.sheet_label.setToolTip(tooltip)
 
     # -- run options -----------------------------------------------------
+    def bin_seconds(self) -> float:
+        """Time-bin length in seconds; 0 when time bins are off."""
+        return float(self.bins_spin.value()) * 60.0
+
     def resolve_for_run(
         self, videos: Sequence[Path]
     ) -> Tuple[bool, Optional[SampleMetadata]]:

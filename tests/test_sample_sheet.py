@@ -453,6 +453,13 @@ class RunOptionsPanelTests(SheetFixture):
             panel.choose_sheet()
         return warn
 
+    def test_time_bin_spinbox_is_off_by_default_and_gives_seconds(self):
+        panel = self._panel()
+        self.assertEqual(panel.bin_seconds(), 0.0)
+        self.assertEqual(panel.bins_spin.specialValueText(), "Off")
+        panel.bins_spin.setValue(5)
+        self.assertEqual(panel.bin_seconds(), 300.0)
+
     def test_no_sheet_means_no_metadata(self):
         panel = self._panel()
         self.assertEqual(panel.resolve_for_run(self.videos), (True, None))
