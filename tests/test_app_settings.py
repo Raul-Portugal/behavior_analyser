@@ -194,6 +194,11 @@ class MainWindowPersistenceTests(unittest.TestCase):
         window.close()
         self.assertIsNotNone(self.settings.window_geometry())
 
+    def test_a_window_that_was_never_shown_saves_nothing(self):
+        window = self._window()
+        window.close()  # what --startup-check does
+        self.assertIsNone(self.settings.window_geometry())
+
 
 if __name__ == "__main__":
     unittest.main()

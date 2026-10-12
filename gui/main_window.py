@@ -198,6 +198,10 @@ class MainWindow(QMainWindow):
             self._set_output_dir(remembered, explicit=True, persist=False)
 
     def _save_session(self):
+        # A window that was never shown (e.g. --startup-check) has no layout
+        # worth remembering and must not overwrite the user's saved one.
+        if not self.isVisible():
+            return
         self.app_settings.save_window(self.saveGeometry(), self.saveState())
         self.app_settings.sync()
 
