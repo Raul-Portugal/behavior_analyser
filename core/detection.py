@@ -19,6 +19,50 @@ from core.tracking_quality import (
 logger = logging.getLogger(__name__)
 
 
+# cv2.calcHist counts in float32, which is exact only up to 2**24 pixels.
+_MAX_EXACT_HISTOGRAM_COUNT = 1 << 24
+
+
+_WEIGHT_TABLE_CACHE: Dict[int, np.ndarray] = {}
+
+
+def percentile_uint8(image: np.ndarray, q: float) -> float:
+    """Return ``np.percentile(image, q)`` for a uint8 array, exactly.
+
+    Uses a 256-bin histogram and its cumulative sum instead of a partial
+    sort, and reproduces NumPy's default ``linear`` interpolation operation
+    for operation so the float64 result is bit-identical.
+    """
+    q = float(q)
+    if (
+        image.dtype != np.uint8
+        or image.size == 0
+        or image.size > _MAX_EXACT_HISTOGRAM_COUNT
+        or not 0.0 <= q <= 100.0
+    ):
+        return float(np.percentile(image, q))
+
+    count = image.size
+    histogram = cv2.calcHist([image], [0], None, [256], [0, 256])
+    cumulative = np.cumsum(histogram.ravel().astype(np.int64))
+    virtual_index = (count - 1) * (q / 100.0)
+    if virtual_index >= count - 1:
+        return float(np.searchsorted(cumulative, count - 1, side="right"))
+
+    previous_rank = int(np.floor(virtual_index))
+    gamma = virtual_index - previous_rank
+    # The k-th smallest value is the first bin whose cumulative count > k.
+    lower = float(np.searchsorted(cumulative, previous_rank, side="right"))
+    upper = float(
+        np.searchsorted(cumulative, previous_rank + 1, side="right")
+    )
+    difference = upper - lower
+    result = lower + difference * gamma
+    if gamma >= 0.5:
+        result = upper - difference * (1 - gamma)
+    return float(result)
+
+
 @dataclass(frozen=True)
 class DetectionResult:
     """One detector decision and the evidence supporting it."""
@@ -106,6 +150,21 @@ class DetectionEngine:
             None, 0.0, failure_reason="not_processed"
         )
         self._last_debug_images: Dict[str, np.ndarray] = {}
+        self._last_labels: Optional[np.ndarray] = None
+        self._last_selected_label: Optional[int] = None
+
+    @staticmethod
+    def _weight_lookup_table(outside_weight: int) -> np.ndarray:
+        """Per-intensity result of ``multiply(v, weight, scale=1/255)``."""
+        table = _WEIGHT_TABLE_CACHE.get(outside_weight)
+        if table is None:
+            values = np.arange(256, dtype=np.uint8).reshape(256, 1)
+            weights = np.full_like(values, outside_weight)
+            table = cv2.multiply(values, weights, scale=1.0 / 255.0).ravel()
+            if len(_WEIGHT_TABLE_CACHE) > 512:
+                _WEIGHT_TABLE_CACHE.clear()
+            _WEIGHT_TABLE_CACHE[outside_weight] = table
+        return table
 
     def _segment(
         self,
@@ -128,27 +187,28 @@ class DetectionEngine:
             and self.consecutive_failures < self.MAX_FAILURES
         )
         if weighting_active:
-            mask = np.full_like(
-                raw_diff,
-                round(255 * (1.0 - self.config.weight_omega)),
-                dtype=np.uint8
+            # Equivalent to multiplying by a full-frame mask of 255 inside the
+            # window and ``round(255 * (1 - omega))`` outside, scaled by
+            # 1/255 (255/255 is the identity for uint8), but via a 256-entry
+            # lookup table plus a copy of the window region.
+            outside_weight = round(255 * (1.0 - self.config.weight_omega))
+            weighted_diff = cv2.LUT(
+                raw_diff, self._weight_lookup_table(outside_weight)
             )
             x = int(round(self.last_position[0]))
             y = int(round(self.last_position[1]))
             half_window = self.config.window_size // 2
             x1, y1 = max(0, x - half_window), max(0, y - half_window)
             x2, y2 = min(self.w, x + half_window), min(self.h, y + half_window)
-            mask[y1:y2, x1:x2] = 255
-            weighted_diff = cv2.multiply(
-                raw_diff, mask, scale=1.0 / 255.0
-            ).astype(np.uint8)
+            if x2 > x1 and y2 > y1:
+                weighted_diff[y1:y2, x1:x2] = raw_diff[y1:y2, x1:x2]
 
         threshold_value = max(
             5.0,
-            float(np.percentile(
+            percentile_uint8(
                 weighted_diff,
                 self.config.threshold_percentile
-            ))
+            )
         )
         _, binary = cv2.threshold(
             weighted_diff, threshold_value, 255, cv2.THRESH_BINARY
@@ -180,14 +240,16 @@ class DetectionEngine:
         foreground_ratio = (
             foreground_pixels / frame_area if frame_area else 0.0
         )
-        selected_mask = np.zeros_like(binary)
 
+        # The selected-component debug mask is built lazily from the label
+        # image in get_intermediate_images().
         self._last_debug_images = {
             'diff': raw_diff,
             'weighted_diff': weighted_diff,
             'threshold': binary,
-            'selected_component': selected_mask
         }
+        self._last_labels = None
+        self._last_selected_label = None
 
         if foreground_pixels == 0:
             return self._record_failure(
@@ -274,8 +336,8 @@ class DetectionEngine:
                 foreground_ratio=foreground_ratio
             )
 
-        selected_mask[labels == best['label']] = 255
-        self._last_debug_images['selected_component'] = selected_mask
+        self._last_labels = labels
+        self._last_selected_label = int(best['label'])
         confidence = float(best['confidence'])
         if confidence < self.config.min_detection_confidence:
             return self._record_failure(
@@ -366,7 +428,15 @@ class DetectionEngine:
                 'weighted_diff': weighted_diff,
                 'threshold': binary
             }
-        return {
+        images = {
             name: image.copy()
             for name, image in self._last_debug_images.items()
         }
+        if images:
+            selected_mask = np.zeros_like(images['threshold'])
+            if self._last_labels is not None:
+                selected_mask[
+                    self._last_labels == self._last_selected_label
+                ] = 255
+            images['selected_component'] = selected_mask
+        return images
