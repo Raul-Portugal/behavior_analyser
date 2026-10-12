@@ -234,6 +234,9 @@ class BatchRunner:
             len(self.analysis_plan), self.base_names,
             results, failures, quality_warnings, cancelled,
             sample_metadata=self.sample_metadata,
+            analysis_plan=self.analysis_plan,
+            hasher=self.checkpoint_mgr,
+            bin_seconds=self.bin_seconds,
         )
 
     # -- helpers -------------------------------------------------------

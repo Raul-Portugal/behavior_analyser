@@ -157,4 +157,7 @@ class AnalysisWorker(QObject):
             quality_warnings,
             cancelled,
             sample_metadata=self.sample_metadata,
+            analysis_plan=self.analysis_plan,
+            hasher=self.checkpoint_mgr,
+            bin_seconds=self.bin_seconds,
         )
