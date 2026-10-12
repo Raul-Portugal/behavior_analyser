@@ -280,7 +280,7 @@ class DiscardGuardTests(unittest.TestCase):
 
         dialog = TunerDialog(str(video), ref, ROIManager(source_dimensions=(160, 120)))
         self.addCleanup(dialog.deleteLater)
-        dialog.sliders["Window Size"].setValue(80)
+        dialog.sliders["Search window"].setValue(80)
         dialog.setResult(7)
         with self._confirm(False) as confirm:
             dialog.cancel_button.click()

@@ -6,6 +6,8 @@ a button-per-choice question box, and the pure decision helpers behind them.
 The Qt-free helpers hold the decisions (which options to offer, what a choice
 means) so they can be tested without opening any dialog.
 """
+import logging
+import re
 from dataclasses import dataclass
 from typing import Dict, List, Optional, Sequence
 
@@ -174,3 +176,61 @@ def format_start_summary(
         f"{'s' if count != 1 else ''}:\n{lines}\n\n" + informative
     )
     return "Ready with Warnings", text, informative
+
+
+# ----------------------------------------------------------------------
+# Progress and log helpers
+# ----------------------------------------------------------------------
+_BATCH_ETA = re.compile(r"Batch ETA:\s*([^|]+)")
+
+
+def extract_batch_eta(sub_text: str) -> Optional[str]:
+    """The worker's own "Batch ETA: 2m 15s" text, if the message has one."""
+    match = _BATCH_ETA.search(sub_text or "")
+    if not match:
+        return None
+    eta = match.group(1).strip()
+    return None if not eta or eta.lower().startswith("calculating") else eta
+
+
+def format_duration(seconds: float) -> str:
+    """Compact duration: 45s, 3m 05s, 2h 04m."""
+    total = max(0, int(round(seconds)))
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    if hours:
+        return f"{hours}h {minutes:02d}m"
+    if minutes:
+        return f"{minutes}m {secs:02d}s"
+    return f"{secs}s"
+
+
+MIN_ETA_ELAPSED_S = 5.0
+MIN_ETA_PERCENT = 2
+
+
+def estimate_batch_eta(elapsed_s: float, percent: float) -> Optional[float]:
+    """Seconds left from real elapsed time and the batch percentage.
+
+    None until enough of the batch has run for the estimate to mean anything.
+    """
+    if percent < MIN_ETA_PERCENT or elapsed_s < MIN_ETA_ELAPSED_S or percent >= 100:
+        return None
+    return elapsed_s * (100.0 - percent) / percent
+
+
+LOG_LEVEL_CHOICES = (
+    ("Info", logging.INFO),
+    ("Warning", logging.WARNING),
+    ("Error", logging.ERROR),
+)
+
+
+def level_for_worker_message(text: str) -> int:
+    """Worker status lines carry their severity as a leading symbol."""
+    stripped = text.lstrip()
+    if stripped.startswith("✗"):
+        return logging.ERROR
+    if stripped.startswith("⚠"):
+        return logging.WARNING
+    return logging.INFO

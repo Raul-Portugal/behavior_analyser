@@ -182,9 +182,12 @@ class SettingsDialog(QDialog):
                 self.scale_spin.setEnabled(False)
                 other_layout.addRow(self._note_label(NO_CALIBRATION_NOTE))
         
-        # --- IMPROVEMENT: TST doesn't need timelapse, it needs validation video ---
-        check_label = "Create Validation Video (Annotated)" if self.is_tst else "Create Timelapse Video"
-        self.timelapse_check = QCheckBox(check_label)
+        # One name everywhere: the annotated video is the "validation video".
+        self.timelapse_check = QCheckBox("Create validation video (annotated)")
+        self.timelapse_check.setToolTip(
+            "Writes an annotated video so the tracking can be checked by eye. "
+            "Slower, but recommended for new setups."
+        )
         self.timelapse_check.setChecked(self.settings.create_timelapse)
         other_layout.addRow(self.timelapse_check)
         

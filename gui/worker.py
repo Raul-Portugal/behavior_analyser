@@ -421,7 +421,7 @@ class AnalysisWorker(QObject):
                     
                     if settings.create_timelapse and timelapse_success:
                         self._raise_if_cancelled()
-                        self.emit_progress(to_batch_pct(95), f"Video: {base_name}", "Creating Timelapse...")
+                        self.emit_progress(to_batch_pct(95), f"Video: {base_name}", "Creating validation video...")
                         media_dir.mkdir(parents=True, exist_ok=True)
                         self._generate_tracking_validation_video(
                             result, video_path, settings, base_name, handler,

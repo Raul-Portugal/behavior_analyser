@@ -1,7 +1,6 @@
 """
 gui/tuner_dialog.py
-Enhanced dialog for tuning detection with live quality feedback.
-Updated to fix parameter mismatch with Core modules.
+Dialog for tuning detection with live quality feedback.
 """
 import copy
 from typing import Callable, List, Optional, Tuple
@@ -95,7 +94,7 @@ class QuickScanWorker(QThread):
 
 
 class TunerDialog(QDialog):
-    """Enhanced dialog for tuning detection with live quality feedback."""
+    """Dialog for tuning detection with live quality feedback."""
     
     def __init__(self, video_path: str, ref_frame: np.ndarray, 
                  roi_manager: ROIManager, parent=None):
@@ -142,7 +141,7 @@ class TunerDialog(QDialog):
         self.stats_timer.start(500)
 
     def init_ui(self):
-        self.setWindowTitle("Interactive Detection Tuner - Enhanced")
+        self.setWindowTitle("Detection Tuner")
 
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
@@ -178,12 +177,21 @@ class TunerDialog(QDialog):
         # Parameter Controls
         param_grid = QGridLayout()
         self.sliders = {}
-        self._add_slider(param_grid, "Threshold (x10)", 950, 999, int(self.config.threshold_percentile * 10))
-        self._add_slider(param_grid, "Weight Omega (x100)", 0, 100, int(self.config.weight_omega * 100))
-        self._add_slider(param_grid, "Window Size", 20, 300, self.config.window_size)
-        self._add_slider(param_grid, "Min Component Area", 5, 2000, self.config.min_component_area)
-        self._add_slider(param_grid, "Morphology Kernel", 0, 9, self.config.morphology_kernel_size)
-        self._add_slider(param_grid, "Min Confidence (x100)", 0, 100, int(self.config.min_detection_confidence * 100))
+        self.slider_labels = {}
+        # Sliders move in integer steps; ``scale`` turns a step into the real
+        # value shown in the label (e.g. 990 -> 99.0).
+        self._add_slider(param_grid, "Threshold percentile", 950, 999,
+                         round(self.config.threshold_percentile * 10), scale=10, decimals=1)
+        self._add_slider(param_grid, "Weight omega", 0, 100,
+                         round(self.config.weight_omega * 100), scale=100, decimals=2)
+        self._add_slider(param_grid, "Search window", 20, 300,
+                         self.config.window_size, unit=" px")
+        self._add_slider(param_grid, "Min component area", 5, 2000,
+                         self.config.min_component_area, unit=" px\u00b2")
+        self._add_slider(param_grid, "Morphology kernel", 0, 9,
+                         self.config.morphology_kernel_size, unit=" px")
+        self._add_slider(param_grid, "Min confidence", 0, 100,
+                         round(self.config.min_detection_confidence * 100), scale=100, decimals=2)
         right_layout.addLayout(param_grid)
 
         # Frame Navigation
@@ -240,15 +248,27 @@ class TunerDialog(QDialog):
         label.setStyleSheet("background-color: black; color: white; border: 1px solid grey;")
         return label
 
-    def _add_slider(self, layout: QGridLayout, name: str, min_val: int, max_val: int, initial_val: int):
+    @staticmethod
+    def format_slider_value(name: str, value: int, scale: int = 1,
+                            decimals: int = 0, unit: str = "") -> str:
+        """Label text with the real value and its unit, e.g. "Threshold percentile: 99.0"."""
+        return f"{name}: {value / scale:.{decimals}f}{unit}"
+
+    def _add_slider(self, layout: QGridLayout, name: str, min_val: int, max_val: int,
+                    initial_val: int, scale: int = 1, decimals: int = 0, unit: str = ""):
         row = layout.rowCount()
-        label = QLabel(f"{name}: {initial_val}")
+        label = QLabel(self.format_slider_value(name, initial_val, scale, decimals, unit))
         slider = QSlider(Qt.Orientation.Horizontal, minimum=min_val, maximum=max_val, value=initial_val)
-        slider.valueChanged.connect(lambda val, l=label, n=name: l.setText(f"{n}: {val}"))
+        slider.valueChanged.connect(
+            lambda val, l=label: l.setText(
+                self.format_slider_value(name, val, scale, decimals, unit)
+            )
+        )
         slider.valueChanged.connect(self.update_detection)
         layout.addWidget(label, row, 0)
         layout.addWidget(slider, row, 1)
         self.sliders[name] = slider
+        self.slider_labels[name] = label
 
     def on_frame_slider_change(self, value: int):
         if self.current_frame_idx != value:
@@ -260,12 +280,12 @@ class TunerDialog(QDialog):
             self.quality_monitor.reset()
 
         # Update config
-        self.config.threshold_percentile = self.sliders["Threshold (x10)"].value() / 10.0
-        self.config.weight_omega = self.sliders["Weight Omega (x100)"].value() / 100.0
-        self.config.window_size = self.sliders["Window Size"].value()
-        self.config.min_component_area = self.sliders["Min Component Area"].value()
-        self.config.morphology_kernel_size = self.sliders["Morphology Kernel"].value()
-        self.config.min_detection_confidence = self.sliders["Min Confidence (x100)"].value() / 100.0
+        self.config.threshold_percentile = self.sliders["Threshold percentile"].value() / 10.0
+        self.config.weight_omega = self.sliders["Weight omega"].value() / 100.0
+        self.config.window_size = self.sliders["Search window"].value()
+        self.config.min_component_area = self.sliders["Min component area"].value()
+        self.config.morphology_kernel_size = self.sliders["Morphology kernel"].value()
+        self.config.min_detection_confidence = self.sliders["Min confidence"].value() / 100.0
 
         self.cap.set(cv2.CAP_PROP_POS_FRAMES, self.current_frame_idx)
         ret, frame = self.cap.read()

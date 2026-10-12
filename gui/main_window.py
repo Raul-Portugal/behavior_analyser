@@ -4,17 +4,19 @@ Main GUI Window.
 Updated to use unified Core modules (VideoHandler, Models).
 """
 import copy
+import html
 import logging
+import time
 from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QObject, QThread, QTimer, QUrl, Qt, pyqtSignal
-from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QHBoxLayout,
-                             QLabel, QMainWindow, QMessageBox,
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
+                             QHBoxLayout, QLabel, QMainWindow, QMessageBox,
                              QProgressBar, QProgressDialog, QPushButton, QTextEdit, QVBoxLayout,
                              QWidget, QInputDialog)
-from PyQt6.QtGui import QAction, QDesktopServices
+from PyQt6.QtGui import QAction, QDesktopServices, QKeySequence
 
 # --- CORE IMPORTS ---
 from core.batch_plan_keys import (PlanMatch, build_plan_by_key,
@@ -79,22 +81,58 @@ def _disposed(dialog):
 
 
 class QTextEditLogger(logging.Handler, QObject):
-    """Custom logging handler that writes to a QTextEdit widget."""
-    appendPlainText = pyqtSignal(str)
-    
+    """Logging handler that fills a QTextEdit and can filter it by level.
+
+    Every record is kept (up to MAX_RECORDS) so the view can be re-filtered
+    and the whole log saved, whatever level is currently shown.
+    """
+    appendRecord = pyqtSignal(int, str)
+    MAX_RECORDS = 5000
+    _COLORS = {logging.ERROR: "#d1242f", logging.WARNING: "#9a6700"}
+
     def __init__(self, parent):
         super().__init__()
         QObject.__init__(self)
         self.widget = QTextEdit(parent)
         self.widget.setReadOnly(True)
-        self.appendPlainText.connect(self.widget.append)
-    
+        self.records: List[Tuple[int, str]] = []
+        self.min_level = logging.INFO
+        self.appendRecord.connect(self._append)
+
     def emit(self, record):
-        self.appendPlainText.emit(self.format(record))
+        self.appendRecord.emit(record.levelno, self.format(record))
+
+    def _html(self, levelno: int, text: str) -> str:
+        color = self._COLORS.get(
+            logging.ERROR if levelno >= logging.ERROR
+            else logging.WARNING if levelno >= logging.WARNING else 0
+        )
+        body = html.escape(text).replace("\n", "<br>")
+        # Always wrapped in a tag so QTextEdit.append() reads it as HTML.
+        return f'<span style="color:{color}">{body}</span>' if color else f"<span>{body}</span>"
+
+    def _append(self, levelno: int, text: str):
+        self.records.append((levelno, text))
+        if len(self.records) > self.MAX_RECORDS:
+            del self.records[: len(self.records) - self.MAX_RECORDS]
+        if levelno >= self.min_level:
+            self.widget.append(self._html(levelno, text))
+
+    def set_min_level(self, level: int):
+        """Show only records at ``level`` or above."""
+        self.min_level = level
+        self.widget.clear()
+        for levelno, text in self.records:
+            if levelno >= level:
+                self.widget.append(self._html(levelno, text))
+
+    def full_text(self) -> str:
+        """The complete log, regardless of the filter."""
+        return "\n".join(text for _, text in self.records) + "\n"
 
 
 class MainWindow(QMainWindow):
-    """Enhanced main window using Core architecture."""
+    """Main window: video list, setup workflow, run control and log."""
 
     # How long a close request waits for the worker to stop before offering
     # to force quit.
@@ -117,7 +155,7 @@ class MainWindow(QMainWindow):
         self.analysis_worker: Optional[AnalysisWorker] = None
         self.maze: Optional[Maze] = None
         
-        # Holds the 'Master Template' if loaded/configured
+        # Holds the template (one configuration for all videos) if loaded/configured
         self.current_settings: Optional[BatchSettings] = None
         
         # Holds specific settings per video if loaded from a Batch Plan
@@ -270,7 +308,7 @@ class MainWindow(QMainWindow):
         
         self.start_button.clicked.connect(self.start_analysis_workflow)
         self.preview_button.clicked.connect(self.preview_rois)
-        self.cancel_button.clicked.connect(self.cancel_analysis)
+        self.cancel_button.clicked.connect(self.confirm_cancel_analysis)
         
         self.cancel_button.setEnabled(False)
         self.preview_button.setEnabled(False)
@@ -289,8 +327,16 @@ class MainWindow(QMainWindow):
         self.subtask_label = QLabel("")
         self.subtask_label.setStyleSheet("padding: 2px; font-size: 10pt; color: #666;")
         
+        # Batch ETA: large and bold because it is what people wait for.
+        self.eta_label = QLabel("")
+        self.eta_label.setStyleSheet("padding: 2px 5px; font-size: 14pt; font-weight: bold;")
+        self.eta_label.setVisible(False)
+        self._run_started: Optional[float] = None
+        self._worker_eta: Optional[str] = None
+
         main_layout.addWidget(self.progress_bar)
         main_layout.addWidget(self.status_label)
+        main_layout.addWidget(self.eta_label)
         main_layout.addWidget(self.subtask_label)
         
         # Log output
@@ -299,7 +345,27 @@ class MainWindow(QMainWindow):
             logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
         )
         logging.getLogger().addHandler(self.log_handler)
+
+        log_bar = QHBoxLayout()
+        log_bar.addWidget(QLabel("Log:"))
+        self.log_level_combo = QComboBox()
+        for label, level in ux_helpers.LOG_LEVEL_CHOICES:
+            self.log_level_combo.addItem(label, level)
+        self.log_level_combo.setToolTip("Show messages of this level and above")
+        self.log_level_combo.currentIndexChanged.connect(self._on_log_level_changed)
+        self.save_log_button = QPushButton("Save log…")
+        self.save_log_button.setToolTip("Save the complete log (all levels) to a text file")
+        self.save_log_button.clicked.connect(self.save_log)
+        log_bar.addWidget(self.log_level_combo)
+        log_bar.addStretch()
+        log_bar.addWidget(self.save_log_button)
+        main_layout.addLayout(log_bar)
         main_layout.addWidget(self.log_handler.widget)
+
+        self.add_videos_button.setToolTip("Add videos (Ctrl+O)")
+        self.add_folder_button.setToolTip("Add a folder of videos (Ctrl+Shift+O)")
+        self.start_button.setToolTip("Configure and start the analysis (F5)")
+        self.cancel_button.setToolTip("Stop the analysis (Esc)")
 
     def create_menu_bar(self):
         """Create the menu bar."""
@@ -307,12 +373,24 @@ class MainWindow(QMainWindow):
         
         file_menu = menubar.addMenu('&File')
         
-        save_config_action = QAction('&Save Master Template...', self)
+        add_videos_action = QAction('Add &Videos...', self)
+        add_videos_action.setShortcut(QKeySequence("Ctrl+O"))
+        add_videos_action.triggered.connect(self.add_videos)
+        self.add_videos_action = add_videos_action
+
+        add_folder_action = QAction('Add &Folder...', self)
+        add_folder_action.setShortcut(QKeySequence("Ctrl+Shift+O"))
+        add_folder_action.triggered.connect(self.add_folder)
+        self.add_folder_action = add_folder_action
+
+        save_config_action = QAction('&Save Template...', self)
+        save_config_action.setShortcut(QKeySequence("Ctrl+S"))
         save_config_action.triggered.connect(self.save_configuration)
         save_config_action.setEnabled(False)
         self.save_config_action = save_config_action
         
         load_config_action = QAction('&Load Configuration / Plan...', self)
+        load_config_action.setShortcut(QKeySequence("Ctrl+L"))
         load_config_action.triggered.connect(self.load_configuration)
         self.load_config_action = load_config_action
         
@@ -334,6 +412,9 @@ class MainWindow(QMainWindow):
         open_last_run_action.setEnabled(False)
         self.open_last_run_action = open_last_run_action
 
+        file_menu.addAction(add_videos_action)
+        file_menu.addAction(add_folder_action)
+        file_menu.addSeparator()
         file_menu.addAction(save_config_action)
         file_menu.addAction(load_config_action)
         file_menu.addAction(load_run_action)
@@ -350,6 +431,20 @@ class MainWindow(QMainWindow):
         exit_action.triggered.connect(self.close)
         file_menu.addAction(exit_action)
         
+        run_menu = menubar.addMenu('&Run')
+        start_action = QAction('&Configure and Start Analysis', self)
+        start_action.setShortcut(QKeySequence("F5"))
+        start_action.triggered.connect(self.start_analysis_workflow)
+        start_action.setEnabled(False)
+        self.start_action = start_action
+        cancel_action = QAction('&Cancel Analysis', self)
+        cancel_action.setShortcut(QKeySequence("Esc"))
+        cancel_action.triggered.connect(self.confirm_cancel_analysis)
+        cancel_action.setEnabled(False)
+        self.cancel_action = cancel_action
+        run_menu.addAction(start_action)
+        run_menu.addAction(cancel_action)
+
         tools_menu = menubar.addMenu('&Tools')
         set_output_action = QAction('Set &Output Directory...', self)
         set_output_action.triggered.connect(self.set_output_directory)
@@ -575,6 +670,14 @@ class MainWindow(QMainWindow):
         self.move_up_button.setEnabled(has_selection and idle)
         self.move_down_button.setEnabled(has_selection and idle)
         self.clear_list_button.setEnabled(has_videos and idle)
+        self._sync_actions(running=not idle)
+
+    def _sync_actions(self, running: bool):
+        """Menu actions (and their shortcuts) follow the buttons' state."""
+        self.add_videos_action.setEnabled(not running)
+        self.add_folder_action.setEnabled(not running)
+        self.start_action.setEnabled(bool(self.video_paths) and not running)
+        self.cancel_action.setEnabled(running)
 
     def preview_rois(self):
         if not self.video_paths: return
@@ -611,7 +714,7 @@ class MainWindow(QMainWindow):
             return
         
         filename, _ = QFileDialog.getSaveFileName(
-            self, "Save Master Template",
+            self, "Save Template",
             str(Path(self.app_settings.dialog_dir("config", self.output_dir))
                 / "template_config.json"),
             "JSON Files (*.json);;All Files (*.*)"
@@ -622,7 +725,7 @@ class MainWindow(QMainWindow):
                 self.app_settings.set_last_config_dir(Path(filename).parent)
                 self.app_settings.add_recent_file(filename)
                 logger.info(f"Template saved to: {filename}")
-                QMessageBox.information(self, "Saved", f"Master Template saved to:\n{filename}")
+                QMessageBox.information(self, "Saved", f"Template saved to:\n{filename}")
             except Exception as e:
                 logger.error(f"Failed to save configuration: {e}", exc_info=True)
                 QMessageBox.critical(self, "Save Failed", f"Failed to save:\n{e}")
@@ -658,7 +761,7 @@ class MainWindow(QMainWindow):
                 self.batch_plan_cache = {} 
                 self.batch_plan_path = None
                 self._infer_maze_from_settings(settings)
-                msg = ("Master Template loaded.\nThis configuration will be applied to ALL videos.")
+                msg = ("Template loaded.\nThis configuration will be applied to ALL videos.")
 
             self.update_button_states()
             self.app_settings.set_last_config_dir(file_path.parent)
@@ -1511,6 +1614,10 @@ class MainWindow(QMainWindow):
                 effective_parameters
             )
 
+        self._run_started = time.monotonic()
+        self._worker_eta = None
+        self.eta_label.setText("Batch ETA: calculating…")
+        self.eta_label.setVisible(True)
         self._video_status = {
             video: (STATUS_QUEUED, "") for video in analysis_plan
         }
@@ -1539,7 +1646,7 @@ class MainWindow(QMainWindow):
         self.analysis_worker.finished.connect(self.analysis_finished)
         self.analysis_worker.progress.connect(self.update_progress)
         self.analysis_worker.detailed_progress.connect(self.update_progress_detailed)
-        self.analysis_worker.log.connect(logging.info)
+        self.analysis_worker.log.connect(self._on_worker_log)
         self.analysis_worker.video_status.connect(self._on_video_status)
         # Qt frees both objects once the thread has stopped; analysis_finished
         # drops our references first so nothing touches them afterwards.
@@ -1736,6 +1843,26 @@ class MainWindow(QMainWindow):
             else:
                 return
 
+    def confirm_cancel_analysis(self):
+        """Stop button and Esc: ask first, since a stop interrupts the video in progress."""
+        if not self._analysis_running() or self._close_requested:
+            return
+        answer = ux_helpers.ask_choice(
+            self, "Stop the analysis?",
+            "Stop the running analysis?",
+            [
+                Choice("stop", "Stop analysis", QMessageBox.ButtonRole.DestructiveRole),
+                Choice("keep", "Keep running", QMessageBox.ButtonRole.RejectRole),
+            ],
+            default_key="keep",
+            informative=(
+                "Progress is saved. The video in progress can be resumed "
+                "from its checkpoint later."
+            ),
+        )
+        if answer == "stop":
+            self.cancel_analysis()
+
     def cancel_analysis(self):
         if self.analysis_worker:
             self.analysis_worker.stop()
@@ -1758,16 +1885,63 @@ class MainWindow(QMainWindow):
         if self.progress_bar.maximum() == 0:
             self.progress_bar.setRange(0, 100)
 
+    def _on_worker_log(self, text: str):
+        """Worker status lines go to the log at the severity their symbol carries."""
+        logging.log(ux_helpers.level_for_worker_message(text), text)
+
+    def _on_log_level_changed(self, _index: int):
+        handler = self.log_handler
+        if handler is not None:
+            handler.set_min_level(self.log_level_combo.currentData())
+
+    def save_log(self):
+        """Save the complete log to a text file."""
+        handler = self.log_handler
+        if handler is None:
+            return
+        default = Path(self.app_settings.dialog_dir("output", self.output_dir)) / "analysis_log.txt"
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Log", str(default), "Text Files (*.txt);;All Files (*.*)"
+        )
+        if not filename:
+            return
+        try:
+            Path(filename).write_text(handler.full_text(), encoding="utf-8")
+        except OSError as exc:
+            QMessageBox.critical(self, "Save Failed", f"Could not save the log:\n{exc}")
+            return
+        logger.info(f"Log saved to: {filename}")
+
     def update_progress(self, value: int, text: str):
         self._ensure_determinate_progress()
         self.progress_bar.setValue(value)
         self.status_label.setText(text)
+        self._update_eta(value)
+
+    def _update_eta(self, percent: int, sub_text: str = ""):
+        """Show the batch ETA: the worker's own figure, else one from elapsed time."""
+        if self._run_started is None:
+            return
+        reported = ux_helpers.extract_batch_eta(sub_text)
+        if reported:
+            self._worker_eta = reported
+        elapsed = time.monotonic() - self._run_started
+        eta_text = self._worker_eta
+        if eta_text is None:
+            remaining = ux_helpers.estimate_batch_eta(elapsed, percent)
+            if remaining is not None:
+                eta_text = "~" + ux_helpers.format_duration(remaining)
+        self.eta_label.setText(
+            f"Batch ETA: {eta_text or 'calculating…'}   "
+            f"(elapsed {ux_helpers.format_duration(elapsed)})"
+        )
 
     def update_progress_detailed(self, value: int, main_text: str, sub_text: str):
         self._ensure_determinate_progress()
         self.progress_bar.setValue(value)
         self.status_label.setText(main_text)
         self.subtask_label.setText(sub_text)
+        self._update_eta(value, sub_text)
 
     def analysis_finished(self, outcome: BatchRunOutcome):
         logger.info("Analysis run finished.")
@@ -1838,6 +2012,8 @@ class MainWindow(QMainWindow):
                 run_output_dir,
             )
         self.set_ui_state(is_running=False)
+        self._run_started = None
+        self.eta_label.setVisible(False)
         if outcome.cancelled:
             self.update_progress_detailed(
                 self.progress_bar.value(), "Cancelled", "Checkpoint saved"
@@ -1876,6 +2052,7 @@ class MainWindow(QMainWindow):
                        self.move_down_button):
             button.setEnabled(not is_running and has_selection)
         self.cancel_button.setEnabled(is_running)
+        self._sync_actions(running=is_running)
         self.preview_button.setEnabled(not is_running and (self.current_settings is not None or len(self.batch_plan_cache) > 0))
         # Configuration and output-folder changes would race the running job.
         self.save_config_action.setEnabled(
