@@ -13,6 +13,10 @@ logger = logging.getLogger(__name__)
 # Pre-3.2 configs may carry a reference named like "Width of first Arm A ROI".
 LEGACY_BBOX_REFERENCE_PREFIX = "Width of first"
 
+# Appended to the reference name when an alignment had to rescale a length
+# that has no stored endpoints, so the result is flagged as approximate.
+APPROXIMATE_REFERENCE_SUFFIX = " (approximate: scaled by alignment)"
+
 # Reserved ROI name for the optional open-field arena. The arena is stored
 # apart from ``ROIManager.rois`` so it is never treated as an analysis zone.
 ARENA_CATEGORY = "arena"
@@ -189,6 +193,12 @@ class ROIManager:
         self.center_overlay: Optional[np.ndarray] = None
         self._reference_length_pixels = 0.0
         self._reference_name = "N/A"
+        # Optional endpoints of the drawn reference line, in source pixels.
+        # Kept so the calibration can follow a template to another camera
+        # placement or resolution; ``None`` for length-only calibrations.
+        self._reference_line: Optional[
+            Tuple[Tuple[float, float], Tuple[float, float]]
+        ] = None
         self._source_dimensions: Optional[Tuple[int, int]] = None
         if source_dimensions is not None:
             self.set_source_dimensions(source_dimensions)
@@ -382,10 +392,58 @@ class ROIManager:
         """
         if length_pixels <= 0:
             raise ValueError(f"Reference length must be positive, got {length_pixels}")
-        
+
         self._reference_length_pixels = length_pixels
         self._reference_name = name
+        # A bare length no longer matches any stored endpoints.
+        self._reference_line = None
         logger.info(f"Reference length set: {length_pixels:.2f} px ({name})")
+
+    def set_reference_line(
+        self,
+        p1: Tuple[float, float],
+        p2: Tuple[float, float],
+        name: str = "User-defined",
+    ) -> None:
+        """Set the calibration from a drawn line, keeping its endpoints.
+
+        The reference length is the distance between the endpoints (source
+        pixels), so the two can never disagree.
+
+        Raises:
+            ValueError: If the endpoints are invalid or coincide.
+        """
+        line = self._validated_line(p1, p2)
+        length = float(np.hypot(line[1][0] - line[0][0], line[1][1] - line[0][1]))
+        self.set_reference_length(length, name)
+        self._reference_line = line
+
+    @staticmethod
+    def _validated_line(p1, p2):
+        try:
+            line = (
+                (float(p1[0]), float(p1[1])),
+                (float(p2[0]), float(p2[1])),
+            )
+        except (TypeError, ValueError, IndexError) as exc:
+            raise ValueError(f"Reference line endpoints must be (x, y) pairs: {exc}")
+        if not all(np.isfinite(v) for point in line for v in point):
+            raise ValueError("Reference line endpoints must be finite")
+        if line[0] == line[1]:
+            raise ValueError("Reference line endpoints must differ")
+        return line
+
+    @property
+    def reference_line(
+        self,
+    ) -> Optional[Tuple[Tuple[float, float], Tuple[float, float]]]:
+        """Endpoints ((x1, y1), (x2, y2)) of the drawn reference line, or None."""
+        return self._reference_line
+
+    @property
+    def reference_is_approximate(self) -> bool:
+        """True when the length was scaled by an alignment without endpoints."""
+        return self._reference_name.endswith(APPROXIMATE_REFERENCE_SUFFIX)
 
     @property
     def reference_length_pixels(self) -> float:
@@ -510,7 +568,29 @@ class ROIManager:
         # exactly what earlier versions wrote.
         if self.arena is not None:
             data['arena'] = self.arena.to_dict()
+        # Same rule for the reference-line endpoints (older builds ignore
+        # the key and keep using the stored length).
+        if self._reference_line is not None:
+            data['reference_line'] = [list(p) for p in self._reference_line]
         return data
+
+    def _load_reference_line(self, raw_line) -> None:
+        """Restore stored endpoints, dropping them if they disagree with the
+        stored length (the length is what the calibration was made with)."""
+        try:
+            line = self._validated_line(raw_line[0], raw_line[1])
+        except (TypeError, ValueError, IndexError) as exc:
+            logger.warning("Ignoring invalid reference_line: %s", exc)
+            return
+        length = float(np.hypot(line[1][0] - line[0][0], line[1][1] - line[0][1]))
+        stored = float(self._reference_length_pixels)
+        if stored <= 0 or abs(length - stored) > 1e-3 * max(stored, 1.0):
+            logger.warning(
+                "Ignoring reference_line: endpoints span %.3f px but the "
+                "stored reference length is %.3f px", length, stored
+            )
+            return
+        self._reference_line = line
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'ROIManager':
@@ -549,7 +629,11 @@ class ROIManager:
 
             manager._reference_length_pixels = data.get('_reference_length_pixels', 0.0)
             manager._reference_name = data.get('_reference_name', 'N/A')
-            
+
+            raw_line = data.get('reference_line')
+            if raw_line is not None:
+                manager._load_reference_line(raw_line)
+
             logger.info(f"Loaded ROIManager with {len(manager.rois)} categories")
             return manager
         except Exception as e:

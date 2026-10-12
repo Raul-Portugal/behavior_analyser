@@ -186,6 +186,15 @@ class ReferenceLineDialog(QDialog):
     def get_line_length(self): 
         return self.line_length
 
+    def get_line_points(self):
+        """The two clicked endpoints in SOURCE pixels, or None until both exist."""
+        if len(self.points) != 2:
+            return None
+        return tuple(
+            (p.x() * self.source_scale_x, p.y() * self.source_scale_y)
+            for p in self.points
+        )
+
 
 REFERENCE_LINE_NAME = "User-drawn reference line"
 REFERENCE_LINE_PROMPT = (
@@ -193,6 +202,21 @@ REFERENCE_LINE_PROMPT = (
     "Draw it over something of known length (e.g. an arm length). "
     "If you skip this, distances will be reported in pixels."
 )
+
+
+def apply_reference_line(roi_manager: ROIManager, dialog) -> bool:
+    """Store the dialog's line (endpoints and length) on the ROI manager.
+
+    Returns True only if the user drew a valid, non-degenerate line.
+    """
+    points = dialog.get_line_points()
+    if points is None or dialog.get_line_length() <= 0:
+        return False
+    try:
+        roi_manager.set_reference_line(points[0], points[1], REFERENCE_LINE_NAME)
+    except ValueError:
+        return False
+    return True
 
 
 def offer_reference_line(parent, video_path, roi_manager: ROIManager) -> bool:
@@ -223,11 +247,8 @@ def offer_reference_line(parent, video_path, roi_manager: ROIManager) -> bool:
         pixmap, source_scale=(source_w / w, source_h / h), parent=parent
     )
     try:
-        if dialog.exec() and dialog.get_line_length() > 0:
-            roi_manager.set_reference_length(
-                dialog.get_line_length(), REFERENCE_LINE_NAME
-            )
-            return True
+        if dialog.exec():
+            return apply_reference_line(roi_manager, dialog)
         return False
     finally:
         dialog.deleteLater()
@@ -408,9 +429,7 @@ class RoiSelectorDialog(QDialog):
                 parent=self
             )
             if ref_dialog.exec():
-                length = ref_dialog.get_line_length()
-                if length > 0:
-                    self.roi_manager.set_reference_length(length, REFERENCE_LINE_NAME)
+                apply_reference_line(self.roi_manager, ref_dialog)
         self.accept()
 
     def next_roi(self):

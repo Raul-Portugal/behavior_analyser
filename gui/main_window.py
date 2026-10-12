@@ -32,6 +32,7 @@ from core.version import APP_NAME, APP_VERSION
 from gui import ux_helpers
 from gui.app_settings import AppSettings
 from gui.config_checks import dimension_mismatches, format_dimension_mismatches
+from gui.template_alignment import TemplateAlignment
 from gui.roi_selector import (REFERENCE_LINE_PROMPT, RoiSelectorDialog,
                               offer_reference_line)
 from gui.arm_entry_dialog import ArmEntryParametersDialog
@@ -164,6 +165,10 @@ class MainWindow(QMainWindow):
         # Keyed by plan key (see core.batch_plan_keys); path is the plan file.
         self.batch_plan_cache: Dict[str, BatchSettings] = {}
         self.batch_plan_path: Optional[Path] = None
+
+        # Carries the template's ROIs onto videos whose camera moved or
+        # whose size differs (see gui.template_alignment).
+        self._alignment = TemplateAlignment(self)
         
         # {video: (status, message)} shown as the icon of each list row.
         self._video_status: Dict[Path, Tuple[str, str]] = {}
@@ -472,6 +477,15 @@ class MainWindow(QMainWindow):
         set_output_action.triggered.connect(self.set_output_directory)
         tools_menu.addAction(set_output_action)
         self.set_output_action = set_output_action
+
+        align_action = QAction('&Align template to videos...', self)
+        align_action.setToolTip(
+            "Check that the loaded template's regions fit each video and "
+            "align them when the camera moved or the resolution differs"
+        )
+        align_action.triggered.connect(self._alignment.check_all)
+        tools_menu.addAction(align_action)
+        self.align_template_action = align_action
 
     def _rebuild_recent_menu(self):
         """List the most recently used templates and plans."""
@@ -1385,6 +1399,8 @@ class MainWindow(QMainWindow):
         base_settings = BatchSettings(
             progress.roi_manager, progress.detection_config, 0.0
         )
+        # The template was drawn on this video: it is its reference view.
+        self._alignment.remember_template_video(ref_video_path, progress.roi_manager)
         # Only the final review is left; keep everything until it is accepted.
         progress.base_settings = base_settings
         self._pending_setup = progress
@@ -1479,6 +1495,9 @@ class MainWindow(QMainWindow):
                 "Verification", f"Video {i + 1} of {len(self.video_paths)}: {video_path.name}"
             )
             try:
+                current_settings = self._alignment.settings_for_review(
+                    video_path, base_settings, current_settings
+                )
                 while True:
                     dialog = SettingsDialog(
                         str(video_path), current_settings.copy(),
@@ -1508,6 +1527,17 @@ class MainWindow(QMainWindow):
                         dialog.deleteLater()
                         logger.info(f"Video '{video_path.name}' skipped")
                         break
+                    elif action == "align":
+                        # Re-align the ORIGINAL template (never a chained
+                        # result); the times and calibration entered so far
+                        # are kept.
+                        carried = dialog.get_settings()
+                        redraw_cm = dialog.get_real_world_cm() or None
+                        dialog.deleteLater()
+                        aligned = self._alignment.align_one(
+                            video_path, base_settings, carried
+                        )
+                        current_settings = aligned if aligned is not None else carried
                     elif action == "redraw":
                         # Keep the times the user already set; the cm length
                         # (not the old scale factor) is what carries over.
@@ -1734,6 +1764,10 @@ class MainWindow(QMainWindow):
         user sees one summary (with any warnings) and chooses Start; with
         ``confirm_start`` False the box only appears when there are warnings.
         """
+        # Apply stored alignments and align videos whose size differs from
+        # their ROIs' (in place); declining ends here, as pre-flight would.
+        if not self._alignment.prepare_plan(analysis_plan):
+            return False
         # Video, settings, disk and system checks run once for the batch.
         all_issues, all_warnings = self._run_preflight(analysis_plan)
         expected_parameters = None
