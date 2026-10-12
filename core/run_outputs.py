@@ -5,6 +5,7 @@ Batch-level run folder helpers shared by the GUI worker and the headless CLI.
 Nothing here touches Qt: it creates the timestamped run folder, names every
 video's output subfolder, and writes ``run_plan.json`` and ``manifest.json``.
 """
+import copy
 import hashlib
 import json
 import logging
@@ -22,6 +23,20 @@ logger = logging.getLogger(__name__)
 # Written into every run folder so the run can be reloaded or resumed later.
 RUN_PLAN_FILENAME = "run_plan.json"
 MANIFEST_FILENAME = "manifest.json"
+
+
+def apply_effective_parameters(
+    analysis_plan: Mapping[Path, BatchSettings], maze
+) -> None:
+    """Stamp every settings object with the maze's paradigm and parameters.
+
+    The saved ``run_plan.json`` and the checkpoint hash then describe exactly
+    what the run used, whatever the loaded configuration spelled out.
+    """
+    effective_parameters = maze.get_algorithm_parameters()
+    for settings in analysis_plan.values():
+        settings.paradigm_id = maze.name
+        settings.algorithm_parameters = copy.deepcopy(effective_parameters)
 
 
 def create_run_folder(output_dir: Path) -> Path:

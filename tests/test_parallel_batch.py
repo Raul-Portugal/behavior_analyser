@@ -22,22 +22,11 @@ try:
     from mazes.freestyle import Freestyle
     from mazes.tst import TST
     from tests import worker_support as support
+    from tests.worker_support import FRAME_COUNTS, data_files
     from tests.gui_support import temp_app_settings
     HAS_RUNTIME = True
 except ModuleNotFoundError:
     HAS_RUNTIME = False
-
-FRAME_COUNTS = {"mouse_a.avi": 70, "mouse_b.avi": 90, "mouse_c.avi": 110}
-
-
-def data_files(run_dir: Path):
-    """Every deterministic output of a run: all files except the manifest."""
-    return {
-        path.relative_to(run_dir).as_posix(): path.read_bytes()
-        for path in sorted(run_dir.rglob("*"))
-        if path.is_file() and path.name != "manifest.json"
-    }
-
 
 @unittest.skipUnless(HAS_RUNTIME, "GUI/scientific runtime is not installed")
 class ParallelBatchTests(unittest.TestCase):

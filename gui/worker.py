@@ -8,7 +8,6 @@ child processes) and writes the batch summary and manifest. This class only
 owns the run folder, translates reporter calls into Qt signals and exposes
 ``stop()``.
 """
-import copy
 import logging
 from pathlib import Path
 from typing import Dict, Optional
@@ -19,8 +18,8 @@ from checkpoint_manager import CheckpointManager
 from core.batch_runner import BatchRunner, BatchRunOutcome
 from core.models import BatchSettings
 from core.run_outputs import (
-    RUN_PLAN_FILENAME, create_run_folder, output_base_names, run_timestamp,
-    write_run_manifest, write_run_plan,
+    RUN_PLAN_FILENAME, apply_effective_parameters, create_run_folder,
+    output_base_names, run_timestamp, write_run_manifest, write_run_plan,
 )
 from mazes.base_maze import Maze
 
@@ -77,12 +76,7 @@ class AnalysisWorker(QObject):
         self.output_root = output_dir
         self.maze = maze
         self.workers = max(1, int(workers))
-        effective_parameters = self.maze.get_algorithm_parameters()
-        for settings in self.analysis_plan.values():
-            settings.paradigm_id = self.maze.name
-            settings.algorithm_parameters = copy.deepcopy(
-                effective_parameters
-            )
+        apply_effective_parameters(self.analysis_plan, self.maze)
         self.is_cancelled = False
         self.checkpoint_mgr = CheckpointManager(output_dir)
         self.output_dir = create_run_folder(output_dir)

@@ -100,3 +100,16 @@ def make_pipeline(root: Path, maze, settings=None, reporter=None):
         CheckpointManager(output_root),
     )
     return pipeline, cancel
+
+
+# Three small tracking videos of different lengths for batch-level tests.
+FRAME_COUNTS = {"mouse_a.avi": 70, "mouse_b.avi": 90, "mouse_c.avi": 110}
+
+
+def data_files(run_dir: Path):
+    """Every deterministic output of a run: all files except the manifest."""
+    return {
+        path.relative_to(run_dir).as_posix(): path.read_bytes()
+        for path in sorted(Path(run_dir).rglob("*"))
+        if path.is_file() and path.name != "manifest.json"
+    }
