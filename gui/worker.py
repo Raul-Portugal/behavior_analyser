@@ -530,7 +530,6 @@ class AnalysisWorker(QObject):
         reader = BufferedVideoReader(
             video_path,
             start_frame=previous_frame_idx,
-            buffer_size=64
         )
 
         local_est = ProgressEstimator(max(0, end_frame - processing_start))
@@ -913,9 +912,9 @@ class AnalysisWorker(QObject):
             vh = VideoHandler(video_path)
             
             # Subsample for validation video speed
-            # TODO: use TST_VALIDATION_FRAME_STEP once the TST motion engine
-            # defines it, so the stored contours and this writer agree.
-            step = 3
+            # Shared with _run_tst_analysis, which stores contours only for
+            # the frames drawn here.
+            step = TST_VALIDATION_FRAME_STEP
             out_fps = vh.fps / step
             
             # Core: Use SafeVideoWriter
