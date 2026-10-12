@@ -593,6 +593,9 @@ class AnalysisWorker(QObject):
                         observation.activity_score
                     )
                     evidence = observation.to_dict()
+                    # Absolute video frame, so annotations line up when the
+                    # run does not start at frame 0.
+                    evidence["source_frame"] = curr
                     # A compact contour gives the optional validation video a
                     # direct view of the body segmentation that produced this
                     # classification. Only the frames that video draws keep

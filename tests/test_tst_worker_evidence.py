@@ -9,6 +9,7 @@ try:
     import cv2
 
     from core.tst_motion_engine import TST_VALIDATION_FRAME_STEP, TSTMotionEngine
+    from core.tst_validation import evaluate_annotations
     from gui.worker import AnalysisWorker
     from mazes.tst import TST
     from output import DataExporter
@@ -249,6 +250,56 @@ class TSTContourStorageTests(unittest.TestCase):
         for index, contour in lookups:
             self.assertEqual(index % TST_VALIDATION_FRAME_STEP, 0, index)
             self.assertGreaterEqual(len(contour), 3, index)
+
+
+@unittest.skipUnless(HAS_RUNTIME, "GUI/scientific runtime is not installed")
+class TSTSourceFrameTests(unittest.TestCase):
+    def test_evidence_carries_absolute_frames_for_an_offset_run(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = WorkerRun(directory)
+            result, processed = run.run(start_frame=40, end_frame=110)
+            expected = run.serial_observations(40, 110)
+
+        evidence = result.motion_evidence["mouse_1"]
+        self.assertEqual(
+            [item["source_frame"] for item in evidence],
+            list(range(41, 41 + processed)),
+        )
+        # source_frame agrees with the timestamp of the same row.
+        for item, timestamp in zip(evidence, result.timestamps):
+            self.assertAlmostEqual(item["source_frame"] / 30.0, timestamp)
+
+        # Independent annotations (the serial engine's states on the real
+        # video frames) must align with the run that started at frame 40.
+        annotations = {
+            ("mouse_1", 41 + index): pair["mouse_1"].state
+            for index, pair in enumerate(expected)
+        }
+        report = evaluate_annotations(result.motion_evidence, annotations)
+        self.assertEqual(report["mouse_1"]["annotated_frames"], float(processed))
+        self.assertEqual(report["mouse_1"]["exact_state_agreement_pct"], 100.0)
+
+    def test_source_frame_does_not_change_any_metric(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = WorkerRun(directory)
+            result, _ = run.run(end_frame=100)
+            run.worker.maze.calculate_metrics(result)
+            with_key = (
+                dict(result.total_immobility_time),
+                list(result.behavior_states["mouse_1"]),
+                dict(result.mean_state_confidence),
+            )
+            for item in result.motion_evidence["mouse_1"]:
+                del item["source_frame"]
+            run.worker.maze.calculate_metrics(result)
+        self.assertEqual(
+            (
+                dict(result.total_immobility_time),
+                list(result.behavior_states["mouse_1"]),
+                dict(result.mean_state_confidence),
+            ),
+            with_key,
+        )
 
 
 if __name__ == "__main__":
