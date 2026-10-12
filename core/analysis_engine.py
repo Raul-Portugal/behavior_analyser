@@ -206,6 +206,7 @@ def apply_scale_to_result(result: BaseAnalysisResult, scale_factor: float) -> No
     for category in result.distance_in_roi:
         result.distance_in_roi[category] *= scale_factor
     result.total_distance *= scale_factor
+    result.excluded_jump_distance *= scale_factor
     logger.info(
         f"Distances converted to {result.distance_unit} "
         f"using scale factor {scale_factor:.4f}"
