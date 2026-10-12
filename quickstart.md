@@ -64,6 +64,26 @@ The final review dialog allows you to:
 - A single summary box lists the settings and any pre-flight warnings. Click **Start analysis** to begin. The progress bar shows the estimated time remaining for the batch.
 - *Note: If you need to stop, click **Cancel Analysis** (or press Esc) and confirm. The software will save a checkpoint, and you can resume from the exact same frame later!*
 
+### Animal metadata and time bins (optional)
+Under the Start button, **Sample sheet...** attaches animal information to the
+results and **Time bins** also reports the metrics in consecutive bins of N
+minutes (Off by default; see `OUTPUTS.md`). A sample sheet is a CSV whose first
+column is `video` (a bare filename, or a path relative to the sheet) followed by
+any columns you like:
+
+```text
+video,animal_id,group,sex
+mouse1.mp4,A01,control,F
+mouse2.mp4,A02,treated,M
+```
+
+Those columns appear in `batch_summary.csv` (after the shared columns), in each
+video's `*_summary.json` and in `manifest.json`. The sheet is checked when you
+load it: videos with no row, or whose filename matches several rows, are
+listed, and you are asked before starting with blank metadata for them.
+Headless: `python -m core.cli run --plan plan.json --out DIR --sample-sheet
+sheet.csv --bin-seconds 60`.
+
 ### Resume after a restart
 Every run folder contains a `run_plan.json` with the exact settings of the
 run. If a run was interrupted, even by closing the application, reopen the
