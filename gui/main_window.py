@@ -697,11 +697,13 @@ class MainWindow(QMainWindow):
         )
 
         if not settings_dialog.exec():
+            settings_dialog.deleteLater()
             logger.info("Settings cancelled.")
             self.update_progress_detailed(0, "Ready", "")
             return None
 
         base_settings = settings_dialog.get_settings()
+        settings_dialog.deleteLater()
         base_settings.paradigm_id = self.maze.name
         base_settings.algorithm_parameters = self.maze.get_algorithm_parameters()
         self.current_settings = base_settings
@@ -742,15 +744,19 @@ class MainWindow(QMainWindow):
                     )
                     redraw_cm = None
                     dialog.setWindowTitle(f"Verify: {video_path.name}")
-                    if not dialog.exec(): return {}
-                    
+                    if not dialog.exec():
+                        dialog.deleteLater()
+                        return {}
+
                     action = dialog.result_action
                     if action == "accept":
                         final_settings = dialog.get_settings()
+                        dialog.deleteLater()
                         analysis_plan[video_path] = final_settings.copy()
                         current_settings = final_settings
                         break
                     elif action == "skip":
+                        dialog.deleteLater()
                         logger.info(f"Video '{video_path.name}' skipped")
                         break
                     elif action == "redraw":
@@ -758,6 +764,7 @@ class MainWindow(QMainWindow):
                         # (not the old scale factor) is what carries over.
                         carried = dialog.get_settings()
                         real_world_cm = dialog.get_real_world_cm()
+                        dialog.deleteLater()
                         roi_dialog = RoiSelectorDialog(str(video_path), self.maze, self)
                         if roi_dialog.exec():
                             current_settings = self.settings_after_redraw(
