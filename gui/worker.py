@@ -178,6 +178,17 @@ class AnalysisWorker(QObject):
                         global_est, global_offset, to_batch_pct, base_name,
                         checkpoint, resume_from_frame
                     )
+                    tst_first_frame = max(start_frame, resume_from_frame)
+                    early_end = self._early_end_warning(
+                        end_frame - tst_first_frame,
+                        frames_done,
+                        tst_first_frame,
+                        end_frame,
+                    )
+                    if early_end:
+                        quality_warnings.append((video_path, early_end))
+                        self.log.emit(f"⚠ {early_end}")
+                        logger.warning("%s: %s", video_path.name, early_end)
                     
                     self.emit_progress(to_batch_pct(60), f"Video: {base_name}", "Applying Temporal Filters...")
                     self.maze.calculate_metrics(result)
@@ -469,15 +480,16 @@ class AnalysisWorker(QObject):
         )
 
         local_est = ProgressEstimator(max(0, end_frame - processing_start))
-        ret, prev_frame = reader.read()
-        if not ret:
-            reader.release()
-            return result, 0
-
         curr = previous_frame_idx + 1
         frames_processed = 0
 
         try:
+            # The first read can raise VideoReadError, so it belongs inside
+            # the try/finally that releases the reader.
+            ret, prev_frame = reader.read()
+            if not ret:
+                return result, 0
+
             while curr < end_frame:
                 if self.is_cancelled:
                     checkpoint_payload = dict(result.__dict__)
