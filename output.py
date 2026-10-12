@@ -171,7 +171,10 @@ class DataExporter:
                     for i in range(len(result.positions)):
                         if i >= len(result.timestamps): break
                         pos = result.positions[i]
-                        x, y = (pos[0], pos[1]) if pos else ('', '')
+                        x, y = (
+                            (f"{pos[0]:.2f}", f"{pos[1]:.2f}")
+                            if pos else ('', '')
+                        )
                         roi = result.roi_labels[i] if i < len(result.roi_labels) else ''
                         raw_roi = (
                             result.raw_roi_labels[i]

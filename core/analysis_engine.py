@@ -10,6 +10,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, Generator, List
 
+from core.analysis_geometry import AnalysisGeometry
 from core.video import BufferedVideoReader, VideoHandler
 from core.detection import DetectionEngine
 from core.models import AppConfig
@@ -51,27 +52,27 @@ class Analyzer:
         )
         self.end_frame = min(end_frame or total_frames, total_frames)
         
-        # Optimization: Downscaling
-        self.analysis_width = self.config.video.analysis_width
-        self.scale_ratio = 1.0
-        self.analysis_dims = None
-        
-        if 0 < self.analysis_width < self.orig_w:
-            self.scale_ratio = self.orig_w / self.analysis_width
-            target_h = int(self.orig_h / self.scale_ratio)
-            self.analysis_dims = (self.analysis_width, target_h)
-            
-            # Resize detection engine ref frame if needed
-            if self.engine.ref_frame.shape[1] != self.analysis_width:
-                self.engine.ref_frame = cv2.resize(self.engine.ref_frame, self.analysis_dims)
-                self.engine.w = self.analysis_width
-                self.engine.h = target_h
+        # Optimization: Downscaling (shared with the tuner dialog)
+        self.geometry = AnalysisGeometry(
+            self.orig_w, self.orig_h, self.config.video.analysis_width
+        )
+        self.analysis_width = self.geometry.analysis_width
+        self.scale_ratio = self.geometry.scale_ratio
+        self.analysis_dims = (
+            self.geometry.analysis_dims if self.geometry.is_scaled else None
+        )
+
+        # Resize detection engine ref frame if needed
+        self.engine.ref_frame = self.geometry.reference_to_analysis(
+            self.engine.ref_frame
+        )
+        self.engine.h, self.engine.w = self.engine.ref_frame.shape[:2]
 
         # State for timelapse
         self.current_frame_img = None
         self.last_pos = None
 
-    def process_frames(self) -> Generator[Tuple[int, Optional[Tuple[int, int]], List[str]], None, None]:
+    def process_frames(self) -> Generator[Tuple[int, Optional[Tuple[float, float]], List[str]], None, None]:
         """Yields: (frame_idx, (x,y), [zone_names])"""
         
         # Use new core.video.BufferedVideoReader
@@ -87,9 +88,7 @@ class Analyzer:
                 self.current_frame_img = frame # Reference for timelapse
                 
                 # 1. Downscale
-                detect_frame = frame
-                if self.analysis_dims:
-                    detect_frame = cv2.resize(frame, self.analysis_dims, interpolation=cv2.INTER_LINEAR)
+                detect_frame = self.geometry.to_analysis(frame)
                 
                 # 2. Detect
                 raw_pos = self.engine.detect_position(detect_frame)
@@ -99,9 +98,7 @@ class Analyzer:
                 zones = ['undetected']
                 
                 if raw_pos:
-                    upscaled_x = int(raw_pos[0] * self.scale_ratio)
-                    upscaled_y = int(raw_pos[1] * self.scale_ratio)
-                    final_pos = (upscaled_x, upscaled_y)
+                    final_pos = self.geometry.to_source(raw_pos)
                     zones = self.roi_manager.get_overlapping_zones(final_pos)
                 
                 self.last_pos = final_pos
@@ -123,7 +120,11 @@ class Analyzer:
         
         # Draw Position
         if self.last_pos:
-            cv2.circle(vis, self.last_pos, 8, (0, 0, 255), -1)
+            center = (
+                int(round(self.last_pos[0])),
+                int(round(self.last_pos[1])),
+            )
+            cv2.circle(vis, center, 8, (0, 0, 255), -1)
             
         return vis
 
@@ -205,6 +206,7 @@ def apply_scale_to_result(result: BaseAnalysisResult, scale_factor: float) -> No
     for category in result.distance_in_roi:
         result.distance_in_roi[category] *= scale_factor
     result.total_distance *= scale_factor
+    result.excluded_jump_distance *= scale_factor
     logger.info(
         f"Distances converted to {result.distance_unit} "
         f"using scale factor {scale_factor:.4f}"

@@ -23,7 +23,7 @@ logger = logging.getLogger(__name__)
 class DetectionResult:
     """One detector decision and the evidence supporting it."""
 
-    position: Optional[Tuple[int, int]]
+    position: Optional[Tuple[float, float]]
     confidence: float
     failure_reason: str = ""
     component_area: int = 0
@@ -49,7 +49,7 @@ class DetectionQualityMonitor:
         self,
         detected: bool,
         confidence: float = 0.0,
-        position: Optional[Tuple[int, int]] = None
+        position: Optional[Tuple[float, float]] = None
     ):
         self.recent_detections.append(bool(detected))
         self.recent_confidences.append(float(confidence) if detected else 0.0)
@@ -100,7 +100,7 @@ class DetectionEngine:
         self.ref_frame = ref_frame
         self.config = config
         self.h, self.w = ref_frame.shape
-        self.last_position: Optional[Tuple[int, int]] = None
+        self.last_position: Optional[Tuple[float, float]] = None
         self.consecutive_failures = 0
         self.last_result = DetectionResult(
             None, 0.0, failure_reason="not_processed"
@@ -133,7 +133,8 @@ class DetectionEngine:
                 round(255 * (1.0 - self.config.weight_omega)),
                 dtype=np.uint8
             )
-            x, y = self.last_position
+            x = int(round(self.last_position[0]))
+            y = int(round(self.last_position[1]))
             half_window = self.config.window_size // 2
             x1, y1 = max(0, x - half_window), max(0, y - half_window)
             x2, y2 = min(self.w, x + half_window), min(self.h, y + half_window)
@@ -212,7 +213,7 @@ class DetectionEngine:
                 continue
 
             cx, cy = centroids[label_index]
-            position = (int(round(cx)), int(round(cy)))
+            position = (float(cx), float(cy))
             left = int(stats[label_index, cv2.CC_STAT_LEFT])
             top = int(stats[label_index, cv2.CC_STAT_TOP])
             width = int(stats[label_index, cv2.CC_STAT_WIDTH])
@@ -320,7 +321,7 @@ class DetectionEngine:
         self,
         frame: np.ndarray,
         use_last_pos: bool = True
-    ) -> Optional[Tuple[int, int]]:
+    ) -> Optional[Tuple[float, float]]:
         """Compatibility wrapper returning only the selected centroid."""
         return self.detect(frame, use_last_pos).position
 
@@ -343,8 +344,8 @@ class DetectionEngine:
             self.last_position = None
         else:
             self.last_position = (
-                int(raw_position[0]),
-                int(raw_position[1]),
+                float(raw_position[0]),
+                float(raw_position[1]),
             )
         self.consecutive_failures = max(
             0, int(state.get("consecutive_failures", 0))

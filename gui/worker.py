@@ -132,8 +132,6 @@ class AnalysisWorker(QObject):
             data_dir = video_output_dir / "data"
             plots_dir = video_output_dir / "plots"
             media_dir = video_output_dir / "media"
-            for directory in (data_dir, plots_dir):
-                directory.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"\n{'='*60}\nAnalyzing {self.maze.name} video {video_num}/{total_videos}: {video_path.name}\n{'='*60}")
             
             to_batch_pct = lambda local_pct: int(
@@ -144,6 +142,11 @@ class AnalysisWorker(QObject):
             frames_done = 0
 
             try:
+                # Inside the try so an unwritable output folder is recorded
+                # as a per-video failure instead of escaping run().
+                for directory in (data_dir, plots_dir):
+                    directory.mkdir(parents=True, exist_ok=True)
+
                 # Initialize VideoHandler
                 handler = VideoHandler(video_path)
                 start_frame = int(settings.start_time * handler.fps)
@@ -285,8 +288,9 @@ class AnalysisWorker(QObject):
                         )
                         if last_valid is not None:
                             engine.last_position = (
-                                int(last_valid[0] / analyzer.scale_ratio),
-                                int(last_valid[1] / analyzer.scale_ratio)
+                                analyzer.geometry.to_analysis_point(
+                                    last_valid
+                                )
                             )
                         engine.restore_state(
                             checkpoint.partial_result.get("_detector_state")
@@ -307,6 +311,17 @@ class AnalysisWorker(QObject):
                         local_est, global_est, quality_monitor,
                         to_batch_pct, base_name, global_offset
                     )
+
+                    early_end = self._early_end_warning(
+                        analyzer.end_frame - resume_from_frame,
+                        frames_done,
+                        resume_from_frame,
+                        analyzer.end_frame,
+                    )
+                    if early_end:
+                        quality_warnings.append((video_path, early_end))
+                        self.log.emit(f"⚠ {early_end}")
+                        logger.warning("%s: %s", video_path.name, early_end)
 
                     result.fps = handler.fps
                     self.maze.resolve_tracking_labels(result)
@@ -530,6 +545,22 @@ class AnalysisWorker(QObject):
         )
         return result, frames_processed
 
+    @staticmethod
+    def _early_end_warning(
+        expected_frames: int,
+        frames_processed: int,
+        first_frame: int,
+        end_frame: int,
+    ) -> Optional[str]:
+        """Describe a short read, or None if within max(2, 1%) of expected."""
+        shortfall = expected_frames - frames_processed
+        if shortfall <= max(2, 0.01 * expected_frames):
+            return None
+        return (
+            f"analysis ended early at frame {first_frame + frames_processed} "
+            f"of {end_frame} ({shortfall} frames missing)"
+        )
+
     def _run_tracked_analysis(self, analyzer, result_container, settings, video_path,
                              handler, local_est, global_est, quality_monitor,
                              to_batch_pct, base_name, global_offset):
@@ -645,7 +676,10 @@ class AnalysisWorker(QObject):
                                 dot_color = (0, 165, 255)
                             else:
                                 dot_color = (0, 0, 255)
-                            cv2.circle(frame, pos, 8, dot_color, -1)
+                            center = (
+                                int(round(pos[0])), int(round(pos[1]))
+                            )
+                            cv2.circle(frame, center, 8, dot_color, -1)
                         
                         # 3. Draw Zone Text Overlay
                         current_zone = labels[curr_idx] if curr_idx < len(labels) else "outside"
