@@ -18,11 +18,20 @@ from core.video import VideoHandler
 from gui.dialog_layout import fit_dialog_to_available_screen
 from mazes.tst import TST
 
+SLIDER_STEPS_PER_SECOND = 10  # sliders move in 0.1 s units
+
+
+def is_tst_mode(paradigm_id: Optional[str], maze_name: Optional[str] = None) -> bool:
+    """TST mode from the saved paradigm, falling back to the selected maze."""
+    return (paradigm_id or maze_name) == TST.name
+
+
 class SettingsDialog(QDialog):
     """A comprehensive dialog for setting analysis parameters."""
     
     def __init__(self, video_path: str, settings, is_verification=False, parent=None,
-                 real_world_cm: Optional[float] = None):
+                 real_world_cm: Optional[float] = None,
+                 maze_name: Optional[str] = None):
         super().__init__(parent)
         self.setWindowTitle("Analysis Settings")
         # Optional explicit cm length for the reference line; otherwise it is
@@ -34,13 +43,14 @@ class SettingsDialog(QDialog):
         self.settings = settings
         self.result_action = "cancel"
         
-        # Detect TST mode
-        self.is_tst = any(k.startswith('mouse_') for k in self.settings.roi_manager.rois.keys())
+        # TST mode comes from the paradigm, never from ROI names: a Freestyle
+        # zone called "mouse_1" is not a TST mouse.
+        self.is_tst = is_tst_mode(self.settings.paradigm_id, maze_name)
         
         self.mouse_time_widgets = {} # {name: (start_spin, end_spin)}
         
         self.init_ui(is_verification)
-        self.update_preview(int(self.settings.start_time))
+        self.update_preview(self.settings.start_time)
 
     def init_ui(self, is_verification: bool):
         main_layout = QVBoxLayout()
@@ -110,15 +120,17 @@ class SettingsDialog(QDialog):
             
         else:
             # --- STANDARD SINGLE MODE ---
-            slider_max = int(max_duration)
+            self._slider_max = int(max_duration * SLIDER_STEPS_PER_SECOND)
 
-            self.start_slider = QSlider(Qt.Orientation.Horizontal, minimum=0, maximum=slider_max, value=int(self.settings.start_time))
+            self.start_slider = QSlider(Qt.Orientation.Horizontal, minimum=0, maximum=self._slider_max)
             self.start_spinbox = QDoubleSpinBox(decimals=2, minimum=0, maximum=max_duration, value=self.settings.start_time)
+            self.start_slider.setValue(self._seconds_to_slider(self.settings.start_time))
             start_hbox = QHBoxLayout(); start_hbox.addWidget(self.start_slider); start_hbox.addWidget(self.start_spinbox)
 
             end_val = self.settings.end_time or max_duration
-            self.end_slider = QSlider(Qt.Orientation.Horizontal, minimum=0, maximum=slider_max, value=int(end_val))
+            self.end_slider = QSlider(Qt.Orientation.Horizontal, minimum=0, maximum=self._slider_max)
             self.end_spinbox = QDoubleSpinBox(decimals=2, minimum=0, maximum=max_duration, value=end_val)
+            self.end_slider.setValue(self._seconds_to_slider(end_val))
             end_hbox = QHBoxLayout(); end_hbox.addWidget(self.end_slider); end_hbox.addWidget(self.end_spinbox)
 
             time_layout.addLayout(start_hbox)
@@ -218,29 +230,52 @@ class SettingsDialog(QDialog):
             return 0.0
         return float(self.scale_spin.value())
 
+    def _seconds_to_slider(self, seconds: float) -> int:
+        return min(self._slider_max, max(0, int(round(seconds * SLIDER_STEPS_PER_SECOND))))
+
+    def _slider_to_seconds(self, value: int) -> float:
+        # The top of the slider means "to the end of the video".
+        if value >= self._slider_max:
+            return self.video_info.duration
+        return value / SLIDER_STEPS_PER_SECOND
+
     def on_slider_change(self):
-        self._sync_widgets(source='slider')
-        self.update_preview(self.sender().value())
+        """Mirror a moved slider into its own spinbox only.
+
+        The other spinbox keeps whatever precise value it holds, so touching
+        one control never rewrites (and truncates) the other.
+        """
+        slider = self.sender()
+        is_start = slider is self.start_slider
+        own_spin = self.start_spinbox if is_start else self.end_spinbox
+        other_spin = self.end_spinbox if is_start else self.start_spinbox
+        seconds = self._slider_to_seconds(slider.value())
+        # Keep start <= end by clamping the control the user moved.
+        seconds = min(seconds, other_spin.value()) if is_start else max(seconds, other_spin.value())
+        self._set_quietly(own_spin, seconds)
+        self._set_quietly(slider, self._seconds_to_slider(own_spin.value()))
+        self.update_preview(seconds)
 
     def on_spinbox_change(self):
-        self._sync_widgets(source='spinbox')
-        self.update_preview(int(self.sender().value()))
+        """Mirror an edited spinbox into its own slider only."""
+        spin = self.sender()
+        is_start = spin is self.start_spinbox
+        other_spin = self.end_spinbox if is_start else self.start_spinbox
+        value = spin.value()
+        if is_start and value > other_spin.value():
+            value = other_spin.value()
+        elif not is_start and value < other_spin.value():
+            value = other_spin.value()
+        self._set_quietly(spin, value)
+        slider = self.start_slider if is_start else self.end_slider
+        self._set_quietly(slider, self._seconds_to_slider(value))
+        self.update_preview(value)
 
-    def _sync_widgets(self, source: str):
-        for w in [self.start_slider, self.end_slider, self.start_spinbox, self.end_spinbox]:
-            w.blockSignals(True)
-        if source == 'slider':
-            if self.start_slider.value() > self.end_slider.value():
-                self.start_slider.setValue(self.end_slider.value())
-            self.start_spinbox.setValue(self.start_slider.value())
-            self.end_spinbox.setValue(self.end_slider.value())
-        elif source == 'spinbox':
-            if self.start_spinbox.value() > self.end_spinbox.value():
-                self.start_spinbox.setValue(self.end_spinbox.value())
-            self.start_slider.setValue(int(self.start_spinbox.value()))
-            self.end_slider.setValue(int(self.end_spinbox.value()))
-        for w in [self.start_slider, self.end_slider, self.start_spinbox, self.end_spinbox]:
-            w.blockSignals(False)
+    @staticmethod
+    def _set_quietly(widget, value) -> None:
+        widget.blockSignals(True)
+        widget.setValue(value)
+        widget.blockSignals(False)
 
     def on_accept(self):
         if self.is_tst:
@@ -253,6 +288,13 @@ class SettingsDialog(QDialog):
                         "time greater than its start time."
                     )
                     return
+        elif self.start_spinbox.value() >= self.end_spinbox.value():
+            QMessageBox.warning(
+                self,
+                "Invalid Time Range",
+                "The end time must be greater than the start time."
+            )
+            return
         self.result_action = "accept"
         self.accept()
     def on_redraw(self): 

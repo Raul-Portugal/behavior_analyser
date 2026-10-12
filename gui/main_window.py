@@ -661,7 +661,10 @@ class MainWindow(QMainWindow):
         self.update_progress_detailed(50, "Configuration", "Reviewing analysis parameters...")
         QApplication.processEvents()
 
-        settings_dialog = SettingsDialog(str(ref_video_path), base_settings, is_verification=False, parent=self)
+        settings_dialog = SettingsDialog(
+            str(ref_video_path), base_settings, is_verification=False,
+            parent=self, maze_name=self.maze.name
+        )
 
         if not settings_dialog.exec():
             logger.info("Settings cancelled.")
@@ -696,11 +699,18 @@ class MainWindow(QMainWindow):
         QApplication.processEvents()
         
         current_settings = base_settings
+        redraw_cm = None  # cm length to pre-fill right after a Redraw
         for i, video_path in enumerate(self.video_paths):
             logger.info(f"Verifying video {i+1}/{len(self.video_paths)}: {video_path.name}")
             try:
                 while True:
-                    dialog = SettingsDialog(str(video_path), current_settings.copy(), is_verification=True, parent=self)
+                    dialog = SettingsDialog(
+                        str(video_path), current_settings.copy(),
+                        is_verification=True, parent=self,
+                        maze_name=self.maze.name,
+                        real_world_cm=redraw_cm
+                    )
+                    redraw_cm = None
                     dialog.setWindowTitle(f"Verify: {video_path.name}")
                     if not dialog.exec(): return {}
                     
@@ -725,6 +735,7 @@ class MainWindow(QMainWindow):
                                 roi_dialog.get_roi_manager(),
                                 real_world_cm,
                             )
+                            redraw_cm = real_world_cm or None
             except Exception as e:
                 logger.error(f"Could not verify {video_path.name}: {e}", exc_info=True)
                 QMessageBox.warning(
