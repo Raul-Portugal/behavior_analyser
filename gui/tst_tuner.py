@@ -17,7 +17,9 @@ from PyQt6.QtWidgets import (
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
 
-from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
+from core.tst_motion_engine import (
+    TSTFramePipeline, TSTMotionConfig, TSTMotionEngine,
+)
 from core.tst_display import tst_display_style
 from core.tst_events import smooth_tst_immobility_states
 from gui.dialog_layout import fit_dialog_to_available_screen
@@ -130,46 +132,58 @@ class EnergyScanner(QThread):
             )
             current_source_frame = start
             first_interval = True
-            while (
-                current_source_frame + source_step < end
-                and not self.isInterruptionRequested()
-            ):
-                current_source = None
-                for _ in range(source_step):
-                    ret, current_source = cap.read()
-                    if not ret:
+            capture_ended = False
+            # Frames are read ahead so the dense flow of the next intervals
+            # overlaps with consuming the oldest one; results stay in order.
+            pipeline = TSTFramePipeline(engine)
+            try:
+                while not self.isInterruptionRequested():
+                    while (
+                        not capture_ended
+                        and current_source_frame + source_step < end
+                        and pipeline.has_capacity()
+                    ):
+                        current_source = None
+                        for _ in range(source_step):
+                            ret, current_source = cap.read()
+                            if not ret:
+                                break
+                        if not ret or current_source is None:
+                            capture_ended = True
+                            break
+                        current_source_frame += source_step
+                        pipeline.submit(
+                            current_source_frame, current_source, previous
+                        )
+                        previous = current_source
+                    if not pipeline.pending:
                         break
-                if not ret or current_source is None:
-                    break
-                current_source_frame += source_step
-                current = current_source
-                observations = engine.calculate_observations(
-                    current, previous
-                )
-                for name, observation in observations.items():
-                    evidence = observation.to_dict()
-                    if segment_number and first_interval:
-                        evidence.update({
-                            "state": "uncertain",
-                            "confidence": 0.0,
-                            "qc_flag": "review_segment_boundary",
-                        })
-                    contour = engine.get_last_mask_contour(name)
-                    if contour:
-                        evidence["mask_contour"] = contour
-                    evidence["source_frame"] = current_source_frame
-                    evidence["timestamp_s"] = current_source_frame / fps
-                    energy_data[name].append(observation.activity_score)
-                    self.state_data[name].append(evidence["state"])
-                    self.evidence_data[name].append(evidence)
-                frame_indices.append(current_source_frame)
-                previous = current
-                first_interval = False
-                count += 1
-                if count % 25 == 0 or count == expected_intervals:
-                    self.progress.emit(int(
-                        count / max(1, expected_intervals) * 100
-                    ))
+                    frame_number, observations = pipeline.pop()
+                    for name, observation in observations.items():
+                        evidence = observation.to_dict()
+                        if segment_number and first_interval:
+                            evidence.update({
+                                "state": "uncertain",
+                                "confidence": 0.0,
+                                "qc_flag": "review_segment_boundary",
+                            })
+                        contour = engine.get_last_mask_contour(name)
+                        if contour:
+                            evidence["mask_contour"] = contour
+                        evidence["source_frame"] = frame_number
+                        evidence["timestamp_s"] = frame_number / fps
+                        energy_data[name].append(observation.activity_score)
+                        self.state_data[name].append(evidence["state"])
+                        self.evidence_data[name].append(evidence)
+                    frame_indices.append(frame_number)
+                    first_interval = False
+                    count += 1
+                    if count % 25 == 0 or count == expected_intervals:
+                        self.progress.emit(int(
+                            count / max(1, expected_intervals) * 100
+                        ))
+            finally:
+                pipeline.close()
         if not self.isInterruptionRequested():
             self.scan_complete.emit(
                 energy_data,

@@ -30,7 +30,7 @@ from core.video import (
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.analysis_engine import Analyzer
 from core.tst_display import blend_polygon, tst_display_style
-from core.tst_motion_engine import TSTMotionEngine
+from core.tst_motion_engine import TSTFramePipeline, TSTMotionEngine
 from core.version import APP_NAME, APP_VERSION
 
 # --- LEGACY/UTILITY IMPORTS ---
@@ -532,8 +532,13 @@ class AnalysisWorker(QObject):
         )
 
         local_est = ProgressEstimator(max(0, end_frame - processing_start))
-        curr = previous_frame_idx + 1
+        next_read = previous_frame_idx + 1
         frames_processed = 0
+        # Dense flow and the history-independent segmentation of the next
+        # frames run on worker threads while this thread consumes the oldest
+        # frame in order, so histories (and checkpoints) only ever reflect
+        # frames that were fully consumed.
+        pipeline = TSTFramePipeline(engine)
 
         try:
             # The first read can raise VideoReadError, so it belongs inside
@@ -542,7 +547,24 @@ class AnalysisWorker(QObject):
             if not ret:
                 return result, 0
 
-            while curr < end_frame:
+            reader_exhausted = False
+            while True:
+                while (
+                    not reader_exhausted
+                    and next_read < end_frame
+                    and pipeline.has_capacity()
+                ):
+                    ret, frame = reader.read()
+                    if not ret:
+                        reader_exhausted = True
+                        break
+                    pipeline.submit(next_read, frame, prev_frame)
+                    prev_frame = frame
+                    next_read += 1
+                if not pipeline.pending:
+                    break
+
+                curr = pipeline.next_tag
                 if self.is_cancelled:
                     checkpoint_payload = dict(result.__dict__)
                     checkpoint_payload["_tst_engine_state"] = (
@@ -556,11 +578,7 @@ class AnalysisWorker(QObject):
                     )
                     raise InterruptedError("Analysis cancelled")
 
-                ret, frame = reader.read()
-                if not ret:
-                    break
-
-                observations = engine.calculate_observations(frame, prev_frame)
+                _, observations = pipeline.pop()
                 result.timestamps.append(curr / handler.fps)
                 for name, observation in observations.items():
                     result.activity_scores[name].append(
@@ -576,8 +594,6 @@ class AnalysisWorker(QObject):
                     result.motion_evidence[name].append(evidence)
 
                 processed_frame_idx = curr
-                prev_frame = frame
-                curr += 1
                 frames_processed += 1
 
                 local_est.update(frames_processed)
@@ -607,6 +623,9 @@ class AnalysisWorker(QObject):
                         settings
                     )
         finally:
+            # Cancel queued frame work first so a cancelled run never waits
+            # on more than the few frame pairs already being computed.
+            pipeline.close()
             reader.release()
 
         result.end_frame = (
