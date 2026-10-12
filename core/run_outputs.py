@@ -100,8 +100,13 @@ def write_run_manifest(
     failures: Sequence[Tuple[Path, str]],
     quality_warnings: Sequence[Tuple[Path, str]],
     cancelled: bool,
+    sample_metadata=None,
 ) -> None:
-    """Write a compact index so a run can be understood at a glance."""
+    """Write a compact index so a run can be understood at a glance.
+
+    ``sample_metadata`` is the run's optional sample sheet
+    (``core.sample_sheet.SampleMetadata``).
+    """
     generated_files = [MANIFEST_FILENAME] + sorted(
         str(path.relative_to(run_dir)).replace("\\", "/")
         for path in run_dir.rglob("*")
@@ -123,9 +128,17 @@ def write_run_manifest(
             {
                 "source": str(video_path),
                 "output_folder": base_names[video_path],
+                "metadata": (
+                    {} if sample_metadata is None
+                    else sample_metadata.values_for(video_path)
+                ),
             }
             for video_path, _ in results
         ],
+        "sample_sheet": (
+            None if sample_metadata is None
+            else str(sample_metadata.sheet_path)
+        ),
         "failures": [
             {"source": str(path), "message": message}
             for path, message in failures

@@ -25,6 +25,7 @@ from core.pipeline import (
     CancelToken, VideoJob, VideoOutcome, init_child_process, run_video,
 )
 from core.run_outputs import write_run_manifest, write_run_plan
+from core.sample_sheet import SampleMetadata
 from core.video import VideoHandler
 from mazes import create_maze
 from mazes.base_maze import BaseAnalysisResult, Maze
@@ -197,6 +198,7 @@ class BatchRunner:
         started_at: str = "",
         write_plan: Optional[Callable[[], None]] = None,
         write_manifest: Optional[Callable[..., None]] = None,
+        sample_metadata: Optional[SampleMetadata] = None,
     ):
         self.analysis_plan = analysis_plan
         self.output_root = output_root
@@ -208,6 +210,9 @@ class BatchRunner:
         self.workers = max(1, int(workers))
         self.checkpoint_mgr = checkpoint_mgr or CheckpointManager(output_root)
         self.started_at = started_at
+        # Run-level options: neither is part of BatchSettings, so neither
+        # changes the checkpoint settings hash.
+        self.sample_metadata = sample_metadata
         self._write_plan = write_plan or (
             lambda: write_run_plan(self.analysis_plan, self.run_dir)
         )
@@ -224,6 +229,7 @@ class BatchRunner:
             self.run_dir, self.maze, self.started_at,
             len(self.analysis_plan), self.base_names,
             results, failures, quality_warnings, cancelled,
+            sample_metadata=self.sample_metadata,
         )
 
     # -- helpers -------------------------------------------------------
@@ -238,6 +244,10 @@ class BatchRunner:
             output_dir=self.run_dir / self.base_names[video_path],
             base_name=self.base_names[video_path],
             checkpoint_root=self.output_root,
+            animal_metadata=(
+                None if self.sample_metadata is None
+                else self.sample_metadata.values_for(video_path)
+            ),
             video_number=video_number,
             total_videos=total_videos,
             **extra,
@@ -281,7 +291,8 @@ class BatchRunner:
         if self.results:
             try:
                 DataExporter.export_batch_summary_csv(
-                    self.results, self.run_dir, self.maze
+                    self.results, self.run_dir, self.maze,
+                    metadata=self.sample_metadata,
                 )
             except Exception as exc:
                 self.failures.append((Path("batch_summary.csv"), str(exc)))

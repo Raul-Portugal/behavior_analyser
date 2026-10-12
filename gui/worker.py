@@ -17,6 +17,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from checkpoint_manager import CheckpointManager
 from core.batch_runner import BatchRunner, BatchRunOutcome
 from core.models import BatchSettings
+from core.sample_sheet import SampleMetadata
 from core.run_outputs import (
     RUN_PLAN_FILENAME, apply_effective_parameters, create_run_folder,
     output_base_names, run_timestamp, write_run_manifest, write_run_plan,
@@ -69,13 +70,19 @@ class AnalysisWorker(QObject):
         output_dir: Path,
         maze: Maze,
         workers: int = 1,
+        sample_metadata: Optional[SampleMetadata] = None,
     ):
-        """``workers`` > 1 analyses several videos at once in child processes."""
+        """``workers`` > 1 analyses several videos at once in child processes.
+
+        ``sample_metadata`` is the run's optional sample sheet; it is a
+        run-level option and does not affect the checkpoint settings hash.
+        """
         super().__init__()
         self.analysis_plan = analysis_plan
         self.output_root = output_dir
         self.maze = maze
         self.workers = max(1, int(workers))
+        self.sample_metadata = sample_metadata
         apply_effective_parameters(self.analysis_plan, self.maze)
         self.is_cancelled = False
         self.checkpoint_mgr = CheckpointManager(output_dir)
@@ -108,6 +115,7 @@ class AnalysisWorker(QObject):
             started_at=self.run_started_at,
             write_plan=self._write_run_plan,
             write_manifest=self._write_run_manifest,
+            sample_metadata=self.sample_metadata,
         )
         outcome: Optional[BatchRunOutcome] = None
         try:
@@ -144,4 +152,5 @@ class AnalysisWorker(QObject):
             failures,
             quality_warnings,
             cancelled,
+            sample_metadata=self.sample_metadata,
         )

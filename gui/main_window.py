@@ -31,6 +31,7 @@ from core.version import APP_NAME, APP_VERSION
 # --- DIALOGS ---
 from gui import ux_helpers
 from gui.app_settings import AppSettings
+from gui.run_options_panel import RunOptionsPanel
 from gui.config_checks import dimension_mismatches, format_dimension_mismatches
 from gui.roi_selector import (REFERENCE_LINE_PROMPT, RoiSelectorDialog,
                               offer_reference_line)
@@ -339,6 +340,15 @@ class MainWindow(QMainWindow):
         action_layout.addWidget(self.workers_label)
         action_layout.addWidget(self.workers_spin)
         main_layout.addLayout(action_layout)
+
+        # Run-level options (sample sheet, time bins): not part of any
+        # video's settings, so they never change the checkpoint hash.
+        self.run_options = RunOptionsPanel(
+            self.app_settings,
+            videos_provider=lambda: list(self.video_paths),
+            maze_provider=lambda: self.maze,
+        )
+        main_layout.addWidget(self.run_options)
         
         # Progress indicators
         self.progress_bar = QProgressBar()
@@ -692,6 +702,9 @@ class MainWindow(QMainWindow):
         self.move_up_button.setEnabled(has_selection and idle)
         self.move_down_button.setEnabled(has_selection and idle)
         self.clear_list_button.setEnabled(has_videos and idle)
+        run_options = getattr(self, "run_options", None)
+        if run_options is not None:
+            run_options.refresh()
         self._sync_actions(running=not idle)
 
     def _sync_actions(self, running: bool):
@@ -1638,6 +1651,11 @@ class MainWindow(QMainWindow):
             return
         if not self._validate_analysis_plan(analysis_plan, confirm_start):
             return
+        proceed, sample_metadata = self.run_options.resolve_for_run(
+            list(analysis_plan)
+        )
+        if not proceed:
+            return
         effective_parameters = self.maze.get_algorithm_parameters()
         for settings in analysis_plan.values():
             settings.paradigm_id = self.maze.name
@@ -1662,6 +1680,7 @@ class MainWindow(QMainWindow):
             self.analysis_worker = AnalysisWorker(
                 analysis_plan, self.output_dir, self.maze,
                 workers=self._worker_count(len(analysis_plan)),
+                sample_metadata=sample_metadata,
             )
         except Exception as exc:
             self.analysis_thread = None
@@ -2096,6 +2115,7 @@ class MainWindow(QMainWindow):
         self.clear_list_button.setEnabled(not is_running and bool(self.video_paths))
         self.recursive_check.setEnabled(not is_running)
         self.workers_spin.setEnabled(not is_running)
+        self.run_options.setEnabled(not is_running)
         has_selection = bool(self.video_list_widget.selectedItems())
         for button in (self.remove_selected_button, self.move_up_button,
                        self.move_down_button):

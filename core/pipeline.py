@@ -113,6 +113,9 @@ class VideoJob:
     # ``maze_name`` and ``algorithm_parameters`` (state a parameter dict does
     # not capture, such as a legacy Freestyle threshold note).
     maze: Optional[Maze] = None
+    # Sample-sheet values of this video (run-level, not part of the settings
+    # hash); None when the run has no sample sheet.
+    animal_metadata: Optional[Dict[str, str]] = None
 
 
 @dataclass
@@ -878,7 +881,8 @@ class VideoPipeline:
             result,
             output_dir / f"{base_name}_summary.json",
             detection_params,
-            settings.to_dict()
+            settings.to_dict(),
+            animal_metadata=self.job.animal_metadata,
         )
         self._raise_if_cancelled()
         self.maze.export_specific_data(result, output_dir, base_name)
