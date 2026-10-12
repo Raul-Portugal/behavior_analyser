@@ -5,6 +5,7 @@ Whole-body translation/rotation is modelled separately from residual,
 non-rigid motion so pendulum-like movement can be treated as passive.
 """
 
+import weakref
 from dataclasses import asdict, dataclass, field, replace
 from math import ceil, isfinite
 from typing import Dict, Optional, Tuple
@@ -24,6 +25,15 @@ MIN_ANALYSIS_WIDTH = 160
 # Processing is confined to the union bounding box of the ROIs plus this
 # fraction of its size on every side (clamped to the frame).
 ROI_MARGIN_FRACTION = 0.15
+
+# Constant structuring elements; cv2 only reads them, so one instance is shared
+# by every segmentation call (and every thread).
+_ERODE_KERNEL = np.ones((7, 7), dtype=np.uint8)
+_OPEN_KERNEL = np.ones((3, 3), dtype=np.uint8)
+_CLOSE_KERNEL = np.ones((7, 7), dtype=np.uint8)
+# A ROI border band with fewer pixels than this is too small to estimate the
+# background from, so the whole ROI is used instead.
+_MIN_BACKGROUND_PIXELS = 20
 
 
 @dataclass
@@ -122,6 +132,17 @@ class TSTMotionObservation:
 
 
 @dataclass
+class _RoiGeometry:
+    """Per-ROI constants of the cropped analysis space, built once."""
+
+    mask: np.ndarray  # uint8 0/255 ROI mask in crop space
+    selector: np.ndarray  # bool, ``mask > 0``
+    area: int
+    roi_index: np.ndarray  # flat raster indices of the ROI pixels
+    background_index: np.ndarray  # flat indices used to estimate background
+
+
+@dataclass
 class _MouseHistory:
     centroid: Optional[Tuple[float, float]] = None
     rigid_vector: Optional[np.ndarray] = None
@@ -190,6 +211,13 @@ class TSTMotionEngine:
         # operation live in the cropped analysis space; contours are mapped
         # back to source pixels.
         self.masks: Dict[str, np.ndarray] = {}
+        self._geometry: Dict[str, _RoiGeometry] = {}
+        # Integer source->analysis downscale factors (kx, ky) when the
+        # resize can be done on the ROI crop alone without changing a pixel.
+        self._exact_crop_factors: Optional[Tuple[int, int]] = None
+        # Gray analysis image of the most recent "current" frame, reused as
+        # the next pair's "previous" image. Keyed by frame identity.
+        self._gray_cache: Optional[Tuple[weakref.ref, np.ndarray]] = None
         self._source_size: Tuple[int, int] = (0, 0)
         self._analysis_size: Tuple[int, int] = (0, 0)
         self._scale: Tuple[float, float] = (1.0, 1.0)
@@ -241,20 +269,66 @@ class TSTMotionEngine:
             mask = np.zeros(crop_shape, dtype=np.uint8)
             cv2.fillPoly(mask, [points - np.asarray([x0, y0], np.int32)], 255)
             self.masks[name] = mask
+            self._geometry[name] = self._build_roi_geometry(mask)
             combined = cv2.bitwise_or(combined, mask)
         # Camera-motion features come from background inside the crop box
         # but outside every ROI.
         self._background_feature_mask = cv2.bitwise_not(combined)
+        factor_x, factor_y = width // analysis_width, height // analysis_height
+        if (
+            factor_x >= 2
+            and factor_y >= 2
+            and width == factor_x * analysis_width
+            and height == factor_y * analysis_height
+        ):
+            # INTER_AREA with integer factors averages disjoint source
+            # blocks, so resizing just the crop's source rows/columns is
+            # pixel-identical to cropping the resized frame.
+            self._exact_crop_factors = (factor_x, factor_y)
         self._initialized = True
+
+    @staticmethod
+    def _build_roi_geometry(mask: np.ndarray) -> _RoiGeometry:
+        selector = mask > 0
+        roi_index = np.flatnonzero(selector)
+        inner = cv2.erode(mask, _ERODE_KERNEL, iterations=2)
+        border_index = np.flatnonzero(cv2.subtract(mask, inner) > 0)
+        return _RoiGeometry(
+            mask=mask,
+            selector=selector,
+            area=int(roi_index.size),
+            roi_index=roi_index,
+            background_index=(
+                border_index
+                if border_index.size >= _MIN_BACKGROUND_PIXELS
+                else roi_index
+            ),
+        )
 
     def _analysis_gray(self, frame: np.ndarray) -> np.ndarray:
         """Resize to the analysis width, crop to the ROI box, blur to gray."""
-        if (frame.shape[1], frame.shape[0]) != self._analysis_size:
-            frame = cv2.resize(
-                frame, self._analysis_size, interpolation=cv2.INTER_AREA
-            )
         x0, y0, x1, y1 = self._crop
+        if (frame.shape[1], frame.shape[0]) == self._analysis_size:
+            return self._gray(frame[y0:y1, x0:x1])
+        if self._exact_crop_factors is not None:
+            factor_x, factor_y = self._exact_crop_factors
+            region = frame[
+                y0 * factor_y:y1 * factor_y, x0 * factor_x:x1 * factor_x
+            ]
+            return self._gray(cv2.resize(
+                region, (x1 - x0, y1 - y0), interpolation=cv2.INTER_AREA
+            ))
+        frame = cv2.resize(
+            frame, self._analysis_size, interpolation=cv2.INTER_AREA
+        )
         return self._gray(frame[y0:y1, x0:x1])
+
+    def _previous_gray(self, previous_frame: np.ndarray) -> np.ndarray:
+        """Analysis image of ``previous_frame``, reused when it is cached."""
+        cached = self._gray_cache
+        if cached is not None and cached[0]() is previous_frame:
+            return cached[1]
+        return self._analysis_gray(previous_frame)
 
     @staticmethod
     def _gray(frame: np.ndarray) -> np.ndarray:
@@ -307,24 +381,18 @@ class TSTMotionEngine:
     def _segment_mouse(
         self,
         gray: np.ndarray,
-        roi_mask: np.ndarray,
+        geometry: _RoiGeometry,
         previous_centroid: Optional[Tuple[float, float]],
     ) -> Tuple[Optional[np.ndarray], float, str]:
-        roi_area = int(np.count_nonzero(roi_mask))
+        roi_area = geometry.area
         if roi_area == 0:
             return None, 0.0, "empty_roi"
 
-        kernel = np.ones((7, 7), dtype=np.uint8)
-        inner = cv2.erode(roi_mask, kernel, iterations=2)
-        border = cv2.subtract(roi_mask, inner)
-        background_pixels = gray[border > 0]
-        if background_pixels.size < 20:
-            background_pixels = gray[roi_mask > 0]
-        background_level = float(np.median(background_pixels))
+        background_level = float(np.median(gray.take(geometry.background_index)))
         contrast = cv2.absdiff(
             gray, np.full_like(gray, int(round(background_level)))
         )
-        roi_contrast = contrast[roi_mask > 0]
+        roi_contrast = contrast.take(geometry.roi_index)
         otsu_threshold, _ = cv2.threshold(
             roi_contrast.reshape(-1, 1),
             0,
@@ -333,13 +401,9 @@ class TSTMotionEngine:
         )
         threshold = max(self.config.segmentation_contrast, otsu_threshold)
         candidate = np.zeros_like(gray, dtype=np.uint8)
-        candidate[(contrast >= threshold) & (roi_mask > 0)] = 255
-        candidate = cv2.morphologyEx(
-            candidate, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)
-        )
-        candidate = cv2.morphologyEx(
-            candidate, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8)
-        )
+        candidate[(contrast >= threshold) & geometry.selector] = 255
+        candidate = cv2.morphologyEx(candidate, cv2.MORPH_OPEN, _OPEN_KERNEL)
+        candidate = cv2.morphologyEx(candidate, cv2.MORPH_CLOSE, _CLOSE_KERNEL)
 
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(
             candidate, connectivity=8
@@ -865,6 +929,7 @@ class TSTMotionEngine:
             }
             for history in self.histories.values():
                 history.reset_temporal()
+            self._gray_cache = None
             self.last_observations = observations
             return observations
         if not self._initialized:
@@ -877,7 +942,8 @@ class TSTMotionEngine:
             )
 
         current_gray = self._analysis_gray(frame)
-        previous_gray = self._analysis_gray(previous_frame)
+        previous_gray = self._previous_gray(previous_frame)
+        self._gray_cache = (weakref.ref(frame), current_gray)
         aligned_previous, camera_stabilized = self._stabilize_previous(
             previous_gray, current_gray, self._background_feature_mask
         )
@@ -895,13 +961,13 @@ class TSTMotionEngine:
         )
 
         observations: Dict[str, TSTMotionObservation] = {}
-        for name, roi_mask in self.masks.items():
+        for name, geometry in self._geometry.items():
             history = self.histories[name]
             previous_mask, _, previous_error = self._segment_mouse(
-                aligned_previous, roi_mask, history.centroid
+                aligned_previous, geometry, history.centroid
             )
             current_mask, area_ratio, current_error = self._segment_mouse(
-                current_gray, roi_mask, history.centroid
+                current_gray, geometry, history.centroid
             )
             if previous_mask is None or current_mask is None:
                 self.last_mouse_masks[name] = None
