@@ -17,6 +17,8 @@ from scipy.ndimage import gaussian_filter
 
 from mazes.base_maze import BaseAnalysisResult, Maze
 from core.output_contract import COMMON_BATCH_HEADERS, common_batch_row
+from core.sample_sheet import SampleMetadata
+from core.time_bins import TIME_BIN_HEADERS, TimeBinTable
 
 logger = logging.getLogger(__name__)
 
@@ -25,7 +27,17 @@ class DataExporter:
     """A collection of static methods for exporting analysis data to various formats."""
 
     @staticmethod
-    def export_batch_summary_csv(all_results: List[Tuple[Path, BaseAnalysisResult]], output_dir: Path, maze: Maze):
+    def export_batch_summary_csv(
+        all_results: List[Tuple[Path, BaseAnalysisResult]],
+        output_dir: Path,
+        maze: Maze,
+        metadata: Optional[SampleMetadata] = None,
+    ):
+        """Write ``batch_summary.csv``.
+
+        ``metadata`` (sample-sheet columns) is inserted between the common
+        columns and the paradigm columns; without it the file is unchanged.
+        """
         if not all_results:
             logger.warning("No results to export for batch summary.")
             return
@@ -35,7 +47,11 @@ class DataExporter:
         
         logger.info(f"Exporting {maze.name} batch summary to: {output_path}")
 
-        headers = COMMON_BATCH_HEADERS + maze.get_batch_summary_headers()
+        metadata_columns = list(metadata.columns) if metadata else []
+        headers = (
+            COMMON_BATCH_HEADERS + metadata_columns
+            + maze.get_batch_summary_headers()
+        )
 
         try:
             with open(output_path, 'w', newline='', encoding='utf-8') as f:
@@ -47,6 +63,11 @@ class DataExporter:
                     common_cells = common_batch_row(
                         video_path, result, maze.name
                     )
+                    if metadata:
+                        values = metadata.values_for(video_path)
+                        common_cells = common_cells + [
+                            values[column] for column in metadata_columns
+                        ]
                     
                     # Handle multi-row output (e.g., TST multiple mice)
                     if maze_data and isinstance(maze_data[0], list):
@@ -57,6 +78,55 @@ class DataExporter:
                         
         except IOError as e:
             logger.error(f"Failed to write batch summary file: {e}")
+            raise
+
+    @staticmethod
+    def export_time_bins_csv(table: TimeBinTable, output_path: Path):
+        """Write one video's long-format ``*_time_bins.csv``."""
+        logger.info(f"Exporting time bins: {output_path}")
+        try:
+            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(TIME_BIN_HEADERS)
+                writer.writerows(table.rows())
+        except IOError as e:
+            logger.error(f"Failed to write time bins file: {e}")
+            raise
+
+    @staticmethod
+    def export_batch_time_bins_csv(
+        tables: List[Tuple[Path, TimeBinTable]],
+        output_dir: Path,
+        paradigm_name: str,
+        metadata: Optional[SampleMetadata] = None,
+    ):
+        """Write the run's long-format ``batch_time_bins.csv``.
+
+        Every row of every video's table, in video order, led by the video
+        filename and paradigm and then (with a sample sheet) its metadata.
+        """
+        if not tables:
+            return
+        output_dir.mkdir(parents=True, exist_ok=True)
+        output_path = output_dir / "batch_time_bins.csv"
+        metadata_columns = list(metadata.columns) if metadata else []
+        headers = (
+            ["video_filename", "paradigm"] + metadata_columns
+            + TIME_BIN_HEADERS
+        )
+        try:
+            with open(output_path, 'w', newline='', encoding='utf-8') as f:
+                writer = csv.writer(f)
+                writer.writerow(headers)
+                for video_path, table in tables:
+                    lead = [video_path.name, paradigm_name]
+                    if metadata:
+                        values = metadata.values_for(video_path)
+                        lead += [values[column] for column in metadata_columns]
+                    for row in table.rows():
+                        writer.writerow(lead + row)
+        except IOError as e:
+            logger.error(f"Failed to write batch time bins file: {e}")
             raise
 
     @staticmethod
@@ -346,7 +416,8 @@ class DataExporter:
         result: BaseAnalysisResult,
         output_path: Path,
         detection_params: Optional[Dict] = None,
-        run_configuration: Optional[Dict] = None
+        run_configuration: Optional[Dict] = None,
+        animal_metadata: Optional[Dict[str, str]] = None,
     ):
         try:
             data = result.to_dict()
@@ -354,7 +425,9 @@ class DataExporter:
                 data['detection_parameters'] = detection_params
             if run_configuration:
                 data['run_configuration'] = run_configuration
-            
+            if animal_metadata is not None:
+                data['animal_metadata'] = dict(animal_metadata)
+
             if hasattr(result, '__dict__'):
                 base_keys = set(BaseAnalysisResult().__dict__.keys())
                 frame_trace_keys = {

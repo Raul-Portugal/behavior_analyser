@@ -95,8 +95,12 @@ class CheckpointManager:
     def _get_rows_path(checkpoint_path: Path) -> Path:
         return checkpoint_path.with_suffix('.rows.jsonl')
 
-    def _get_settings_hash(self, settings: Any) -> str:
-        """Get hash of settings for validation."""
+    def get_settings_hash(self, settings: Any) -> str:
+        """Hash of the run settings: what a checkpoint is validated against.
+
+        Public because the run manifest records it, so a video can be tied to
+        (and re-run from) the exact settings it was analysed with.
+        """
         if hasattr(settings, 'to_dict'):
             settings_data = settings.to_dict()
         else:
@@ -110,12 +114,17 @@ class CheckpointManager:
         return hashlib.sha256(settings_json.encode('utf-8')).hexdigest()[:24]
 
     @staticmethod
-    def _get_video_fingerprint(video_path: Path) -> str:
+    def get_video_fingerprint(video_path: Path) -> str:
+        """Hash of the video's path, size and modification time."""
         stat = video_path.stat()
         payload = (
             f"{video_path.resolve()}|{stat.st_size}|{stat.st_mtime_ns}"
         )
         return hashlib.sha256(payload.encode('utf-8')).hexdigest()[:24]
+
+    # Private spellings kept for older callers.
+    _get_settings_hash = get_settings_hash
+    _get_video_fingerprint = get_video_fingerprint
 
     @staticmethod
     def _json_default(value):
@@ -240,8 +249,8 @@ class CheckpointManager:
                 'version': self.CHECKPOINT_VERSION,
                 'video_path': str(video_path),
                 'last_frame_processed': frame_idx,
-                'settings_hash': self._get_settings_hash(settings),
-                'video_fingerprint': self._get_video_fingerprint(video_path),
+                'settings_hash': self.get_settings_hash(settings),
+                'video_fingerprint': self.get_video_fingerprint(video_path),
                 'timestamp': time.time(),
                 'rows_committed': frame_count,
                 'row_schema': schema,
@@ -293,12 +302,12 @@ class CheckpointManager:
                 return None
 
             # Validate settings match
-            current_hash = self._get_settings_hash(settings)
+            current_hash = self.get_settings_hash(settings)
             if checkpoint_dict.get('settings_hash') != current_hash:
                 logger.info("Settings changed, starting fresh")
                 return None
 
-            current_video_fingerprint = self._get_video_fingerprint(video_path)
+            current_video_fingerprint = self.get_video_fingerprint(video_path)
             if checkpoint_dict.get('video_fingerprint') != current_video_fingerprint:
                 logger.info("Video changed, starting fresh")
                 return None

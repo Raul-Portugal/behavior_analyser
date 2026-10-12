@@ -7,6 +7,7 @@ analysis_run_YYYYMMDD_HHMMSS/
   manifest.json
   run_plan.json
   batch_summary.csv
+  batch_time_bins.csv   # only when time bins are on (see "Time bins")
   video_name/
     data/
     plots/
@@ -17,6 +18,33 @@ The manifest identifies the application version, paradigm, source videos,
 effective algorithm parameters, failures, quality warnings, and every
 generated artifact. This makes each run self-contained and prevents files from
 separate runs or videos being mixed.
+
+## Manifest (`manifest.json`, schema 3)
+
+`schema_version` is `3` (3.4.0). Top-level keys: `application`, `paradigm`,
+`started_at`, `finished_at`, `cancelled`, `requested_videos`,
+`completed_videos`, `sample_sheet` (path of the sample sheet, or `null`),
+`time_bin_seconds` (bin length, or `null` when bins are off), `videos`,
+`failures`, `quality_warnings`, `algorithm_parameters` and `generated_files`.
+
+Each `videos[]` entry describes one video, completed **or failed**, in the
+order of the batch:
+
+| Key | Meaning |
+|---|---|
+| `source` | Path of the source video |
+| `output_folder` | The video's folder inside the run folder |
+| `status` | `completed` or `failed` |
+| `settings_hash` | Hash of the exact per-video settings (the value checkpoints are validated against; it is the hash of the matching `run_plan.json` entry) |
+| `video_fingerprint` | Hash of the source video's path, size and modification time; `null` if the file could not be read |
+| `metadata` | The video's sample-sheet values (`{}` without a sample sheet) |
+| `summary_json` | Path of the video's `*_summary.json`, relative to the run folder; `null` when it was not written (a failed video) |
+
+Every video of the run, failed ones included, is in `run_plan.json`, so a
+failed video can be re-run from the run plan; its `settings_hash` in the
+manifest identifies the settings it was run with. Manifests of schema 2 had
+only `source` and `output_folder` per completed video; schema 3 only adds
+keys.
 
 ## Run plan (`run_plan.json`)
 
@@ -55,6 +83,9 @@ Distance and tracking-quality cells are intentionally blank for TST because
 motion-energy analysis does not produce centroid tracking. A blank unsupported
 metric must not be interpreted as zero.
 
+When a sample sheet is used (see "Sample sheet"), its columns follow these
+shared columns and precede the paradigm columns.
+
 ## Per-video data
 
 | Artifact | Positional paradigms | TST | Purpose |
@@ -90,7 +121,9 @@ explicitly rather than silently inflating totals. The excluded distance is in
 the run's distance unit: cm when a reference line was drawn, pixels otherwise.
 
 Validation media is optional and lives in `media/`; it is not created merely
-because plots or tabular outputs are generated.
+because plots or tabular outputs are generated. For an open-field arena run
+the tracking validation video also draws the center region outline, whether
+the run was started from the GUI, the command line or a parallel batch.
 
 For TST, the existing summaries include quality-control fields for body-mask
 stability, segmentation failures, low-confidence frames, and state switching.
@@ -210,6 +243,110 @@ timestamp and the frame rate. `mask_contour` is a drawing aid only, is not
 part of any exported data, and is dropped from checkpoint files (a resumed
 run's validation video simply has no mask outline for frames restored from a
 checkpoint).
+
+## Sample sheet (animal metadata)
+
+An optional CSV that attaches animal information (ID, group, sex, treatment,
+...) to each video. The first column is named `video`; every other column is
+free metadata, copied as written:
+
+```text
+video,animal_id,group,sex
+mouse1.mp4,A01,control,F
+day2/mouse1.mp4,A01,control,F
+```
+
+A `video` cell is a path relative to the sheet's folder, an absolute path, or
+a bare filename. Cells are stripped, a UTF-8 BOM is ignored, blank lines are
+skipped, and the delimiter may be a comma, a semicolon or a tab. Videos are
+matched to rows with the same rules as batch plans, with the sheet file as the
+anchor (exact path, then path relative to the sheet, then a filename that is
+unique in both the sheet and the selected videos). A video is never matched by
+guesswork: one that matches no row, or whose filename fits several rows or is
+shared by several selected videos, is reported (the GUI lists them when the
+sheet is loaded and asks before starting; the CLI refuses to run). Metadata
+column names may not repeat a column of the batch summary or of the
+time-bin tables (`video_filename`, `paradigm`, `total_distance`, `metric`,
+`value`, ...); such a sheet is rejected.
+
+Where the metadata is written (and nowhere else):
+
+- `batch_summary.csv`: the metadata columns sit **between** the shared columns
+  and the paradigm columns. Without a sample sheet the file is unchanged.
+- each video's `*_summary.json`: an `animal_metadata` object.
+- `manifest.json`: `videos[].metadata` and the top-level `sample_sheet`.
+- `batch_time_bins.csv` (when time bins are on): after `video_filename` and
+  `paradigm`.
+
+The sample sheet is a run option, not a video setting: it is not part of
+`run_plan.json` or of the checkpoint settings hash, so adding or changing it
+never invalidates a checkpoint. Select it with **Sample sheet...** in the main
+window (the last sheet is remembered) or `--sample-sheet` on the command line.
+
+## Time bins
+
+An optional run setting that reports the metrics in consecutive fixed-length
+bins, for example to see habituation over a 10-minute open field. Choose
+**Time bins** in the main window (in minutes) or `--bin-seconds N` on the
+command line. **Off is the default and changes nothing**: no extra file is
+written and every other output stays byte-for-byte what it was. The bin
+length is not part of the settings or the checkpoint hash.
+
+When on, each video gets `data/<video>_time_bins.csv` and the run folder gets
+`batch_time_bins.csv`. Both are **long format**, one row per bin, subject and
+metric (easy to pivot, and the metrics differ per paradigm); the batch file
+has the same rows for every video, led by `video_filename`, `paradigm` and the
+sample-sheet columns (if any).
+
+| Column | Meaning |
+|---|---|
+| `bin_index` | 1, 2, 3, ... |
+| `bin_start_s`, `bin_end_s` | Bin limits in seconds **from the analysis start** (the first analyzed frame, i.e. the Start Time), not from the start of the video |
+| `abs_start_s`, `abs_end_s` | The same limits as absolute video time |
+| `bin_duration_s` | Length of the bin; shorter than the bin length only for a partial bin |
+| `partial_bin` | `1` for a short last bin, otherwise `0`. The last bin is partial when the analysis ends more than one frame before the bin would; its `bin_end_s` is where the analysis ended |
+| `subject` | The mouse for TST; blank otherwise |
+| `metric`, `value`, `unit` | The metric (see below), its value (blank when not defined, e.g. a percentage with no data) and its unit |
+
+Every count belongs to exactly one bin, so **a metric summed over the bins
+equals the whole-video total** (`value`s are written with 4 decimals, so
+totals agree to rounding). A frame (time in a zone, undetected time,
+immobility) belongs to the bin of its timestamp; a distance step (from the
+previous frame to this one) belongs to the bin and zone of the frame it ends
+in, as in the whole-video distance, and excluded jumps are excluded here too;
+an entry belongs to the bin of the frame where it happens. Distances are in
+cm when calibrated, otherwise pixels.
+
+Metrics by paradigm:
+
+| Paradigm | Metrics |
+|---|---|
+| All positional paradigms | `distance_total`; `distance_in_<zone>`; `time_in_<zone>_s`; `undetected_time_s` |
+| Y-maze | the above, plus `entries_total`, `entries_<arm>`, `alternations_correct`, `alternations_possible`, `alternation_pct` |
+| Elevated Plus Maze | the positional metrics, plus `entries_total`, `entries_<arm>`, `entries_open_arms`, `entries_closed_arms` |
+| Freestyle / Open Field | the positional metrics, plus `entries_total` and `entries_<zone>` (when zones exist), `immobility_time_s` (calibrated runs only), and with an arena `center_time_s`, `periphery_time_s`, `thigmotaxis_time_pct` |
+| Tail Suspension Test | per mouse: `immobile_s`, `mobile_s`, `uncertain_s`, `immobility_pct` (immobile / (immobile + mobile)); no distances |
+
+Notes:
+
+- Arm entries are the same debounced, center-mediated entries as the
+  whole-video counts (`analyze_center_mediated_entries`), placed in the bin
+  where the entry happens.
+- **Y-maze alternation across bins.** A triplet of consecutive arm entries is
+  counted in the bin where its **third** entry occurs. A triplet that
+  straddles a bin boundary therefore uses entries of the previous bin as
+  context but is scored once, in the later bin. `alternations_possible` of a
+  bin is the number of triplets ending in it (they sum to the video's possible
+  alternations); `alternation_pct` is correct / possible within the bin,
+  blank when the bin has no triplet.
+- Freestyle zone entries follow the whole-video rule (every transition into a
+  zone, plus the zone the animal is first seen in); a zone the animal never
+  occupied has no rows. Immobility uses the bout-filtered states of the
+  summary, so it needs a calibrated video.
+- TST seconds are counted only inside each mouse's scored window; frames
+  outside it are in no bin. Bins are still counted from the analysis start,
+  so a window that starts later leaves the first bins partly or fully empty.
+  `uncertain_s` is time with no scorable state, as in the summary.
 
 ## Batch plans
 

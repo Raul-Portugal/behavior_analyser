@@ -31,7 +31,7 @@ class WorkerFinalizationTests(unittest.TestCase):
                     encoding="utf-8"
                 )
             )
-            self.assertEqual(manifest["schema_version"], 2)
+            self.assertEqual(manifest["schema_version"], 3)
             self.assertEqual(manifest["application"]["version"], APP_VERSION)
 
     def test_manifest_failure_is_reported_without_losing_finished_signal(self):

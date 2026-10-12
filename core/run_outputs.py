@@ -12,7 +12,7 @@ import logging
 import time
 from collections import Counter
 from pathlib import Path
-from typing import Dict, Mapping, Sequence, Tuple
+from typing import Dict, Mapping, Optional, Sequence, Tuple
 
 from core.batch_plan_keys import build_plan_by_key
 from core.models import BatchSettings
@@ -90,6 +90,56 @@ def write_run_plan(
         logger.warning("Could not write %s", plan_file, exc_info=True)
 
 
+# Version of the manifest layout. 3 added, per video: settings_hash,
+# video_fingerprint, metadata, summary_json and status (failed videos too).
+MANIFEST_SCHEMA_VERSION = 3
+
+STATUS_COMPLETED = "completed"
+STATUS_FAILED = "failed"
+
+
+def _video_entry(
+    video_path: Path,
+    status: str,
+    run_dir: Path,
+    base_names: Mapping[Path, str],
+    analysis_plan: Optional[Mapping[Path, BatchSettings]],
+    hasher,
+    sample_metadata,
+) -> dict:
+    """One ``videos[]`` entry of the manifest."""
+    base_name = base_names.get(video_path, video_path.stem)
+    summary = Path(base_name) / "data" / f"{base_name}_summary.json"
+    settings = None if analysis_plan is None else analysis_plan.get(video_path)
+    settings_hash = None
+    if settings is not None and hasher is not None:
+        try:
+            settings_hash = hasher.get_settings_hash(settings)
+        except Exception:
+            logger.warning("Could not hash settings of %s", video_path,
+                           exc_info=True)
+    fingerprint = None
+    if hasher is not None:
+        try:
+            fingerprint = hasher.get_video_fingerprint(video_path)
+        except OSError:
+            pass  # the source video moved or vanished: no fingerprint
+    return {
+        "source": str(video_path),
+        "output_folder": base_name,
+        "status": status,
+        "settings_hash": settings_hash,
+        "video_fingerprint": fingerprint,
+        "metadata": (
+            {} if sample_metadata is None
+            else sample_metadata.values_for(video_path)
+        ),
+        "summary_json": (
+            summary.as_posix() if (run_dir / summary).is_file() else None
+        ),
+    }
+
+
 def write_run_manifest(
     run_dir: Path,
     maze,
@@ -100,15 +150,35 @@ def write_run_manifest(
     failures: Sequence[Tuple[Path, str]],
     quality_warnings: Sequence[Tuple[Path, str]],
     cancelled: bool,
+    sample_metadata=None,
+    analysis_plan: Optional[Mapping[Path, BatchSettings]] = None,
+    hasher=None,
+    bin_seconds: float = 0.0,
 ) -> None:
-    """Write a compact index so a run can be understood at a glance."""
+    """Write a compact index so a run can be understood at a glance.
+
+    ``sample_metadata`` is the run's optional sample sheet
+    (``core.sample_sheet.SampleMetadata``), ``bin_seconds`` the time-bin
+    length (0 = off). With ``analysis_plan`` and ``hasher`` (a
+    ``CheckpointManager``) every video also records the settings hash and
+    source-video fingerprint a checkpoint is validated against. Videos that
+    failed are listed too (``status: "failed"``) and, like every video of the
+    run, are in ``run_plan.json`` so they can be re-run.
+    """
     generated_files = [MANIFEST_FILENAME] + sorted(
         str(path.relative_to(run_dir)).replace("\\", "/")
         for path in run_dir.rglob("*")
         if path.is_file()
     )
+    outcomes = {path: STATUS_COMPLETED for path, _ in results}
+    for path, _ in failures:
+        if path in base_names and path not in outcomes:
+            outcomes[path] = STATUS_FAILED
+    # Plan order, so the list reads like the batch did.
+    ordered = [path for path in base_names if path in outcomes]
+    ordered += [path for path in outcomes if path not in base_names]
     manifest = {
-        "schema_version": 2,
+        "schema_version": MANIFEST_SCHEMA_VERSION,
         "application": {
             "name": APP_NAME,
             "version": APP_VERSION,
@@ -119,12 +189,17 @@ def write_run_manifest(
         "cancelled": cancelled,
         "requested_videos": requested_videos,
         "completed_videos": len(results),
+        "sample_sheet": (
+            None if sample_metadata is None
+            else str(sample_metadata.sheet_path)
+        ),
+        "time_bin_seconds": float(bin_seconds) if bin_seconds else None,
         "videos": [
-            {
-                "source": str(video_path),
-                "output_folder": base_names[video_path],
-            }
-            for video_path, _ in results
+            _video_entry(
+                path, outcomes[path], run_dir, base_names, analysis_plan,
+                hasher, sample_metadata,
+            )
+            for path in ordered
         ],
         "failures": [
             {"source": str(path), "message": message}

@@ -4,6 +4,7 @@ Headless batch analysis, without Qt.
 
     python -m core.cli run --plan plan.json --out DIR [--workers N]
                            [--paradigm NAME] [--videos PATH ...]
+                           [--sample-sheet SHEET.csv] [--bin-seconds N]
 
 ``plan.json`` is a saved batch plan (File > Save Configuration, or the
 ``run_plan.json`` of an earlier run) or a single template. A plan names its
@@ -25,9 +26,15 @@ from typing import Dict, List, Optional, Sequence, Tuple
 from core.batch_plan_keys import match_videos_to_plan
 from core.batch_runner import BatchRunner, BatchRunOutcome, default_worker_count
 from core.models import BatchSettings
+from core.output_contract import COMMON_BATCH_HEADERS
 from core.run_outputs import (
     apply_effective_parameters, create_run_folder, output_base_names,
     run_timestamp,
+)
+from core.time_bins import TIME_BIN_HEADERS
+from core.sample_sheet import (
+    SampleMetadata, SampleSheetError, load_sample_sheet,
+    metadata_for_videos, reserved_column_conflicts,
 )
 from mazes import AVAILABLE_MAZES, create_maze
 from mazes.base_maze import Maze
@@ -203,6 +210,39 @@ def _match_paradigm(text: str) -> str:
     )
 
 
+def load_sample_metadata(
+    sheet_file: Path, plan: Dict[Path, BatchSettings], maze: Maze
+) -> SampleMetadata:
+    """Sample-sheet metadata for every video of the plan, or a CliError.
+
+    Every video must match exactly one row: guessing which animal a video
+    shows would silently corrupt the data, so a run with missing or
+    ambiguous rows is refused.
+    """
+    try:
+        sheet = load_sample_sheet(sheet_file)
+    except SampleSheetError as exc:
+        raise CliError(str(exc)) from exc
+    conflicts = reserved_column_conflicts(
+        sheet.columns,
+        list(COMMON_BATCH_HEADERS) + list(maze.get_batch_summary_headers())
+        + ["video_filename", "paradigm"] + list(TIME_BIN_HEADERS),
+    )
+    if conflicts:
+        raise CliError(
+            f"{sheet_file.name}: column(s) {', '.join(conflicts)} clash with "
+            "output columns (batch summary or time bins); rename them in "
+            "the sheet"
+        )
+    match = metadata_for_videos(sheet, sheet_file, list(plan))
+    if not match.is_complete:
+        raise CliError(
+            f"Videos not matched to {sheet_file.name}: "
+            + "; ".join(match.problems())
+        )
+    return match.metadata
+
+
 def plan_issues(plan: Dict[Path, BatchSettings], maze: Maze) -> List[str]:
     """Plan-level problems the GUI also refuses to start with."""
     issues: List[str] = []
@@ -257,6 +297,8 @@ def run_plan(
     workers: Optional[int],
     reporter: ConsoleReporter,
     cancel: threading.Event,
+    sample_metadata: Optional[SampleMetadata] = None,
+    bin_seconds: float = 0.0,
 ) -> Tuple[BatchRunOutcome, Path]:
     """Run an already validated plan; returns the outcome and the run folder."""
     output_dir = Path(output_dir)
@@ -274,6 +316,8 @@ def run_plan(
         cancel,
         workers=count,
         started_at=run_timestamp(),
+        sample_metadata=sample_metadata,
+        bin_seconds=bin_seconds,
     )
     return runner.run(), run_dir
 
@@ -299,6 +343,14 @@ def _build_parser() -> argparse.ArgumentParser:
     run.add_argument("--videos", nargs="+", type=Path, default=[],
                      help="videos or folders: required for a template, "
                           "optional subset selector for a batch plan")
+    run.add_argument("--sample-sheet", type=Path, default=None,
+                     help="CSV of animal metadata: first column 'video', "
+                          "other columns (animal_id, group, ...) are added "
+                          "to the batch summary, summary.json and manifest")
+    run.add_argument("--bin-seconds", type=float, default=0.0,
+                     help="also write per-time-bin metrics (data/<video>_"
+                          "time_bins.csv and batch_time_bins.csv) with bins "
+                          "of this many seconds; 0 (default) turns it off")
     run.add_argument("--quiet", action="store_true",
                      help="print only failures, warnings and the result")
     return parser
@@ -307,11 +359,17 @@ def _build_parser() -> argparse.ArgumentParser:
 def _command_run(args, reporter: ConsoleReporter) -> int:
     if args.workers is not None and args.workers < 1:
         raise CliError("--workers must be at least 1")
+    if args.bin_seconds < 0:
+        raise CliError("--bin-seconds cannot be negative (0 turns bins off)")
     videos = find_videos(args.videos) if args.videos else []
     plan = load_analysis_plan(args.plan, videos)
     maze = resolve_maze(plan, args.paradigm)
     issues = plan_issues(plan, maze)
     apply_effective_parameters(plan, maze)
+    sample_metadata = (
+        load_sample_metadata(args.sample_sheet, plan, maze)
+        if args.sample_sheet else None
+    )
     preflight_issues, warnings = PreflightChecker().validate_batch(
         plan, args.out, paradigm_name=maze.name
     )
@@ -336,7 +394,9 @@ def _command_run(args, reporter: ConsoleReporter) -> int:
     previous = signal.signal(signal.SIGINT, request_stop)
     try:
         outcome, run_dir = run_plan(
-            plan, maze, args.out, args.workers, reporter, cancel
+            plan, maze, args.out, args.workers, reporter, cancel,
+            sample_metadata=sample_metadata,
+            bin_seconds=args.bin_seconds,
         )
     finally:
         signal.signal(signal.SIGINT, previous)

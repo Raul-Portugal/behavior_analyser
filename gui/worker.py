@@ -17,6 +17,7 @@ from PyQt6.QtCore import QObject, pyqtSignal
 from checkpoint_manager import CheckpointManager
 from core.batch_runner import BatchRunner, BatchRunOutcome
 from core.models import BatchSettings
+from core.sample_sheet import SampleMetadata
 from core.run_outputs import (
     RUN_PLAN_FILENAME, apply_effective_parameters, create_run_folder,
     output_base_names, run_timestamp, write_run_manifest, write_run_plan,
@@ -69,13 +70,22 @@ class AnalysisWorker(QObject):
         output_dir: Path,
         maze: Maze,
         workers: int = 1,
+        sample_metadata: Optional[SampleMetadata] = None,
+        bin_seconds: float = 0.0,
     ):
-        """``workers`` > 1 analyses several videos at once in child processes."""
+        """``workers`` > 1 analyses several videos at once in child processes.
+
+        ``sample_metadata`` (an optional sample sheet) and ``bin_seconds``
+        (time-bin length, 0 = off) are run-level options: neither is part of
+        the settings, so neither affects the checkpoint settings hash.
+        """
         super().__init__()
         self.analysis_plan = analysis_plan
         self.output_root = output_dir
         self.maze = maze
         self.workers = max(1, int(workers))
+        self.sample_metadata = sample_metadata
+        self.bin_seconds = max(0.0, float(bin_seconds or 0.0))
         apply_effective_parameters(self.analysis_plan, self.maze)
         self.is_cancelled = False
         self.checkpoint_mgr = CheckpointManager(output_dir)
@@ -108,6 +118,8 @@ class AnalysisWorker(QObject):
             started_at=self.run_started_at,
             write_plan=self._write_run_plan,
             write_manifest=self._write_run_manifest,
+            sample_metadata=self.sample_metadata,
+            bin_seconds=self.bin_seconds,
         )
         outcome: Optional[BatchRunOutcome] = None
         try:
@@ -144,4 +156,8 @@ class AnalysisWorker(QObject):
             failures,
             quality_warnings,
             cancelled,
+            sample_metadata=self.sample_metadata,
+            analysis_plan=self.analysis_plan,
+            hasher=self.checkpoint_mgr,
+            bin_seconds=self.bin_seconds,
         )
