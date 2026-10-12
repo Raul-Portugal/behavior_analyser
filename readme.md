@@ -29,6 +29,15 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 > open the video in the TST tuner, review the evidence and save a new
 > configuration. Checkpoints from v2 runs cannot be resumed.
 
+## What's new in 3.3
+
+3.3.0 is a performance and usability release. **Analysis results are identical
+to 3.2.0**, so 3.2.0 and 3.3.0 results can be pooled. The TST analysis is
+about 4x faster with three mice, validation videos and plots are faster, and
+the application now remembers your folders and settings, can resume an
+interrupted run after a restart, and has keyboard shortcuts. See
+[CHANGELOG.md](CHANGELOG.md) for the complete list.
+
 ## Key Features
 
 - **Standalone Application**: Run the software directly via a Windows executable—no Python setup required.
@@ -63,6 +72,8 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
   quality review.
 - **Resumable Analysis**: Built-in checkpoint manager saves detector and TST
   temporal state so a resumed run is equivalent to uninterrupted processing.
+  Runs can be resumed even after closing the application (see
+  [Resuming an interrupted run](#resuming-an-interrupted-run)).
 - **Explicit Tracking Gaps**: Frames where the animal is not detected are
   exported as `undetected`; they are not counted as time outside the arena or
   as immobility.
@@ -73,6 +84,55 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
   - Rich visualizations: Heatmaps, trajectory plots, ethograms, and fully annotated timelapse/validation videos.
   - A timestamped run folder with separate `data`, `plots`, and optional
     `media` directories per video, plus a machine-readable run manifest.
+
+---
+
+## Resuming an interrupted run
+
+Every run folder contains a `run_plan.json` with the exact settings of that
+run. If a run was stopped (cancelled, crashed, or the application was
+closed), its checkpoints stay in the output folder's `.checkpoints/` folder.
+After a restart (at startup and whenever videos are added), the
+application pairs each checkpoint with the run plan whose settings match it
+and shows a **Resume interrupted run** banner (also available as
+**File > Resume interrupted run...**). Choosing it reloads the plan and
+continues from the saved frame; the result is equivalent to an uninterrupted
+run. Checkpoints older than 7 days, from another version, or that no run plan
+explains are ignored.
+
+**File > Load settings from previous run...** loads the plan of an earlier run
+folder to apply the same settings to new videos.
+
+## Keyboard shortcuts
+
+| Where | Keys | Action |
+|---|---|---|
+| Main window | Ctrl+O | Add videos |
+| Main window | Ctrl+Shift+O | Add a folder of videos |
+| Main window | Ctrl+S | Save template |
+| Main window | Ctrl+L | Load configuration or batch plan |
+| Main window | F5 | Configure and start analysis |
+| Main window | Esc | Cancel the running analysis (asks for confirmation) |
+| Video list | Del or Backspace | Remove the selected videos |
+| Video list | Alt+Up, Alt+Down | Move the selected videos up or down |
+| ROI selector | Enter | Next |
+| ROI selector | Backspace or Ctrl+Z | Undo the last point (reopens a closed shape) |
+| TST tuner | Space | Play or pause |
+| TST tuner | Left, Right | Step one frame |
+| TST tuner | Ctrl+Left, Ctrl+Right | Step ten frames |
+| Detection tuner | N, P | Next or previous frame |
+| Detection tuner | + (or =), - | Forward or back 100 frames |
+
+## Where settings are stored
+
+The application remembers folders, window layout, the last paradigm, recent
+files and the output folder between sessions. These are stored per user with
+Qt's QSettings, which on Windows is the registry (under the current user);
+the application does not write them next to the executable. To use an ini file
+instead (for example for a portable setup or to start from clean settings),
+set the `BEHAVIORAL_MAZE_ANALYZER_SETTINGS_FILE` environment variable to the
+path of that file before starting the application. Analysis settings
+themselves are saved with each run in its `run_plan.json`, not in QSettings.
 
 ---
 

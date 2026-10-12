@@ -1,0 +1,63 @@
+name: release
+
+# Build the Windows executable for a version tag and attach it to the
+# matching GitHub Release (created if it does not exist yet).
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+    inputs:
+      tag:
+        description: "Existing tag to build and attach (e.g. v3.3.0)"
+        required: true
+
+permissions:
+  contents: write
+
+jobs:
+  windows-exe:
+    runs-on: windows-latest
+    env:
+      TAG: ${{ github.event.inputs.tag || github.ref_name }}
+      QT_QPA_PLATFORM: offscreen
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ${{ env.TAG }}
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+      - name: Install locked dependencies
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -r requirements-lock.txt
+      - name: Run tests
+        run: python -m unittest discover -s tests
+      - name: Check the version matches the tag
+        shell: bash
+        run: |
+          version=$(python -c "from core.version import APP_VERSION; print(APP_VERSION)")
+          test "v$version" = "$TAG" || { echo "core/version.py is $version but tag is $TAG"; exit 1; }
+      - name: Build executable
+        run: python -m PyInstaller --clean --noconfirm Behavioral_Maze_Analyzer.spec
+      - name: Packaged startup check
+        shell: pwsh
+        run: |
+          $p = Start-Process -FilePath dist\Behavioral_Maze_Analyzer.exe -ArgumentList "--startup-check" -PassThru
+          if (-not $p.WaitForExit(120000)) { Stop-Process -Id $p.Id -Force; throw "startup check timed out" }
+          if ($p.ExitCode -ne 0) { throw "startup check failed with exit code $($p.ExitCode)" }
+      - name: Write checksum
+        shell: pwsh
+        run: |
+          $hash = (Get-FileHash dist\Behavioral_Maze_Analyzer.exe -Algorithm SHA256).Hash
+          "$hash  Behavioral_Maze_Analyzer.exe" | Out-File -Encoding ascii dist\Behavioral_Maze_Analyzer.exe.sha256
+      - name: Attach to GitHub Release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if ! gh release view "$TAG" >/dev/null 2>&1; then
+            gh release create "$TAG" --title "Behavioral Maze Analyzer ${TAG#v}" --notes "See CHANGELOG.md."
+          fi
+          gh release upload "$TAG" dist/Behavioral_Maze_Analyzer.exe dist/Behavioral_Maze_Analyzer.exe.sha256 --clobber

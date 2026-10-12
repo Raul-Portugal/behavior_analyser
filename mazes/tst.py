@@ -12,6 +12,7 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
 from mazes.base_maze import BaseAnalysisResult, Maze
+from core.plot_utils import decimate_min_max, run_spans
 from core.tst_events import smooth_tst_immobility_states
 from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
 
@@ -525,22 +526,28 @@ class TST(Maze):
                 if s > t_plot[0]: ax.axvspan(t_plot[0], s, color='gray', alpha=0.2)
                 if e < t_plot[-1]: ax.axvspan(e, t_plot[-1], color='gray', alpha=0.2)
 
-            ax.plot(t_plot, e_plot, 'k-', alpha=0.5, linewidth=0.5)
-            
+            # Min/max decimation keeps every peak but bounds the path length.
+            t_trace, e_trace = decimate_min_max(t_plot, e_plot)
+            ax.plot(t_trace, e_trace, 'k-', alpha=0.5, linewidth=0.5)
+
             state_values = result.immobile_states.get(
                 name, [None] * plot_len
             )[:plot_len]
             immobile = [value is True for value in state_values]
             uncertain = [value is None for value in state_values]
             max_val = max(e_plot) if e_plot else 1.0
-            ax.fill_between(t_plot, 0, max_val * 1.1, 
-                           where=immobile, color='red', alpha=0.3, label='Immobile')
-            ax.fill_between(
-                t_plot, 0, max_val * 1.1,
-                where=uncertain, color='orange', alpha=0.2,
+            band = (0, max_val * 1.1)
+            # One rectangle per run of identical state, not per sample.
+            ax.broken_barh(
+                run_spans(t_plot, immobile), band,
+                facecolors='red', alpha=0.3, linewidth=0, label='Immobile'
+            )
+            ax.broken_barh(
+                run_spans(t_plot, uncertain), band,
+                facecolors='orange', alpha=0.2, linewidth=0,
                 label='Uncertain'
             )
-            
+
             ax.axhline(y=50.0, color='b', linestyle='--',
                        label='Active-evidence reference')
             ax.set_title(f"{name.replace('_', ' ').title()}")

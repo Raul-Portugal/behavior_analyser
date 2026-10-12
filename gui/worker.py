@@ -19,12 +19,21 @@ from typing import Dict, List, Optional, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal
 
 # --- CORE IMPORTS ---
+from core.batch_plan_keys import build_plan_by_key
 from core.models import AppConfig, BatchSettings
-from core.video import VideoHandler, ReferenceFrameGenerator, SafeVideoWriter, BufferedVideoReader
+from core.video import (
+    VideoHandler,
+    ReferenceFrameGenerator,
+    SafeVideoWriter,
+    BufferedVideoReader,
+    position_capture_at_frame,
+)
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.analysis_engine import Analyzer
-from core.tst_display import tst_display_style
-from core.tst_motion_engine import TSTMotionEngine
+from core.tst_display import blend_polygon, tst_display_style
+from core.tst_motion_engine import (
+    TST_VALIDATION_FRAME_STEP, TSTFramePipeline, TSTMotionEngine,
+)
 from core.version import APP_NAME, APP_VERSION
 
 # --- LEGACY/UTILITY IMPORTS ---
@@ -35,6 +44,9 @@ from output import DataExporter, Visualizer
 from checkpoint_manager import CheckpointManager, ProgressEstimator
 
 logger = logging.getLogger(__name__)
+
+# Written into every run folder so the run can be reloaded or resumed later.
+RUN_PLAN_FILENAME = "run_plan.json"
 
 
 @contextmanager
@@ -62,6 +74,8 @@ class AnalysisWorker(QObject):
     detailed_progress = pyqtSignal(int, str, str)
     log = pyqtSignal(str)
     finished = pyqtSignal(object)
+    # (video path, "running" | "done" | "warning" | "failed" | "queued", message)
+    video_status = pyqtSignal(str, str, str)
 
     def __init__(self, analysis_plan: Dict[Path, BatchSettings], output_dir: Path, maze: Maze):
         super().__init__()
@@ -121,6 +135,8 @@ class AnalysisWorker(QObject):
         videos_to_process = list(self.analysis_plan.items())
         total_videos = len(videos_to_process)
 
+        self._write_run_plan()
+
         # --- PRE-CALCULATION FOR ETA ---
         self.log.emit("Preparing batch analysis...")
         total_batch_frames = 0
@@ -151,6 +167,8 @@ class AnalysisWorker(QObject):
             plots_dir = video_output_dir / "plots"
             media_dir = video_output_dir / "media"
             self.log.emit(f"\n{'='*60}\nAnalyzing {self.maze.name} video {video_num}/{total_videos}: {video_path.name}\n{'='*60}")
+            self.video_status.emit(str(video_path), "running", "")
+            warnings_before = len(quality_warnings)
             
             to_batch_pct = lambda local_pct: int(
                 ((video_num - 1) + (local_pct / 100.0))
@@ -411,7 +429,7 @@ class AnalysisWorker(QObject):
                     
                     if settings.create_timelapse and timelapse_success:
                         self._raise_if_cancelled()
-                        self.emit_progress(to_batch_pct(95), f"Video: {base_name}", "Creating Timelapse...")
+                        self.emit_progress(to_batch_pct(95), f"Video: {base_name}", "Creating validation video...")
                         media_dir.mkdir(parents=True, exist_ok=True)
                         self._generate_tracking_validation_video(
                             result, video_path, settings, base_name, handler,
@@ -421,15 +439,28 @@ class AnalysisWorker(QObject):
 
                 self.log.emit(f"✓ Successfully processed: {video_path.name}")
                 all_results.append((video_path, result))
+                new_warnings = quality_warnings[warnings_before:]
+                if new_warnings:
+                    self.video_status.emit(
+                        str(video_path), "warning",
+                        "; ".join(message for _, message in new_warnings[:3]),
+                    )
+                else:
+                    self.video_status.emit(str(video_path), "done", "")
 
             except InterruptedError:
                 run_cancelled = True
                 self.log.emit(f"Analysis cancelled while processing {video_path.name}")
+                self.video_status.emit(
+                    str(video_path), "queued",
+                    "interrupted; resumes from its checkpoint",
+                )
                 break
             except Exception as e:
                 self.log.emit(f"✗ Error processing {video_path.name}: {str(e)}")
                 logger.error("Worker error", exc_info=True)
                 failures.append((video_path, str(e)))
+                self.video_status.emit(str(video_path), "failed", str(e))
             
             global_offset += frames_done
 
@@ -522,12 +553,16 @@ class AnalysisWorker(QObject):
         reader = BufferedVideoReader(
             video_path,
             start_frame=previous_frame_idx,
-            buffer_size=64
         )
 
         local_est = ProgressEstimator(max(0, end_frame - processing_start))
-        curr = previous_frame_idx + 1
+        next_read = previous_frame_idx + 1
         frames_processed = 0
+        # Dense flow and the history-independent segmentation of the next
+        # frames run on worker threads while this thread consumes the oldest
+        # frame in order, so histories (and checkpoints) only ever reflect
+        # frames that were fully consumed.
+        pipeline = TSTFramePipeline(engine)
 
         try:
             # The first read can raise VideoReadError, so it belongs inside
@@ -536,7 +571,24 @@ class AnalysisWorker(QObject):
             if not ret:
                 return result, 0
 
-            while curr < end_frame:
+            reader_exhausted = False
+            while True:
+                while (
+                    not reader_exhausted
+                    and next_read < end_frame
+                    and pipeline.has_capacity()
+                ):
+                    ret, frame = reader.read()
+                    if not ret:
+                        reader_exhausted = True
+                        break
+                    pipeline.submit(next_read, frame, prev_frame)
+                    prev_frame = frame
+                    next_read += 1
+                if not pipeline.pending:
+                    break
+
+                curr = pipeline.next_tag
                 if self.is_cancelled:
                     checkpoint_payload = dict(result.__dict__)
                     checkpoint_payload["_tst_engine_state"] = (
@@ -550,28 +602,34 @@ class AnalysisWorker(QObject):
                     )
                     raise InterruptedError("Analysis cancelled")
 
-                ret, frame = reader.read()
-                if not ret:
-                    break
-
-                observations = engine.calculate_observations(frame, prev_frame)
+                _, observations = pipeline.pop()
+                # Position within the result, which is what the validation
+                # video indexes (also after a resume: lists are restored).
+                result_index = len(result.timestamps)
                 result.timestamps.append(curr / handler.fps)
+                keep_contour = (
+                    settings.create_timelapse
+                    and result_index % TST_VALIDATION_FRAME_STEP == 0
+                )
                 for name, observation in observations.items():
                     result.activity_scores[name].append(
                         observation.activity_score
                     )
                     evidence = observation.to_dict()
+                    # Absolute video frame, so annotations line up when the
+                    # run does not start at frame 0.
+                    evidence["source_frame"] = curr
                     # A compact contour gives the optional validation video a
                     # direct view of the body segmentation that produced this
-                    # classification, without exporting full frame masks.
-                    evidence["mask_contour"] = engine.get_last_mask_contour(
-                        name
-                    )
+                    # classification. Only the frames that video draws keep
+                    # one: contours were most of the per-frame memory.
+                    if keep_contour:
+                        evidence["mask_contour"] = (
+                            engine.get_last_mask_contour(name)
+                        )
                     result.motion_evidence[name].append(evidence)
 
                 processed_frame_idx = curr
-                prev_frame = frame
-                curr += 1
                 frames_processed += 1
 
                 local_est.update(frames_processed)
@@ -601,6 +659,9 @@ class AnalysisWorker(QObject):
                         settings
                     )
         finally:
+            # Cancel queued frame work first so a cancelled run never waits
+            # on more than the few frame pairs already being computed.
+            pipeline.close()
             reader.release()
 
         result.end_frame = (
@@ -706,16 +767,26 @@ class AnalysisWorker(QObject):
                     int(round(result.timestamps[0] * handler.fps))
                     if result.timestamps else result.start_frame
                 )
-                cap.set(cv2.CAP_PROP_POS_FRAMES, first_result_frame)
-                
+                position_capture_at_frame(
+                    cap, first_result_frame,
+                    should_cancel=lambda: self.is_cancelled,
+                )
+                self._raise_if_cancelled()
+
                 curr_idx = 0
                 total_frames = len(result.timestamps)
-                
+
                 while curr_idx < total_frames:
                     self._raise_if_cancelled()
+                    if curr_idx % interval != 0:
+                        # Skipped frames are only decoded, never converted.
+                        if not cap.grab():
+                            break
+                        curr_idx += 1
+                        continue
                     ret, frame = cap.read()
                     if not ret: break
-                    
+
                     if curr_idx % interval == 0:
                         # 1. Draw ROIs
                         frame = settings.roi_manager.draw_on_frame(frame, thickness=2)
@@ -867,7 +938,9 @@ class AnalysisWorker(QObject):
             vh = VideoHandler(video_path)
             
             # Subsample for validation video speed
-            step = 3
+            # Shared with _run_tst_analysis, which stores contours only for
+            # the frames drawn here.
+            step = TST_VALIDATION_FRAME_STEP
             out_fps = vh.fps / step
             
             # Core: Use SafeVideoWriter
@@ -878,17 +951,27 @@ class AnalysisWorker(QObject):
                     int(round(result.timestamps[0] * vh.fps))
                     if result.timestamps else result.start_frame
                 )
-                cap.set(cv2.CAP_PROP_POS_FRAMES, first_result_frame)
-                
+                position_capture_at_frame(
+                    cap, first_result_frame,
+                    should_cancel=lambda: self.is_cancelled,
+                )
+                self._raise_if_cancelled()
+
                 roi_dict = {cat: rois[0] for cat, rois in settings.roi_manager.rois.items() if rois}
                 curr_idx = 0
                 total_frames = len(result.timestamps)
-                
+
                 while curr_idx < total_frames:
                     self._raise_if_cancelled()
+                    if curr_idx % step != 0:
+                        # Skipped frames are only decoded, never converted.
+                        if not cap.grab():
+                            break
+                        curr_idx += 1
+                        continue
                     ret, frame = cap.read()
                     if not ret: break
-                    
+
                     if curr_idx % step == 0:
                         time_sec = result.timestamps[curr_idx]
                         
@@ -901,9 +984,9 @@ class AnalysisWorker(QObject):
                             
                             if time_sec < valid_start or time_sec >= valid_end:
                                 # Grey out excluded time
-                                overlay = frame.copy()
-                                cv2.fillPoly(overlay, [pts], (50, 50, 50))
-                                cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+                                blend_polygon(
+                                    frame, pts, (50, 50, 50), 0.5, 0.5
+                                )
                                 cv2.putText(frame, "EXCLUDED", (pts[0][0], pts[0][1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 2)
                             else:
                                 # Show active status (Mobile/Immobile)
@@ -933,15 +1016,9 @@ class AnalysisWorker(QObject):
                                         contour_points = np.asarray(
                                             contour, dtype=np.int32
                                         ).reshape(-1, 1, 2)
-                                        mask_overlay = frame.copy()
-                                        cv2.fillPoly(
-                                            mask_overlay,
-                                            [contour_points],
-                                            color,
-                                        )
-                                        cv2.addWeighted(
-                                            mask_overlay, 0.35, frame, 0.65,
-                                            0, frame,
+                                        blend_polygon(
+                                            frame, contour_points, color,
+                                            0.35, 0.65,
                                         )
                                         cv2.polylines(
                                             frame, [contour_points], True,
@@ -967,6 +1044,22 @@ class AnalysisWorker(QObject):
         except Exception as e:
             logger.error(f"Error creating validation video: {e}")
             raise
+
+    def _write_run_plan(self):
+        """Save the exact per-video settings of this run as a batch plan.
+
+        Keys are relative to the run folder, so the plan can be reloaded with
+        File > Load Configuration or resumed after a restart. The paradigm
+        and algorithm parameters are part of every entry. A failure here is
+        logged but never stops the analysis.
+        """
+        plan_file = self.output_dir / RUN_PLAN_FILENAME
+        try:
+            BatchSettings.save_batch_plan(
+                build_plan_by_key(self.analysis_plan, plan_file), plan_file
+            )
+        except Exception:
+            logger.warning("Could not write %s", plan_file, exc_info=True)
 
     def _write_run_manifest(
         self, results, failures, quality_warnings, cancelled

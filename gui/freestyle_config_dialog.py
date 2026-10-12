@@ -8,6 +8,7 @@ from PyQt6.QtWidgets import (QButtonGroup, QDialog, QDialogButtonBox,
                              QLineEdit, QListWidget, QPushButton, QRadioButton,
                              QScrollArea, QSpinBox, QVBoxLayout, QHBoxLayout,
                              QWidget, QMessageBox)
+from gui import ux_helpers
 from gui.dialog_layout import fit_dialog_to_available_screen
 
 # Internal labels the tracking pipeline reserves for non-zone states; "mouse_"
@@ -48,6 +49,7 @@ class FreestyleConfigDialog(QDialog):
         self.init_ui()
         if maze is not None:
             self.load_from_maze(maze)
+        self._initial_state = self._current_state()
 
     def init_ui(self):
         """Initialize the user interface."""
@@ -432,6 +434,27 @@ class FreestyleConfigDialog(QDialog):
         maze.speed_window_seconds = self.speed_window_spin.value()
         maze.min_immobility_seconds = self.min_immobility_spin.value()
         maze.min_dwell_seconds = self.min_dwell_spin.value()
+
+    def _current_state(self) -> tuple:
+        return (
+            self.zone_free_radio.isChecked(),
+            self.num_zones_spin.value(),
+            tuple(field.text() for field in self.zone_name_inputs),
+            tuple(sorted(self.get_analysis_parameters().items())),
+            self.min_dwell_spin.value(),
+        )
+
+    def has_unsaved_work(self) -> bool:
+        return ux_helpers.should_confirm_discard(
+            self._initial_state, self._current_state()
+        )
+
+    def reject(self):
+        if self.has_unsaved_work() and not ux_helpers.confirm_discard(
+            self, "this Freestyle configuration"
+        ):
+            return
+        super().reject()
 
     def get_zone_definitions(self) -> list[tuple[str, str]]:
         """

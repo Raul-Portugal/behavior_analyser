@@ -4,10 +4,14 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from PyQt6 import sip
+
 try:
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QMessageBox
+    from gui import ux_helpers
     from gui.main_window import MainWindow
+    from tests.gui_support import temp_app_settings
     from gui.worker import BatchRunOutcome
     HAS_RUNTIME = True
 except ModuleNotFoundError:
@@ -55,11 +59,26 @@ class RunLifecycleTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def _unless_deleted(self, method_name):
+        if not sip.isdeleted(self.window):
+            getattr(self.window, method_name)()
+
+    def _stop_force_quit_timer(self):
+        if sip.isdeleted(self.window):
+            return
+        timer = getattr(self.window, "_force_quit_timer", None)
+        if timer is not None:
+            timer.stop()
+        self.window._close_requested = False
+
     def setUp(self):
-        self.window = MainWindow()
-        self.addCleanup(self.window.deleteLater)
-        self.addCleanup(self.window._detach_log_handler)
+        self.window = MainWindow(temp_app_settings(self))
+        self.addCleanup(self._unless_deleted, "deleteLater")
+        self.addCleanup(self._unless_deleted, "_detach_log_handler")
         self.window.FORCE_QUIT_DELAY_MS = 60
+        # Runs before deleteLater (cleanups are LIFO): a force-quit offer
+        # still pending from this test must never fire during the next one.
+        self.addCleanup(self._stop_force_quit_timer)
         self.window.show()
         self.thread = FakeThread()
         self.worker = FakeWorker()
@@ -100,7 +119,7 @@ class RunLifecycleTests(unittest.TestCase):
     def test_window_closes_when_the_worker_finishes(self):
         self._close_confirming()
         with patch.object(QMessageBox, "warning") as warning, \
-                patch.object(QMessageBox, "information") as information:
+                patch.object(ux_helpers, "ask_choice") as information:
             self.window.analysis_finished(
                 BatchRunOutcome(cancelled=True, output_dir=Path("."))
             )
@@ -117,6 +136,17 @@ class RunLifecycleTests(unittest.TestCase):
         self._close_confirming()
         self.assertFalse(self.window.close())
         self.assertEqual(self.worker.stopped, 1)
+
+    def test_pending_force_quit_offer_dies_with_the_window(self):
+        self._close_confirming()
+        timer = self.window._force_quit_timer
+        self.assertTrue(timer.isActive())
+        self.assertIs(timer.parent(), self.window)
+        self.window._detach_log_handler()
+        with patch.object(self.window, "_confirm_force_quit") as confirm:
+            self.window.deleteLater()
+            QTest.qWait(200)  # longer than FORCE_QUIT_DELAY_MS
+        confirm.assert_not_called()
 
     def test_force_quit_after_the_timeout_closes_the_window(self):
         self._close_confirming()
@@ -193,15 +223,16 @@ class RealThreadLifecycleTests(unittest.TestCase):
     def test_worker_and_thread_are_released_after_finish(self):
         import tempfile
 
-        window = MainWindow()
+        window = MainWindow(temp_app_settings(self))
         self.addCleanup(window.deleteLater)
         self.addCleanup(window._detach_log_handler)
         from mazes import create_maze
         window.maze = create_maze("Elevated Plus Maze")
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             window.output_dir = Path(tmp)
-            with patch.object(QMessageBox, "information") as information, \
-                    patch.object(QMessageBox, "warning"):
+            with patch.object(
+                ux_helpers, "ask_choice", return_value="ok"
+            ) as information, patch.object(QMessageBox, "warning"):
                 with patch.object(
                     window, "_validate_analysis_plan", return_value=True
                 ):

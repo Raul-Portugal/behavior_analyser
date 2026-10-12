@@ -9,6 +9,7 @@ try:
         REFERENCE_FPS, TSTMotionConfig, TSTMotionEngine,
     )
     from roi_manager import ROI
+    from tests import tst_engine_runs as engine_runs
     from tests import tst_synthetic as synthetic
     HAS_OPENCV = True
 except ModuleNotFoundError:
@@ -383,15 +384,12 @@ class TSTRateNormalizationTests(unittest.TestCase):
 
     @classmethod
     def setUpClass(cls):
-        roi = ROI(synthetic.clip_roi_points(), "mouse_1")
+        # The three clips are rendered and analysed side by side, through the
+        # frame pipeline, and shared with the other TST test modules.
+        pipelined = engine_runs.runs("pipelined")["pipelined"]
         for fps in cls.RATES:
-            frames = synthetic.render_clip(fps)
-            engine = TSTMotionEngine({"mouse_1": roi}, fps=fps)
             cls.observations[fps] = [
-                engine.calculate_observations(
-                    frames[index], frames[index - 1]
-                )["mouse_1"]
-                for index in range(1, len(frames))
+                pair["mouse_1"] for pair in pipelined[fps]
             ]
 
     @classmethod

@@ -29,13 +29,20 @@ def load_annotations(path: Path) -> Dict[Tuple[str, int], str]:
 def evaluate_annotations(
     motion_evidence: Mapping[str, Iterable[Mapping[str, object]]],
     annotations: Mapping[Tuple[str, int], str],
+    start_frame: int = 0,
 ) -> Dict[str, Dict[str, float]]:
-    """Return frame-wise agreement and immobility precision/recall/F1 by mouse."""
+    """Return frame-wise agreement and immobility precision/recall/F1 by mouse.
+
+    Annotations are keyed by absolute video frame. Evidence rows carry their
+    frame as ``source_frame``; for rows that do not, the frame is
+    ``start_frame`` plus the row's position (pass the absolute frame of the
+    first evidence row).
+    """
     results = {}
     for mouse, evidence in motion_evidence.items():
         pairs = []
         for index, item in enumerate(evidence):
-            frame = int(item.get("source_frame", index))
+            frame = int(item.get("source_frame", start_frame + index))
             truth = annotations.get((mouse, frame))
             if truth is not None:
                 pairs.append((str(item.get("state", "uncertain")), truth))

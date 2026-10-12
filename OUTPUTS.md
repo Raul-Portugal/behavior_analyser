@@ -5,6 +5,7 @@ Each analysis creates one timestamped run folder:
 ```text
 analysis_run_YYYYMMDD_HHMMSS/
   manifest.json
+  run_plan.json
   batch_summary.csv
   video_name/
     data/
@@ -16,6 +17,30 @@ The manifest identifies the application version, paradigm, source videos,
 effective algorithm parameters, failures, quality warnings, and every
 generated artifact. This makes each run self-contained and prevents files from
 separate runs or videos being mixed.
+
+## Run plan (`run_plan.json`)
+
+Every run folder also contains `run_plan.json`, written when the run starts.
+It is a batch plan (the same format as a saved batch plan, see "Batch plans"
+below) holding the exact per-video settings of that run: ROIs, detection
+settings, time window, scale, paradigm and algorithm parameters. Its keys are
+paths relative to the run folder.
+
+The application uses it in two ways:
+
+- **Resume after a restart.** A checkpoint only resumes when its settings hash
+  matches the settings of the next run. At startup, and whenever videos are
+  added, the application pairs each checkpoint with the run plan whose entry
+  for that video hashes to the same value. **Resume interrupted run** then
+  reloads that plan and the paradigm parameters, so the checkpoint continues
+  exactly where it stopped. Checkpoints that no run plan explains (for
+  example from runs started by an older version) are not resumed.
+- **File > Load settings from previous run...** loads the plan of an earlier
+  run folder so the same settings can be applied to new videos.
+
+`run_plan.json` is a settings file, not a result: it contains no analysis
+output. If it cannot be written the analysis still runs (the failure is only
+logged), but that run cannot be resumed after a restart.
 
 ## Shared batch columns
 
@@ -38,7 +63,7 @@ metric must not be interpreted as zero.
 | `*_tst_motion_evidence.csv` | no | yes | Per-frame active-motion evidence, rigid/angular/residual motion, pendulum evidence, behavioral state, confidence, and QC for each mouse |
 | `*_analysis_summary.csv` | yes | yes | Human-readable key results |
 | `*_summary.json` | yes | yes | Complete machine-readable result and configuration |
-| `*_arm_entries.csv` | Y-maze | no | Debounced, center-mediated arm-entry events |
+| `*_arm_entries.csv` | Y-maze, EPM | no | Debounced, center-mediated arm-entry events |
 | `*_speed_data.csv` | Freestyle | no | Per-frame raw and smoothed speed and the `is_immobile` flag (see below) |
 
 Raw and cleaned zone labels are both retained in positional tracking CSVs.
@@ -103,6 +128,11 @@ path).
 
 ### Y-maze and EPM
 
+`*_arm_entries.csv` (Y-maze and EPM) lists the debounced, center-mediated arm
+entries in order. Columns: `entry_number` (1, 2, ...), `arm` and
+`timestamp_s` (seconds, 3 decimals). The EPM file has the same layout as the
+Y-maze file.
+
 The batch summary and analysis summary include `entries_possibly_missed`: the
 number of times the animal reappeared after a tracking gap in a way that may
 hide an arm entry (it resumes in a different arm than before the gap, or was
@@ -129,6 +159,20 @@ The evidence features written to `*_tst_motion_evidence.csv` and the JSON
 results are rate-normalized to a 30 fps reference (see `TST_ENGINE.md`), so
 values are comparable across recordings with different frame rates.
 
+In memory, each per-frame evidence row also carries `source_frame` (the
+absolute video frame it was computed from, which matters when the analysis
+window starts after frame 0) and, only when a validation video was requested
+and only on the frames that video draws, `mask_contour` (the body-mask
+outline). `source_frame` is used internally to align validation annotations
+with the correct frames. Neither key is a column of
+`*_tst_motion_evidence.csv`, and neither is part of `*_summary.json`: the
+evidence CSV is written from a fixed list of columns, and the JSON does not
+contain per-frame evidence. The CSV `frame` column is derived from each row's
+timestamp and the frame rate. `mask_contour` is a drawing aid only, is not
+part of any exported data, and is dropped from checkpoint files (a resumed
+run's validation video simply has no mask outline for frames restored from a
+checkpoint).
+
 ## Batch plans
 
 A saved batch plan is keyed by each video's path relative to the plan file's
@@ -149,6 +193,8 @@ files per video:
 - `<video>_<id>_checkpoint.rows.jsonl`: one JSON line per processed frame,
   appended and flushed before the header is rewritten.
 
-The checkpoint format is version 4. Checkpoints from other versions, or whose
+The checkpoint format is version 4 (unchanged in 3.3). The run folder's
+`run_plan.json` is what lets a checkpoint be resumed after the application was
+restarted (see "Run plan" above). Checkpoints from other versions, or whose
 settings or video do not match, are ignored and the run starts fresh. Both
 files are removed when a video finishes.

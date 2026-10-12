@@ -59,7 +59,9 @@ class RoiSelectorCoordinateTests(unittest.TestCase):
                 np.array([[150, 150], [300, 150], [300, 300]]),
             )
         finally:
-            dialog.close()
+            # Closing a dialog with a drawn polygon asks first; allow it.
+            with patch("gui.ux_helpers.confirm_discard", return_value=True):
+                dialog.close()
 
 
 if __name__ == "__main__":

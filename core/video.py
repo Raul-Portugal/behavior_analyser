@@ -60,6 +60,43 @@ class VideoHandler:
         return frame if ret else None
 
 
+def position_capture_at_frame(
+    cap,
+    frame_index: int,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Position ``cap`` so the next read returns frame ``frame_index``.
+
+    ``CAP_PROP_POS_FRAMES`` seeks are not frame-accurate for some codecs, so
+    the landing position is verified; if it differs the capture is rewound to
+    frame 0 and decoded forward with ``grab()``, which is always accurate.
+    ``should_cancel`` is polled during that slow fallback and raises
+    ``InterruptedError`` when it returns True.
+    """
+    frame_index = max(0, int(frame_index))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+    if frame_index == 0:
+        return
+    actual = cap.get(cv2.CAP_PROP_POS_FRAMES)
+    if actual == actual and int(round(actual)) == frame_index:
+        return
+
+    logger.warning(
+        "Seek to frame %d landed on %s; reading forward from frame 0 "
+        "for frame-accurate overlays", frame_index, actual,
+    )
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for skipped in range(frame_index):
+        if (
+            should_cancel is not None
+            and skipped % 256 == 0
+            and should_cancel()
+        ):
+            raise InterruptedError("Cancelled while positioning the video")
+        if not cap.grab():
+            break
+
+
 class VideoReadError(IOError):
     """Decoding stalled or failed before the end of the video."""
 
@@ -85,7 +122,7 @@ class BufferedVideoReader:
     exception on the reader thread is re-raised from read(), so a slow disk
     or failing decoder can never look like a shorter video.
     """
-    def __init__(self, path: Path, start_frame: int = 0, buffer_size: int = 64,
+    def __init__(self, path: Path, start_frame: int = 0, buffer_size: int = 16,
                  stall_timeout_s: float = DEFAULT_STALL_TIMEOUT_S,
                  capture_factory=cv2.VideoCapture):
         self.path = path
@@ -216,6 +253,74 @@ class ReferenceFrameGenerator:
         h.update(str(path.stat().st_mtime).encode())
         return h.hexdigest()
 
+    # Sample gaps up to this many frames are reached by decoding forward with
+    # grab(); larger gaps use a seek, which is cheaper than decoding them.
+    MAX_SEQUENTIAL_GAP = 30
+    # Target size of one row block when computing the median (bytes).
+    MEDIAN_BLOCK_BYTES = 16 * 1024 * 1024
+
+    @classmethod
+    def _read_sample_frames(
+        cls,
+        path: Path,
+        indices,
+        target_dims: Optional[Tuple[int, int]],
+        should_cancel: Optional[Callable[[], bool]],
+    ):
+        """Return the grayscale frames at ``indices`` (ascending order)."""
+        frames = []
+        cap = cv2.VideoCapture(str(path))
+        # Index of the frame the next grab()/read() returns; None when the
+        # decoder position is unknown and a seek is required.
+        position: Optional[int] = None
+        try:
+            for i in indices:
+                i = int(i)
+                if should_cancel is not None and should_cancel():
+                    raise InterruptedError("Reference frame generation cancelled")
+                gap = None if position is None else i - position
+                if gap is not None and 0 <= gap <= cls.MAX_SEQUENTIAL_GAP:
+                    skipped = 0
+                    while skipped < gap and cap.grab():
+                        skipped += 1
+                    if skipped < gap:
+                        position = None
+                        continue
+                else:
+                    cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+                ret, frame = cap.read()
+                if ret:
+                    position = i + 1
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    if target_dims:
+                        gray = cv2.resize(gray, target_dims)
+                    frames.append(gray)
+                else:
+                    position = None
+        finally:
+            cap.release()
+        return frames
+
+    @classmethod
+    def _chunked_median(cls, frames) -> np.ndarray:
+        """Per-pixel median of ``frames`` computed in row blocks.
+
+        Identical to ``np.median(np.stack(frames), axis=0).astype(uint8)``
+        (each pixel's median is independent) but never materialises the
+        whole stack, which at 1080p with 100 samples is ~200 MB plus the
+        partition copy.
+        """
+        height, width = frames[0].shape[:2]
+        row_bytes = max(1, len(frames) * width)
+        rows = max(1, cls.MEDIAN_BLOCK_BYTES // row_bytes)
+        result = np.empty(frames[0].shape, dtype=np.uint8)
+        for start in range(0, height, rows):
+            block = np.stack([frame[start:start + rows] for frame in frames])
+            result[start:start + rows] = np.median(block, axis=0).astype(
+                np.uint8
+            )
+        return result
+
     @classmethod
     def generate(cls, path: Path, num_samples: int = 100, 
                  target_dims: Optional[Tuple[int, int]] = None, use_cache: bool = True,
@@ -253,27 +358,14 @@ class ReferenceFrameGenerator:
 
         # 2. Generate
         indices = np.linspace(0, handler.total_frames - 1, min(num_samples, handler.total_frames), dtype=int)
-        frames = []
-        
-        cap = cv2.VideoCapture(str(path))
-        try:
-            for i in indices:
-                if should_cancel is not None and should_cancel():
-                    raise InterruptedError("Reference frame generation cancelled")
-                cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-                ret, frame = cap.read()
-                if ret:
-                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                    if target_dims:
-                        gray = cv2.resize(gray, target_dims)
-                    frames.append(gray)
-        finally:
-            cap.release()
+        frames = cls._read_sample_frames(
+            path, indices, target_dims, should_cancel
+        )
 
         if not frames:
             raise ValueError("Could not read frames for reference")
 
-        ref_frame = np.median(np.stack(frames), axis=0).astype(np.uint8)
+        ref_frame = cls._chunked_median(frames)
 
         # 3. Save Cache
         if use_cache:
