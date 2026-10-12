@@ -22,6 +22,7 @@ from core.models import AppConfig, BatchSettings
 from core.video import VideoHandler, ReferenceFrameGenerator, SafeVideoWriter, BufferedVideoReader
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.analysis_engine import Analyzer
+from core.tst_display import tst_display_style
 from core.tst_motion_engine import TSTMotionEngine
 from core.version import APP_NAME, APP_VERSION
 
@@ -857,19 +858,9 @@ class AnalysisWorker(QObject):
                                         if curr_idx < len(behavior_trace)
                                         else "uncertain"
                                     )
-                                    if is_immobile is None:
-                                        color = (0, 165, 255)
-                                        status = "UNCERTAIN"
-                                    elif is_immobile:
-                                        if behavior_state == "passive_swing":
-                                            color = (180, 0, 180)
-                                            status = "PASSIVE SWING"
-                                        else:
-                                            color = (0, 0, 255)
-                                            status = "IMMOBILE STATIC"
-                                    else:
-                                        color = (0, 255, 0)
-                                        status = "ACTIVE ESCAPE"
+                                    color, status = tst_display_style(
+                                        behavior_state, is_immobile
+                                    )
                                     evidence_trace = result.motion_evidence.get(
                                         name, []
                                     )
