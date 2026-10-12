@@ -1,5 +1,106 @@
 # Changelog
 
+## 3.4.0
+
+Throughput, open-field and metadata release. **Results for existing analyses
+are unchanged compared with 3.3.0**, so 3.3.0 and 3.4.0 results can be pooled.
+The new metrics and files are additive: they appear only when the new features
+(open-field arena, sample sheet, time bins, alignment) are used. Parallel and
+sequential runs produce byte-identical outputs.
+
+> **Scientific caveat:** criterion validation of the automated scores against
+> blinded manual scoring is still pending. Always review the validation video
+> and tracking coverage before interpreting results.
+
+### Added
+
+- **Parallel batch processing.**
+  - A **Parallel videos** control on the main window analyses several videos
+    at the same time. It defaults to **Auto** (`min(CPU cores / 4, videos,
+    RAM in GB / 3)`, at least 1) and is remembered between sessions; 1 runs
+    the videos one after another. A 3-video batch is about 2.2x faster.
+  - Videos run in spawned child processes. The batch summary and manifest are
+    written in the original video order, and the outputs are byte-identical
+    to a sequential run.
+- **Headless command line.** `python -m core.cli run --plan PLAN --out DIR
+  [--workers N] [--sample-sheet SHEET.csv] [--bin-seconds N]` runs a saved
+  batch plan (or a template, with `--videos`) without Qt, through the same
+  batch runner as the GUI, so the run folder, batch summary, manifest and
+  `run_plan.json` are identical. `--paradigm`, `--videos` and `--quiet` are
+  also available. Exit codes: `0` success, `1` at least one video failed,
+  `2` bad arguments or plan, `130` cancelled.
+  - The packaged executable has a hidden `--selftest-parallel` flag that
+    analyses two tiny synthetic videos on two spawned worker processes and
+    exits 0 on success, to prove that the process pool starts in a frozen
+    build.
+- **Open-field arena** (Freestyle / Open Field). Enable **Open field arena**
+  in the Freestyle setup and draw the arena boundary first.
+  - The center is defined either by a **distance from the wall in cm**
+    (default 10 cm, needs a reference line) or by a **share of the arena
+    area** (default 25%, also used when the video is not calibrated).
+  - New metrics: center time, center entries and latency to center;
+    thigmotaxis as a percentage of time and of distance; mean distance to the
+    wall; mean speed in the center versus the periphery.
+  - New per-frame `*_arena_zones.csv` (debounced region and signed wall
+    distance).
+  - When an arena is drawn, detection is restricted to it, and the threshold
+    percentile is computed over arena pixels only, so an empty floor outside
+    the arena does not dilute it. Runs without an arena are unchanged.
+  - New optional detection setting `min_absolute_contrast` (grey levels,
+    default 0 = off): a floor under the percentile threshold. It is not
+    written to saved configurations while it is off.
+- **Sample sheet.** A CSV of animal metadata (first column `video`, then
+  `animal_id`, `group`, ... as you like), chosen with **Sample sheet...** or
+  `--sample-sheet`. Its columns appear in `batch_summary.csv`, in each
+  `*_summary.json` (`animal_metadata`) and in the manifest. Matching is never
+  guessed: a video with no row, or an ambiguous filename, is reported and the
+  run asks before starting (the CLI refuses). The sheet is a run option and
+  never changes checkpoint settings hashes.
+- **Time bins.** **Time bins** in the main window or `--bin-seconds N` also
+  report the metrics per bin: `data/<video>_time_bins.csv` per video and
+  `batch_time_bins.csv` per run, in long format. Every paradigm is covered,
+  and each metric summed over the bins equals the whole-video total.
+  Y-maze alternation counts a triplet of arm entries in the bin of its third
+  entry. Off by default, in which case nothing changes.
+- **ROI template alignment.** Reuse a template on videos with a moved camera
+  or another frame size.
+  - **Tools > Align template to videos...** compares each video's background
+    with the template's and aligns automatically (ORB features plus RANSAC on
+    reference frames) or from landmarks you click; **Use as is** keeps the
+    ROIs where they are. The same window opens when a run starts and some
+    videos do not match the ROIs' frame size, and through **Check alignment**
+    in the per-video verification.
+  - Calibration follows the alignment. The reference line's endpoints are now
+    stored with the ROIs (`reference_line`, only when known) so the cm scale
+    can be recomputed exactly; a template that holds only a length is scaled
+    and marked approximate.
+  - A camera that has shifted, even at the same frame size, is flagged.
+  - Aligned settings are applied per video and saved with batch plans.
+
+### Changed
+
+- **Manifest schema 3.** Each `videos[]` entry now has `settings_hash`,
+  `video_fingerprint`, `metadata`, `summary_json` and `status`, and failed
+  videos are listed too. The manifest also records the sample sheet path and
+  the time-bin length. Schema 3 only adds keys to schema 2.
+- The checkpoint settings-hash and video-fingerprint helpers are public
+  (`get_settings_hash`, `get_video_fingerprint`); the private names remain as
+  aliases. The checkpoint format is unchanged.
+- The per-video pipeline is now Qt-free (`core/pipeline.py`, with batch
+  orchestration in `core/batch_runner.py`); the GUI worker is only the Qt
+  signal adapter. This is what makes the CLI and parallel runs possible.
+- The dimension-mismatch pre-flight message now points to
+  **Tools > Align template to videos...** (or **Check alignment** while
+  verifying) as well as redrawing the ROIs. Pre-flight also warns when a
+  calibration length was only scaled by an alignment.
+
+### Fixed
+
+- The open-field center outline now appears in validation videos made by CLI
+  and parallel runs, not only by GUI runs on the main process.
+- The force-quit prompt can no longer run against a deleted window, which
+  aborted the test process on CI. This fix was also released in 3.3.0.
+
 ## 3.3.0
 
 Performance and usability release. **Analysis results are identical to

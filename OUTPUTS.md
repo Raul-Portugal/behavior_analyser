@@ -96,6 +96,8 @@ shared columns and precede the paradigm columns.
 | `*_summary.json` | yes | yes | Complete machine-readable result and configuration |
 | `*_arm_entries.csv` | Y-maze, EPM | no | Debounced, center-mediated arm-entry events |
 | `*_speed_data.csv` | Freestyle | no | Per-frame raw and smoothed speed and the `is_immobile` flag (see below) |
+| `*_arena_zones.csv` | Freestyle with an arena | no | Per-frame debounced `arena_zone` and signed wall distance (see "Open field arena") |
+| `*_time_bins.csv` | all, when time bins are on | yes | Per-bin metrics in long format (see "Time bins") |
 
 Raw and cleaned zone labels are both retained in positional tracking CSVs.
 Behavioral metrics use the cleaned labels; the raw labels remain available for
@@ -196,6 +198,12 @@ pixels outside the arena are ignored, and the detection threshold percentile
 is computed from the arena pixels only (so an empty floor outside the arena
 does not dilute it). Without an arena the whole frame is used, exactly as
 before.
+
+The detection settings also have an optional `min_absolute_contrast` (grey
+levels, 0-255, default 0 = off): a floor under the percentile threshold, so
+that a nearly empty arena does not get a very low threshold. It is written to
+saved configurations and to `*_summary.json` only when it is above 0, so
+existing configurations and settings hashes are unchanged.
 
 ### Y-maze and EPM
 
@@ -379,6 +387,17 @@ stored, the length is scaled by the alignment's scale factor and
 Alignment is applied before the run, so analysis outputs only ever see the
 aligned ROIs; results of an unaligned run are unchanged.
 
+## Configuration schemas
+
+A saved template, batch plan or `run_plan.json` holds the open-field arena
+polygon in the `roi_manager` block (key `arena`, ROI schema 3) and the arena
+center rule in the paradigm parameters (`arena_mode`,
+`arena_center_mode`, `arena_center_distance_cm`,
+`arena_center_area_fraction`; batch settings schema 6). They are written only
+when an arena is set, so configurations without an arena are byte-identical to
+those of earlier versions, and an older version rejects a configuration with an
+arena rather than silently ignoring it.
+
 ## Checkpoints
 
 Resumable runs write to a `.checkpoints/` folder in the output directory, two
@@ -390,7 +409,7 @@ files per video:
 - `<video>_<id>_checkpoint.rows.jsonl`: one JSON line per processed frame,
   appended and flushed before the header is rewritten.
 
-The checkpoint format is version 4 (unchanged in 3.3). The run folder's
+The checkpoint format is version 4 (unchanged in 3.3 and 3.4). The run folder's
 `run_plan.json` is what lets a checkpoint be resumed after the application was
 restarted (see "Run plan" above). Checkpoints from other versions, or whose
 settings or video do not match, are ignored and the run starts fresh. Both
