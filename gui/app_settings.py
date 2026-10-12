@@ -40,6 +40,7 @@ class AppSettings:
     KEY_PARADIGM = "setup/last_paradigm"
     KEY_RECENT = "recent/files"
     KEY_RECURSIVE = "videos/add_folder_recursive"
+    KEY_WORKERS = "run/parallel_workers"
 
     def __init__(self, qsettings: Optional[QSettings] = None):
         self._qs = qsettings if qsettings is not None else self._default_qsettings()
@@ -146,6 +147,16 @@ class AppSettings:
 
     def set_add_folder_recursive(self, enabled: bool) -> None:
         self._qs.setValue(self.KEY_RECURSIVE, "true" if enabled else "false")
+
+    def parallel_workers(self) -> int:
+        """Videos analysed at once; 0 means "Auto" (the default)."""
+        try:
+            return max(0, int(self._qs.value(self.KEY_WORKERS, 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def set_parallel_workers(self, count: int) -> None:
+        self._qs.setValue(self.KEY_WORKERS, max(0, int(count)))
 
     # ------------------------------------------------------------------
     # Recent templates and plans

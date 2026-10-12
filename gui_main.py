@@ -2,6 +2,7 @@
 Main entry point for the Behavioral Analysis Suite GUI application.
 """
 import logging
+import multiprocessing
 import sys
 import traceback
 from pathlib import Path
@@ -53,6 +54,16 @@ def _handle_uncaught_exception(exc_type, exc_value, exc_traceback):
 def main(arguments=None):
     """Launch the GUI or perform a packaged dependency/startup check."""
     arguments = list(sys.argv if arguments is None else arguments)
+    if "--selftest-parallel" in arguments:
+        # Hidden packaged-build check: runs a tiny parallel batch (no GUI);
+        # an optional following argument is a file to write the report to.
+        from core.selftest import run_parallel_selftest
+        position = arguments.index("--selftest-parallel")
+        report = (
+            Path(arguments[position + 1])
+            if len(arguments) > position + 1 else None
+        )
+        return run_parallel_selftest(report)
     startup_check = "--startup-check" in arguments
     qt_arguments = [
         argument for argument in arguments
@@ -73,4 +84,7 @@ def main(arguments=None):
 
 
 if __name__ == '__main__':
+    # Frozen builds start parallel-batch child processes by re-running this
+    # executable; this call turns those children into pool workers.
+    multiprocessing.freeze_support()
     sys.exit(main())
