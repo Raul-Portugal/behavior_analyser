@@ -5,8 +5,11 @@ try:
     import cv2
     import numpy as np
 
-    from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
+    from core.tst_motion_engine import (
+        REFERENCE_FPS, TSTMotionConfig, TSTMotionEngine,
+    )
     from roi_manager import ROI
+    from tests import tst_synthetic as synthetic
     HAS_OPENCV = True
 except ModuleNotFoundError:
     HAS_OPENCV = False
@@ -368,6 +371,90 @@ class TSTMotionClassificationTests(unittest.TestCase):
             [item.pendulum_score for item in expected],
             rtol=1e-7,
             atol=1e-7,
+        )
+
+
+@unittest.skipUnless(HAS_OPENCV, "OpenCV runtime is not installed")
+class TSTRateNormalizationTests(unittest.TestCase):
+    """The same physical motion must score alike at 15, 30 and 60 fps."""
+
+    RATES = (15.0, 30.0, 60.0)
+    observations = {}
+
+    @classmethod
+    def setUpClass(cls):
+        roi = ROI(synthetic.clip_roi_points(), "mouse_1")
+        for fps in cls.RATES:
+            frames = synthetic.render_clip(fps)
+            engine = TSTMotionEngine({"mouse_1": roi}, fps=fps)
+            cls.observations[fps] = [
+                engine.calculate_observations(
+                    frames[index], frames[index - 1]
+                )["mouse_1"]
+                for index in range(1, len(frames))
+            ]
+
+    @classmethod
+    def _at(cls, fps, time_s):
+        """Observation for the frame interval ending at ``time_s``."""
+        return cls.observations[fps][int(round(time_s * fps)) - 1]
+
+    @classmethod
+    def _median(cls, fps, name, start, end):
+        times = np.arange(start, end, 1.0 / REFERENCE_FPS)
+        return float(np.median([
+            getattr(cls._at(fps, t), name) for t in times
+        ]))
+
+    def test_states_agree_across_frame_rates(self):
+        grid = np.arange(1, int(synthetic.DURATION_S * 15)) / 15.0
+        reference = [self._at(30.0, t).state for t in grid]
+        for fps in (15.0, 60.0):
+            states = [self._at(fps, t).state for t in grid]
+            agreement = np.mean([
+                left == right for left, right in zip(states, reference)
+            ])
+            self.assertGreaterEqual(agreement, 0.90, f"{fps} fps")
+        self.assertIn("passive_swing", reference)
+        self.assertIn("active_escape", reference)
+
+    def test_normalized_features_agree_across_frame_rates(self):
+        swing = (2.5, 4.5)
+        wiggle = (5.75, 7.0)
+        for name, window, tolerance in (
+            ("rigid_motion", swing, 0.25),
+            ("residual_motion", swing, 0.25),
+            ("residual_motion", wiggle, 0.25),
+            ("deformation", wiggle, 0.30),
+        ):
+            expected = self._median(30.0, name, *window)
+            self.assertGreater(expected, 0.0)
+            for fps in (15.0, 60.0):
+                value = self._median(fps, name, *window)
+                self.assertAlmostEqual(
+                    value / expected, 1.0, delta=tolerance,
+                    msg=f"{name} at {fps} fps: {value} vs {expected}",
+                )
+
+    def test_normalized_injection_stays_below_active_threshold(self):
+        threshold = TSTMotionConfig().active_injection_threshold
+        expected = self._median(30.0, "motion_injection", 2.5, 4.5)
+        for fps in (15.0, 60.0):
+            value = self._median(fps, "motion_injection", 2.5, 4.5)
+            self.assertLess(abs(value - expected), 0.25 * threshold)
+
+    def test_static_period_has_no_motion_at_any_rate(self):
+        for fps in self.RATES:
+            for name in ("rigid_motion", "residual_motion", "deformation"):
+                self.assertLess(
+                    self._median(fps, name, 0.3, 1.4), 0.003, name
+                )
+
+    def test_rate_scales_are_relative_to_reference_fps(self):
+        engine = TSTMotionEngine({}, fps=60.0)
+        self.assertAlmostEqual(engine.rate_scale, 60.0 / REFERENCE_FPS)
+        self.assertAlmostEqual(
+            engine.injection_scale, (60.0 / REFERENCE_FPS) ** 2
         )
 
 

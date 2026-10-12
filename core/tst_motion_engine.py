@@ -14,6 +14,10 @@ import numpy as np
 
 from roi_manager import ROI
 
+# Per-frame motion features are expressed relative to this frame rate so the
+# thresholds in TSTMotionConfig keep one meaning regardless of the video fps.
+REFERENCE_FPS = 30.0
+
 
 @dataclass
 class TSTMotionConfig:
@@ -130,6 +134,12 @@ class TSTMotionEngine:
         if not isfinite(float(fps)) or fps <= 0:
             raise ValueError("fps must be a positive finite value")
         self.fps = float(fps)
+        # Displacement-type features (per-frame translation, rotation,
+        # residual and shape change) scale linearly with the frame rate;
+        # injections are differences of per-frame velocities (roughly
+        # accelerations), so they scale with its square.
+        self.rate_scale = self.fps / REFERENCE_FPS
+        self.injection_scale = self.rate_scale ** 2
         self.masks: Dict[str, np.ndarray] = {}
         # Current segmented mouse masks are retained only for visual quality
         # control. They are deliberately not used as persistent model state.
@@ -335,15 +345,20 @@ class TSTMotionEngine:
         total = np.linalg.norm(sampled_flow, axis=1)
 
         body_scale = max(1.0, float(np.sqrt(np.count_nonzero(current_mask))))
+        rate = self.rate_scale
         rigid_vector = np.median(predicted, axis=0)
-        translation_motion = float(np.linalg.norm(rigid_vector) / body_scale)
+        translation_motion = float(
+            np.linalg.norm(rigid_vector) / body_scale * rate
+        )
         rotation_radians = float(np.arctan2(linear[1, 0], linear[0, 0]))
-        rotation_motion = abs(rotation_radians) * 0.5
+        rotation_motion = abs(rotation_radians) * 0.5 * rate
         rigid_motion = float(np.hypot(
             translation_motion,
             rotation_motion,
         ))
-        residual_motion = float(np.percentile(residual, 90) / body_scale)
+        residual_motion = float(
+            np.percentile(residual, 90) / body_scale * rate
+        )
         coherence = float(np.clip(
             1.0 - np.median(residual) / (np.median(total) + 1e-6),
             0.0,
@@ -360,22 +375,25 @@ class TSTMotionEngine:
         intersection = np.count_nonzero(
             (warped_mask > 0) & (current_mask > 0)
         )
+        # IoU loss is a per-frame shape change, so it is treated as a
+        # displacement-type feature and rate-normalized like residual motion.
         deformation = (
             1.0 - intersection / union if union > 0 else 1.0
-        )
+        ) * rate
 
         if history.rigid_vector is None:
             injection = 0.0
         else:
             injection = float(
-                np.linalg.norm(rigid_vector - history.rigid_vector) / body_scale
+                np.linalg.norm(rigid_vector - history.rigid_vector)
+                / body_scale * self.injection_scale
             )
         if history.angular_velocity is None:
             angular_injection = 0.0
         else:
             angular_injection = abs(
                 rotation_radians - history.angular_velocity
-            ) * 0.5
+            ) * 0.5 * self.injection_scale
         history.rigid_vector = rigid_vector
         history.angular_velocity = rotation_radians
         current_centroid = self._centroid(current_mask)
@@ -393,7 +411,7 @@ class TSTMotionEngine:
         return self._classify(
             rigid_motion=rigid_motion,
             rotation_motion=rotation_motion,
-            rotation_radians=rotation_radians,
+            rotation_radians=rotation_radians * rate,
             residual_motion=residual_motion,
             deformation=float(deformation),
             coherence=coherence,
@@ -403,7 +421,7 @@ class TSTMotionEngine:
             temporal_ready=temporal_ready,
             area_ratio=area_ratio,
             inlier_ratio=inlier_ratio,
-            rigid_vector=rigid_vector,
+            rigid_vector=rigid_vector * rate,
             camera_stabilized=camera_stabilized,
         )
 
@@ -417,7 +435,12 @@ class TSTMotionEngine:
         deformation: float,
         body_scale: float,
     ) -> Tuple[float, bool]:
-        """Estimate passive pendulum evidence from a bounded temporal window."""
+        """Estimate passive pendulum evidence from a bounded temporal window.
+
+        ``rotation_delta`` is the raw per-frame rotation (its cumulative sum
+        is a rate-invariant angle); ``residual_motion`` and ``deformation``
+        are already rate-normalized.
+        """
         if centroid is None:
             return 0.0, False
 
@@ -482,7 +505,10 @@ class TSTMotionEngine:
             ))
             amplitude = centroid_range
 
-        velocity = np.diff(signal)
+        # Ranges and amplitudes of position (centroid, rotation) are already
+        # rate-invariant. The per-frame velocity floor is not, so it is
+        # compared at the reference frame rate.
+        velocity = np.diff(signal) * self.rate_scale
         nonzero = velocity[np.abs(velocity) > 1e-4]
         reversals = 0
         if len(nonzero) >= 2:
