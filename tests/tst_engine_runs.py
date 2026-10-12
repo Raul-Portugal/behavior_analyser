@@ -62,9 +62,12 @@ _RUNNERS = {
 
 def clip_frames(fps):
     with _lock:
-        if fps not in _frames:
-            _frames[fps] = synthetic.render_clip(fps)
-        return _frames[fps]
+        frames = _frames.get(fps)
+    if frames is None:
+        frames = synthetic.render_clip(fps)
+        with _lock:
+            frames = _frames.setdefault(fps, frames)
+    return frames
 
 
 def runs(*kinds):
@@ -76,8 +79,7 @@ def runs(*kinds):
         ]
     if missing:
         with ThreadPoolExecutor(max_workers=min(8, len(missing))) as pool:
-            for fps in RATES:
-                clip_frames(fps)
+            list(pool.map(clip_frames, RATES))
             futures = {
                 job: pool.submit(_RUNNERS[job[0]], clip_frames(job[1]), job[1])
                 for job in missing
