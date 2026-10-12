@@ -59,7 +59,8 @@ class CheckpointManager:
 
     def __init__(self, output_dir: Path,
                  interval_seconds: Optional[float] = None,
-                 clock: Callable[[], float] = time.monotonic):
+                 clock: Callable[[], float] = time.monotonic,
+                 create_dir: bool = True):
         """
         Initialize checkpoint manager.
 
@@ -67,10 +68,13 @@ class CheckpointManager:
             output_dir: Directory to store checkpoint files
             interval_seconds: Wall-clock seconds between periodic saves
             clock: Monotonic time source (injectable for tests)
+            create_dir: Create the ``.checkpoints`` folder. Pass False for
+                read-only lookups, which must not touch the filesystem.
         """
         self.output_dir = output_dir
         self.checkpoints_dir = output_dir / ".checkpoints"
-        self.checkpoints_dir.mkdir(exist_ok=True)
+        if create_dir:
+            self.checkpoints_dir.mkdir(exist_ok=True)
         self.interval_seconds = (
             self.CHECKPOINT_INTERVAL_SECONDS
             if interval_seconds is None else float(interval_seconds)
@@ -395,6 +399,11 @@ class CheckpointManager:
             return list(self.checkpoints_dir.glob("*_checkpoint.json"))
         except OSError:
             return []
+
+    @classmethod
+    def find_checkpoints_readonly(cls, output_dir: Path) -> list[Path]:
+        """List checkpoints under ``output_dir`` without creating any folder."""
+        return cls(output_dir, create_dir=False).find_all_checkpoints()
 
     def reset_timer(self):
         """Restart the periodic-save clock (call at the start of a video)."""

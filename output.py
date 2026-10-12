@@ -9,18 +9,13 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import matplotlib
-# Force Agg backend for thread safety
-matplotlib.use('Agg')
 from matplotlib import colormaps
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import numpy as np
 from scipy.ndimage import gaussian_filter
-from tqdm import tqdm
 
 from mazes.base_maze import BaseAnalysisResult, Maze
-from core.video import SafeVideoWriter  # Replaces VideoWriter from video_io
 from core.output_contract import COMMON_BATCH_HEADERS, common_batch_row
 
 logger = logging.getLogger(__name__)
@@ -400,19 +395,6 @@ class DataExporter:
             logger.error(f"Error exporting JSON: {e}")
             raise
 
-    @staticmethod
-    def export_sequence_details_csv(result: BaseAnalysisResult, output_path: Path):
-        if not hasattr(result, 'arm_entries') or not result.arm_entries: return
-        try:
-            with open(output_path, 'w', newline='', encoding='utf-8') as f:
-                writer = csv.writer(f)
-                writer.writerow(['entry_num', 'arm', 'timestamp'])
-                for i, (arm, ts) in enumerate(result.arm_entries):
-                    writer.writerow([i+1, arm, f"{ts:.3f}"])
-        except Exception as exc:
-            logger.error("Error exporting sequence details: %s", exc)
-            raise
-
 
 class Visualizer:
     """A collection of static methods for creating generic plots and visualizations."""
@@ -428,16 +410,19 @@ class Visualizer:
         w, h = dimensions
         heatmap = np.zeros((h, w), dtype=np.float32)
         xs, ys = zip(*valid_positions)
-        xs, ys = np.array(xs), np.array(ys)
+        # Positions are float sub-pixel; round to the nearest pixel (not truncate)
+        # and bounds-check the rounded indices.
+        xs = np.rint(np.array(xs, dtype=np.float64)).astype(int)
+        ys = np.rint(np.array(ys, dtype=np.float64)).astype(int)
         mask = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
-        np.add.at(heatmap, (ys[mask].astype(int), xs[mask].astype(int)), 1)
+        np.add.at(heatmap, (ys[mask], xs[mask]), 1)
         
         if blur_sigma > 0:
             heatmap = gaussian_filter(heatmap, sigma=blur_sigma)
 
         try:
             fig = Figure(figsize=(10, 10 * (h / w)))
-            canvas = FigureCanvasAgg(fig)
+            FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
             im = ax.imshow(heatmap, cmap='viridis', interpolation='nearest', aspect='auto')
             ax.set_title('Location Heatmap')
@@ -457,7 +442,7 @@ class Visualizer:
         w, h = dimensions
         try:
             fig = Figure(figsize=(10, 10 * (h / w)))
-            canvas = FigureCanvasAgg(fig)
+            FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
             valid_pos = np.array([p for p in result.positions if p is not None])
             labels = [result.roi_labels[i] for i, p in enumerate(result.positions) if p is not None]
@@ -501,7 +486,7 @@ class Visualizer:
             y_values = [zone_map.get(label, -1) for label in labels_to_plot]
 
             fig = Figure(figsize=(15, 6))
-            canvas = FigureCanvasAgg(fig)
+            FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
             ax.step(result.timestamps, y_values, where='post')
             ax.set_yticks(range(len(unique_zones)))
@@ -516,21 +501,3 @@ class Visualizer:
         except Exception as e:
             logger.error(f"Failed to generate time series: {e}", exc_info=True)
             raise
-
-    @staticmethod
-    def create_timelapse_video(frames, output_path, fps, show_progress=True):
-        """Used for pure array-based timelapse writing (deprecated for tracking, kept for compatibility)"""
-        if not frames:
-            logger.warning("No frames for timelapse.")
-            return
-        logger.info(f"Creating timelapse: {output_path}")
-        h, w = frames[0].shape[:2]
-        
-        try:
-            from core.video import SafeVideoWriter
-            with SafeVideoWriter(output_path, fps, (w, h)) as writer:
-                iterator = tqdm(frames, desc="Writing timelapse") if show_progress else frames
-                for frame in iterator:
-                    writer.write(frame)
-        except Exception as e:
-            logger.error(f"Failed to create timelapse: {e}")

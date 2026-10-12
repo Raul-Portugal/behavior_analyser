@@ -7,8 +7,16 @@
 A flexible, user-friendly desktop application for analyzing animal behavior in common laboratory mazes. This tool provides a complete graphical workflow from video import to data export, designed for researchers who need reliable, reproducible results without extensive programming knowledge.
 
 > **Development status:** This is active research software. Always review the
-> validation video and tracking coverage before interpreting results. Formal
-> agreement testing against manually annotated videos is still pending.
+> validation video and tracking coverage before interpreting results.
+> Criterion validation of the automated scores against blinded manual scoring
+> is still pending.
+>
+> **3.2.0 results differ from 3.1.x:** the detection tuner now matches the
+> production analysis resolution, centroids are sub-pixel, Freestyle immobility
+> is recomputed from smoothed speed (N/A when uncalibrated), the ROI
+> bounding-box calibration fallback is gone, and TST uses engine v3. Do not
+> pool 3.1.x and 3.2.0 results without re-analysing. See
+> [CHANGELOG.md](CHANGELOG.md) for the complete list.
 >
 > **3.1 compatibility note:** TST configurations saved by earlier releases are
 > deliberately rejected. TST 3.1 uses a new temporal rigid-motion engine, so
@@ -27,11 +35,24 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 - **Batch Processing**: Analyze entire folders of videos in a single run with consistent or individually customized settings.
 - **Multi-Maze Support**: Comes with built-in, highly optimized logic for:
   - **Y-Maze**: Calculates spontaneous alternation, arm entries, and same-arm returns (includes hysteresis filtering for overlapping center zones).
-  - **Elevated Plus Maze (EPM)**: Calculates time/distance in open/closed arms and preference percentages.
+    The entry options dialog sets the minimum dwell time and whether the arm
+    the animal starts in counts as an entry. Entries that a tracking gap may
+    have hidden are reported as `entries_possibly_missed`.
+  - **Elevated Plus Maze (EPM)**: Calculates time/distance in open/closed arms and preference percentages,
+    with the same dwell and initial-arm options and `entries_possibly_missed`.
   - **Tail Suspension Test (TST)**: Separates articulated escape activity from
     coherent pendulum-like translation and rotation, calculates immobility and
     bouts, and supports multiple mice simultaneously.
   - **Freestyle / Open Field**: Custom zone drawing or zone-free tracking for pure kinematic analysis (speed, distance, transitions).
+    Immobility is scored from smoothed speed against a cm/s threshold with a
+    minimum bout length. The setup dialog exposes the immobility threshold
+    (cm/s), the speed smoothing window (s), the minimum immobility bout (s)
+    and the minimum zone dwell (s). Immobility is reported as N/A when the
+    video is not calibrated.
+- **Distance Calibration**: Always draw a reference line over something of known
+  length, and enter its length in cm, to get distances and speeds in cm. Without
+  it, distances are reported in pixels and Freestyle immobility is N/A. There is
+  no automatic scale estimate from the ROI bounding box.
 - **Interactive ROI Definition**: Visually draw polygons for each maze arm or testing zone directly on a video frame.
 - **Interactive Detection Tuning**: Fine-tune detection against the production
   segmentation mask, selected-component overlay, and deterministic Quick Scan
@@ -119,11 +140,20 @@ The application uses a modular Core Architecture, making it easy to add new maze
 
 ## Development Checks
 
-The dependency-free regression tests can be run with:
+Install the dependencies, then run the regression tests and the linter from
+the repository root:
 
 ```bash
-python -m unittest discover -s tests -v
+python -m unittest discover -s tests
+python -m ruff check .
+python gui_main.py --startup-check
 ```
+
+The tests need the PyQt6 runtime. On a machine without a display, set
+`QT_QPA_PLATFORM=offscreen` first. The full suite takes about a minute and a
+half. `ruff` is configured in `pyproject.toml` (`pip install ruff`), and
+`--startup-check` verifies that the application imports and starts, then exits
+with status 0.
 
 ROI templates are tied to the source video dimensions on which they were
 drawn. The preflight check blocks reuse on videos with incompatible

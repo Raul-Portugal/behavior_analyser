@@ -3,13 +3,14 @@ import json
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 try:
     from mazes.epm import EPM, EPMAnalysisResult
     from mazes.freestyle import Freestyle, FreestyleAnalysisResult
     from mazes.tst import TST, TSTResult
     from mazes.y_maze import YMaze, YMazeAnalysisResult
-    from output import DataExporter
+    from output import DataExporter, Visualizer
     HAS_RUNTIME = True
 except ModuleNotFoundError:
     HAS_RUNTIME = False
@@ -145,6 +146,41 @@ class OutputExporterTests(unittest.TestCase):
             )
             self.assertEqual(rows[0]["total_distance"], "2.00")
 
+
+@unittest.skipUnless(HAS_RUNTIME, "Scientific runtime is not installed")
+class HeatmapRoundingTests(unittest.TestCase):
+    def _heatmap_array(self, positions, dimensions):
+        import numpy as np
+        from matplotlib.axes import Axes
+
+        captured = {}
+        original = Axes.imshow
+
+        def spy(axes, data, *args, **kwargs):
+            captured["data"] = np.array(data)
+            return original(axes, data, *args, **kwargs)
+
+        with tempfile.TemporaryDirectory() as temp_dir:
+            with mock.patch.object(Axes, "imshow", spy):
+                Visualizer.generate_heatmap(
+                    positions,
+                    dimensions,
+                    Path(temp_dir) / "heatmap.png",
+                    blur_sigma=0,
+                )
+        return captured["data"]
+
+    def test_sub_pixel_positions_are_rounded_not_truncated(self):
+        data = self._heatmap_array([(9.6, 4.6)], (20, 10))
+
+        self.assertEqual(data[5, 10], 1)
+        self.assertEqual(data.sum(), 1)
+
+    def test_positions_rounding_past_the_edge_are_dropped_not_raised(self):
+        data = self._heatmap_array([(19.7, 3.0), (5.0, 5.0)], (20, 10))
+
+        self.assertEqual(data.sum(), 1)
+        self.assertEqual(data[5, 5], 1)
 
 if __name__ == "__main__":
     unittest.main()

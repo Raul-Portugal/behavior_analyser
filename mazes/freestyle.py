@@ -333,7 +333,7 @@ class Freestyle(Maze):
 
             # Thread-safe plotting
             fig = Figure(figsize=(14, 6))
-            canvas = FigureCanvasAgg(fig)
+            FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
 
             unit = f"{result.distance_unit}/s"
@@ -396,7 +396,7 @@ class Freestyle(Maze):
             matrix = build_transition_matrix(result.zone_transitions, filtered_names)
             
             fig = Figure(figsize=(10, 8))
-            canvas = FigureCanvasAgg(fig)
+            FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
             
             im = ax.imshow(matrix, cmap='YlOrRd')
@@ -433,7 +433,7 @@ class Freestyle(Maze):
             counts = [count for _, count in sorted_zones]
             
             fig = Figure(figsize=(12, 6))
-            canvas = FigureCanvasAgg(fig)
+            FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
             
             bars = ax.bar(zones, counts, color='steelblue', alpha=0.8, edgecolor='black')

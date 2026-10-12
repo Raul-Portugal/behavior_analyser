@@ -5,7 +5,6 @@ from pathlib import Path
 from unittest.mock import patch
 
 try:
-    import cv2
     import numpy as np
 
     from core.video import ReferenceFrameGenerator, SafeVideoWriter

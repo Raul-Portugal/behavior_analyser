@@ -5,7 +5,6 @@ Contains positional tracking and the TST motion-decomposition engine.
 Replaces analysis.py and motion_engine.py.
 """
 import logging
-import cv2
 import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, Generator, List
@@ -107,26 +106,6 @@ class Analyzer:
                 current_idx += 1
         finally:
             reader.release()
-
-    def get_last_annotated_frame(self) -> np.ndarray:
-        """Returns current frame with visualization for timelapse."""
-        if self.current_frame_img is None:
-            return np.zeros((480, 640, 3), dtype=np.uint8)
-            
-        vis = self.current_frame_img.copy()
-        
-        # Draw ROIs
-        self.roi_manager.draw_on_frame(vis)
-        
-        # Draw Position
-        if self.last_pos:
-            center = (
-                int(round(self.last_pos[0])),
-                int(round(self.last_pos[1])),
-            )
-            cv2.circle(vis, center, 8, (0, 0, 255), -1)
-            
-        return vis
 
     def finalize_result(self, result: BaseAnalysisResult):
         """Populates summary metrics in result object."""

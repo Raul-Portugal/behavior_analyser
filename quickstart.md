@@ -23,7 +23,11 @@ A dialog will appear asking you to select the paradigm (e.g., "Y-Maze", "Elevate
 3. **Left-click** to drop points and draw a polygon around the arm.
 4. **Right-click** to close and finish the shape.
 5. Click **"Next Zone"** and repeat until all zones are drawn.
-6. *Calibration:* You will be asked to draw a reference line. Draw a line along an object of known length in the real world (e.g., a 30cm maze arm). This allows the software to output distances in centimeters instead of pixels.
+6. *Calibration:* You will be asked to draw a reference line. Draw a line along an object of known length in the real world (e.g., a 30cm maze arm). This allows the software to output distances in centimeters instead of pixels. **Always draw a reference line when you want cm**: the software no longer estimates a scale from the ROI bounding box. The TST does not use calibration and skips this prompt.
+
+### Step B2: Paradigm Options
+- **Y-Maze / Elevated Plus Maze:** after the ROIs, set the **Minimum dwell time** (a zone change must last this long to count, which ignores flicker across a zone border) and whether **the arm the animal starts in counts as an entry**.
+- **Freestyle / Open Field:** the setup dialog also holds the immobility parameters: the **Immobility threshold** (cm/s), the **Speed smoothing window** (s), the **Minimum immobility bout** (s) and the **Minimum zone dwell** (s). Immobility is scored from the smoothed speed, and is reported as N/A if the video is not calibrated.
 
 ### Step C: Tune Detection Parameters
 The Interactive Detection Tuner ensures the software cleanly separates the animal from the background.
@@ -83,6 +87,21 @@ for that frame. These frames are excluded from zone occupancy, distance,
 transition, and immobility calculations. The same file includes `confidence`
 and `failure_reason` columns for quality review.
 
-Configurations saved by releases before 3.0 cannot be used for TST. Re-open
-the source video, review every mouse with the new temporal evidence tuner, and
+Configurations saved by releases before 3.2 cannot be used for TST. Re-open
+the source video, review every mouse with the temporal evidence tuner, and
 save a new configuration.
+
+Results from 3.2.0 are not directly comparable with 3.1.x; see
+`CHANGELOG.md`. Criterion validation of the automated scores against blinded
+manual scoring is still pending, so review the validation video before
+interpreting results.
+
+## 6. Developer Checks
+If you are running from source, check an installation or a change with:
+
+```bash
+python -m unittest discover -s tests
+python -m ruff check .
+```
+
+Set `QT_QPA_PLATFORM=offscreen` for the tests on a machine without a display.

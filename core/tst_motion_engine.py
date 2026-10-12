@@ -1031,16 +1031,3 @@ class TSTMotionEngine:
                 float(value)
                 for value in raw.get("deformation_trace", [])
             ]
-
-    def calculate_motion(
-        self,
-        frame: np.ndarray,
-        previous_frame: np.ndarray,
-    ) -> Dict[str, float]:
-        """Compatibility API returning the new articulated-activity score."""
-        return {
-            name: observation.activity_score
-            for name, observation in self.calculate_observations(
-                frame, previous_frame
-            ).items()
-        }

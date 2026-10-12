@@ -33,3 +33,8 @@ jobs:
           python -m pip install -r ci-requirements.txt
       - name: Run tests
         run: python -m unittest discover -s tests -v
+      - name: Lint (ruff)
+        if: runner.os == 'Linux'
+        run: |
+          pip install ruff
+          ruff check .

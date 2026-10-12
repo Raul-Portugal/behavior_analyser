@@ -5,11 +5,10 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 try:
-    from PyQt6.QtCore import QThread
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QMessageBox
     from gui.main_window import MainWindow
-    from gui.worker import AnalysisWorker, BatchRunOutcome
+    from gui.worker import BatchRunOutcome
     HAS_RUNTIME = True
 except ModuleNotFoundError:
     HAS_RUNTIME = False

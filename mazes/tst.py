@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import List, Tuple, Type, Dict, Optional
 import numpy as np
 
-import matplotlib
-matplotlib.use('Agg')
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
@@ -507,7 +505,7 @@ class TST(Maze):
         if num_mice == 0: return
 
         fig = Figure(figsize=(12, 4 * num_mice))
-        canvas = FigureCanvasAgg(fig)
+        FigureCanvasAgg(fig)
         axs = fig.subplots(num_mice, 1, squeeze=False)
         
         timestamps = result.timestamps

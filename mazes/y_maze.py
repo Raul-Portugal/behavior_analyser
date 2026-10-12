@@ -44,7 +44,7 @@ def _generate_sequence_plot(result: 'YMazeAnalysisResult', output_path: Path):
         
         # Use Figure object
         fig = Figure(figsize=(14, 6))
-        canvas = FigureCanvasAgg(fig)
+        FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
         
         ax.plot(x, y, 'k-', alpha=0.3, linewidth=1, zorder=2)
@@ -90,7 +90,7 @@ def _generate_transition_matrix(result: 'YMazeAnalysisResult', output_path: Path
                 matrix[from_idx, to_idx] += 1
         
         fig = Figure(figsize=(8, 6))
-        canvas = FigureCanvasAgg(fig)
+        FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
         
         # Manual heatmap using imshow (thread-safe)

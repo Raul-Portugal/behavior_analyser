@@ -12,8 +12,7 @@ import numpy as np
 from pathlib import Path
 from queue import Queue, Empty, Full
 from threading import Thread, Event
-from typing import Callable, Optional, Tuple, Generator
-from tqdm import tqdm
+from typing import Callable, Optional, Tuple
 
 logger = logging.getLogger(__name__)
 
