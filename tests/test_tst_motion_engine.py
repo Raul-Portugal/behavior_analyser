@@ -5,8 +5,11 @@ try:
     import cv2
     import numpy as np
 
-    from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
+    from core.tst_motion_engine import (
+        REFERENCE_FPS, TSTMotionConfig, TSTMotionEngine,
+    )
     from roi_manager import ROI
+    from tests import tst_synthetic as synthetic
     HAS_OPENCV = True
 except ModuleNotFoundError:
     HAS_OPENCV = False
@@ -369,6 +372,166 @@ class TSTMotionClassificationTests(unittest.TestCase):
             rtol=1e-7,
             atol=1e-7,
         )
+
+
+@unittest.skipUnless(HAS_OPENCV, "OpenCV runtime is not installed")
+class TSTRateNormalizationTests(unittest.TestCase):
+    """The same physical motion must score alike at 15, 30 and 60 fps."""
+
+    RATES = (15.0, 30.0, 60.0)
+    observations = {}
+
+    @classmethod
+    def setUpClass(cls):
+        roi = ROI(synthetic.clip_roi_points(), "mouse_1")
+        for fps in cls.RATES:
+            frames = synthetic.render_clip(fps)
+            engine = TSTMotionEngine({"mouse_1": roi}, fps=fps)
+            cls.observations[fps] = [
+                engine.calculate_observations(
+                    frames[index], frames[index - 1]
+                )["mouse_1"]
+                for index in range(1, len(frames))
+            ]
+
+    @classmethod
+    def _at(cls, fps, time_s):
+        """Observation for the frame interval ending at ``time_s``."""
+        return cls.observations[fps][int(round(time_s * fps)) - 1]
+
+    @classmethod
+    def _median(cls, fps, name, start, end):
+        times = np.arange(start, end, 1.0 / REFERENCE_FPS)
+        return float(np.median([
+            getattr(cls._at(fps, t), name) for t in times
+        ]))
+
+    def test_states_agree_across_frame_rates(self):
+        grid = np.arange(1, int(synthetic.DURATION_S * 15)) / 15.0
+        reference = [self._at(30.0, t).state for t in grid]
+        for fps in (15.0, 60.0):
+            states = [self._at(fps, t).state for t in grid]
+            agreement = np.mean([
+                left == right for left, right in zip(states, reference)
+            ])
+            self.assertGreaterEqual(agreement, 0.90, f"{fps} fps")
+        self.assertIn("passive_swing", reference)
+        self.assertIn("active_escape", reference)
+
+    def test_normalized_features_agree_across_frame_rates(self):
+        swing = (synthetic.STATIC_END_S + 1.0, synthetic.SWING_END_S - 0.1)
+        wiggle = (
+            synthetic.WIGGLE_START_S + 0.25, synthetic.WIGGLE_END_S
+        )
+        for name, window, tolerance in (
+            ("rigid_motion", swing, 0.25),
+            ("residual_motion", swing, 0.25),
+            ("residual_motion", wiggle, 0.25),
+            ("deformation", wiggle, 0.30),
+        ):
+            expected = self._median(30.0, name, *window)
+            self.assertGreater(expected, 0.0)
+            for fps in (15.0, 60.0):
+                value = self._median(fps, name, *window)
+                self.assertAlmostEqual(
+                    value / expected, 1.0, delta=tolerance,
+                    msg=f"{name} at {fps} fps: {value} vs {expected}",
+                )
+
+    def test_normalized_injection_stays_below_active_threshold(self):
+        threshold = TSTMotionConfig().active_injection_threshold
+        window = (synthetic.STATIC_END_S + 1.0, synthetic.SWING_END_S - 0.1)
+        expected = self._median(30.0, "motion_injection", *window)
+        for fps in (15.0, 60.0):
+            value = self._median(fps, "motion_injection", *window)
+            self.assertLess(abs(value - expected), 0.25 * threshold)
+
+    def test_static_period_has_no_motion_at_any_rate(self):
+        for fps in self.RATES:
+            for name in ("rigid_motion", "residual_motion", "deformation"):
+                self.assertLess(
+                    self._median(fps, name, 0.3, 1.1), 0.003, name
+                )
+
+    def test_rate_scales_are_relative_to_reference_fps(self):
+        engine = TSTMotionEngine({}, fps=60.0)
+        self.assertAlmostEqual(engine.rate_scale, 60.0 / REFERENCE_FPS)
+        self.assertAlmostEqual(
+            engine.injection_scale, (60.0 / REFERENCE_FPS) ** 2
+        )
+
+
+@unittest.skipUnless(HAS_OPENCV, "OpenCV runtime is not installed")
+class TSTHistoryResetTests(unittest.TestCase):
+    ROI = np.array([[10, 10], [190, 10], [190, 150], [10, 150]], np.int32)
+
+    @staticmethod
+    def _frame(x=None):
+        rng = np.random.default_rng(3)
+        gray = np.clip(
+            215 + rng.integers(-5, 6, (160, 200, 1)), 0, 255
+        ).astype(np.uint8)
+        image = np.repeat(gray, 3, axis=2)
+        if x is not None:
+            cv2.ellipse(image, (int(x), 80), (18, 30), 0, 0, 360,
+                        (35, 35, 35), -1)
+            for dx, dy in [(-6, -12), (7, -4), (-4, 10), (6, 16)]:
+                cv2.circle(image, (int(x) + dx, 80 + dy), 3,
+                           (130, 130, 130), -1)
+        return image
+
+    def _run(self, positions):
+        engine = TSTMotionEngine({"mouse_1": ROI(self.ROI, "mouse_1")})
+        frames = [self._frame(x) for x in positions]
+        return engine, [
+            engine.calculate_observations(current, previous)["mouse_1"]
+            for previous, current in zip(frames, frames[1:])
+        ]
+
+    def test_velocity_change_without_gap_is_an_injection(self):
+        slow = [60 + 2 * index for index in range(8)]
+        fast = [slow[-1] + 7 * (index + 1) for index in range(3)]
+        _, observations = self._run(slow + fast)
+        self.assertGreater(
+            observations[len(slow) - 1].motion_injection,
+            TSTMotionConfig().active_injection_threshold,
+        )
+
+    def test_segmentation_gap_resets_history_before_new_velocity(self):
+        slow = [60 + 2 * index for index in range(8)]
+        fast = [90 + 7 * index for index in range(5)]
+        positions = slow + [None, None] + fast
+        engine, observations = self._run(positions)
+
+        gap_start = len(slow) - 1
+        self.assertEqual(
+            observations[gap_start].qc_flag, "mouse_segmentation_failed"
+        )
+        history = engine.histories["mouse_1"]
+        first_valid = observations[gap_start + 3]
+        self.assertEqual(first_valid.motion_injection, 0.0)
+        self.assertEqual(first_valid.angular_injection, 0.0)
+        self.assertFalse(first_valid.temporal_ready)
+        # Only the post-gap frames remain in the pendulum window.
+        valid_after_gap = len(fast) - 1
+        self.assertEqual(len(history.centroid_trace), valid_after_gap)
+        self.assertEqual(len(history.rotation_delta_trace), valid_after_gap)
+
+    def test_reset_clears_every_temporal_trace(self):
+        engine, _ = self._run([60 + 2 * index for index in range(6)])
+        history = engine.histories["mouse_1"]
+        self.assertIsNotNone(history.rigid_vector)
+        self.assertTrue(history.centroid_trace)
+        engine.calculate_observations(None, None)
+        for name in (
+            "rigid_vector", "angular_velocity",
+        ):
+            self.assertIsNone(getattr(history, name))
+        for name in (
+            "centroid_trace", "rotation_delta_trace", "coherence_trace",
+            "residual_trace", "deformation_trace",
+        ):
+            self.assertEqual(getattr(history, name), [])
 
 
 if __name__ == "__main__":

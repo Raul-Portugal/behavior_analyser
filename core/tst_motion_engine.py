@@ -5,7 +5,7 @@ Whole-body translation/rotation is modelled separately from residual,
 non-rigid motion so pendulum-like movement can be treated as passive.
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from math import ceil, isfinite
 from typing import Dict, Optional, Tuple
 
@@ -13,6 +13,17 @@ import cv2
 import numpy as np
 
 from roi_manager import ROI
+
+# Per-frame motion features are expressed relative to this frame rate so the
+# thresholds in TSTMotionConfig keep one meaning regardless of the video fps.
+REFERENCE_FPS = 30.0
+# Frames are analysed at one canonical width (never upscaled) so features and
+# their thresholds do not depend on the source resolution.
+DEFAULT_ANALYSIS_WIDTH = 480
+MIN_ANALYSIS_WIDTH = 160
+# Processing is confined to the union bounding box of the ROIs plus this
+# fraction of its size on every side (clamped to the frame).
+ROI_MARGIN_FRACTION = 0.15
 
 
 @dataclass
@@ -33,6 +44,7 @@ class TSTMotionConfig:
     temporal_window_seconds: float = 2.5
     passive_min_observation_seconds: float = 0.75
     passive_min_reversals: int = 1
+    analysis_width: int = DEFAULT_ANALYSIS_WIDTH
 
     def validate(self) -> None:
         for name, value in self.__dict__.items():
@@ -73,6 +85,14 @@ class TSTMotionConfig:
             raise ValueError("passive_min_reversals must be at least 1")
         if not isinstance(self.passive_min_reversals, int):
             raise ValueError("passive_min_reversals must be an integer")
+        if (
+            not isinstance(self.analysis_width, int)
+            or self.analysis_width < MIN_ANALYSIS_WIDTH
+        ):
+            raise ValueError(
+                "analysis_width must be an integer of at least "
+                f"{MIN_ANALYSIS_WIDTH}"
+            )
 
 
 @dataclass
@@ -112,25 +132,69 @@ class _MouseHistory:
     residual_trace: list[float] = field(default_factory=list)
     deformation_trace: list[float] = field(default_factory=list)
 
+    def reset_temporal(self) -> None:
+        """Forget velocities and pendulum traces after an unscorable frame.
+
+        The centroid is kept only as a proximity hint for choosing the mouse
+        blob; it never feeds a motion feature.
+        """
+        self.rigid_vector = None
+        self.angular_velocity = None
+        self.centroid_trace.clear()
+        self.rotation_delta_trace.clear()
+        self.coherence_trace.clear()
+        self.residual_trace.clear()
+        self.deformation_trace.clear()
+
+
+# Observations whose motion estimate is missing or untrustworthy. The next
+# valid frame must not difference against, or window across, such a gap.
+_GAP_QC_FLAGS = frozenset({
+    "missing_frame",
+    "empty_roi",
+    "mouse_segmentation_failed",
+    "insufficient_mouse_pixels",
+    "rigid_fit_failed",
+    "weak_rigid_fit",
+})
+
 
 class TSTMotionEngine:
     """Extract per-mouse articulated and rigid-body motion evidence."""
 
-    ENGINE_ID = "tst_motion_decomposition_v2"
+    ENGINE_ID = "tst_motion_decomposition_v3"
 
     def __init__(
         self,
         rois: Dict[str, ROI],
         config: Optional[TSTMotionConfig] = None,
         fps: float = 30.0,
+        analysis_width: Optional[int] = None,
     ):
         self.rois = rois
         self.config = config or TSTMotionConfig()
+        if analysis_width is not None:
+            self.config = replace(self.config, analysis_width=analysis_width)
         self.config.validate()
+        self.analysis_width = int(self.config.analysis_width)
         if not isfinite(float(fps)) or fps <= 0:
             raise ValueError("fps must be a positive finite value")
         self.fps = float(fps)
+        # Displacement-type features (per-frame translation, rotation,
+        # residual and shape change) scale linearly with the frame rate;
+        # injections are differences of per-frame velocities (roughly
+        # accelerations), so they scale with its square.
+        self.rate_scale = self.fps / REFERENCE_FPS
+        self.injection_scale = self.rate_scale ** 2
+        # Geometry is fixed on the first frame. ROI masks and every image
+        # operation live in the cropped analysis space; contours are mapped
+        # back to source pixels.
         self.masks: Dict[str, np.ndarray] = {}
+        self._source_size: Tuple[int, int] = (0, 0)
+        self._analysis_size: Tuple[int, int] = (0, 0)
+        self._scale: Tuple[float, float] = (1.0, 1.0)
+        self._crop: Tuple[int, int, int, int] = (0, 0, 0, 0)
+        self._background_feature_mask: Optional[np.ndarray] = None
         # Current segmented mouse masks are retained only for visual quality
         # control. They are deliberately not used as persistent model state.
         self.last_mouse_masks: Dict[str, Optional[np.ndarray]] = {
@@ -140,13 +204,57 @@ class TSTMotionEngine:
         self.last_observations: Dict[str, TSTMotionObservation] = {}
         self._initialized = False
 
-    def _init_masks(self, shape: Tuple[int, int]) -> None:
+    def _init_geometry(self, shape: Tuple[int, ...]) -> None:
+        """Fix the analysis scale, ROI crop box and cropped ROI masks."""
         height, width = shape[:2]
+        ratio = min(1.0, self.analysis_width / max(1, width))
+        analysis_width = max(1, int(round(width * ratio)))
+        analysis_height = max(1, int(round(height * ratio)))
+        self._source_size = (width, height)
+        self._analysis_size = (analysis_width, analysis_height)
+        self._scale = (analysis_width / width, analysis_height / height)
+
+        scaled: Dict[str, np.ndarray] = {}
         for name, roi in self.rois.items():
-            mask = np.zeros((height, width), dtype=np.uint8)
-            cv2.fillPoly(mask, [roi.points.astype(np.int32)], 255)
+            points = roi.points.astype(np.float64) * np.asarray(self._scale)
+            scaled[name] = np.rint(points).astype(np.int32)
+        if scaled:
+            stacked = np.vstack(list(scaled.values()))
+            x_min = max(0, int(stacked[:, 0].min()))
+            y_min = max(0, int(stacked[:, 1].min()))
+            x_max = min(analysis_width, int(stacked[:, 0].max()) + 1)
+            y_max = min(analysis_height, int(stacked[:, 1].max()) + 1)
+        else:
+            x_min, y_min = 0, 0
+            x_max, y_max = analysis_width, analysis_height
+        margin_x = int(ceil(ROI_MARGIN_FRACTION * max(0, x_max - x_min)))
+        margin_y = int(ceil(ROI_MARGIN_FRACTION * max(0, y_max - y_min)))
+        x0 = max(0, x_min - margin_x)
+        y0 = max(0, y_min - margin_y)
+        x1 = min(analysis_width, max(x_max + margin_x, x0 + 1))
+        y1 = min(analysis_height, max(y_max + margin_y, y0 + 1))
+        self._crop = (x0, y0, x1, y1)
+
+        crop_shape = (y1 - y0, x1 - x0)
+        combined = np.zeros(crop_shape, dtype=np.uint8)
+        for name, points in scaled.items():
+            mask = np.zeros(crop_shape, dtype=np.uint8)
+            cv2.fillPoly(mask, [points - np.asarray([x0, y0], np.int32)], 255)
             self.masks[name] = mask
+            combined = cv2.bitwise_or(combined, mask)
+        # Camera-motion features come from background inside the crop box
+        # but outside every ROI.
+        self._background_feature_mask = cv2.bitwise_not(combined)
         self._initialized = True
+
+    def _analysis_gray(self, frame: np.ndarray) -> np.ndarray:
+        """Resize to the analysis width, crop to the ROI box, blur to gray."""
+        if (frame.shape[1], frame.shape[0]) != self._analysis_size:
+            frame = cv2.resize(
+                frame, self._analysis_size, interpolation=cv2.INTER_AREA
+            )
+        x0, y0, x1, y1 = self._crop
+        return self._gray(frame[y0:y1, x0:x1])
 
     @staticmethod
     def _gray(frame: np.ndarray) -> np.ndarray:
@@ -335,15 +443,20 @@ class TSTMotionEngine:
         total = np.linalg.norm(sampled_flow, axis=1)
 
         body_scale = max(1.0, float(np.sqrt(np.count_nonzero(current_mask))))
+        rate = self.rate_scale
         rigid_vector = np.median(predicted, axis=0)
-        translation_motion = float(np.linalg.norm(rigid_vector) / body_scale)
+        translation_motion = float(
+            np.linalg.norm(rigid_vector) / body_scale * rate
+        )
         rotation_radians = float(np.arctan2(linear[1, 0], linear[0, 0]))
-        rotation_motion = abs(rotation_radians) * 0.5
+        rotation_motion = abs(rotation_radians) * 0.5 * rate
         rigid_motion = float(np.hypot(
             translation_motion,
             rotation_motion,
         ))
-        residual_motion = float(np.percentile(residual, 90) / body_scale)
+        residual_motion = float(
+            np.percentile(residual, 90) / body_scale * rate
+        )
         coherence = float(np.clip(
             1.0 - np.median(residual) / (np.median(total) + 1e-6),
             0.0,
@@ -360,22 +473,25 @@ class TSTMotionEngine:
         intersection = np.count_nonzero(
             (warped_mask > 0) & (current_mask > 0)
         )
+        # IoU loss is a per-frame shape change, so it is treated as a
+        # displacement-type feature and rate-normalized like residual motion.
         deformation = (
             1.0 - intersection / union if union > 0 else 1.0
-        )
+        ) * rate
 
         if history.rigid_vector is None:
             injection = 0.0
         else:
             injection = float(
-                np.linalg.norm(rigid_vector - history.rigid_vector) / body_scale
+                np.linalg.norm(rigid_vector - history.rigid_vector)
+                / body_scale * self.injection_scale
             )
         if history.angular_velocity is None:
             angular_injection = 0.0
         else:
             angular_injection = abs(
                 rotation_radians - history.angular_velocity
-            ) * 0.5
+            ) * 0.5 * self.injection_scale
         history.rigid_vector = rigid_vector
         history.angular_velocity = rotation_radians
         current_centroid = self._centroid(current_mask)
@@ -393,7 +509,7 @@ class TSTMotionEngine:
         return self._classify(
             rigid_motion=rigid_motion,
             rotation_motion=rotation_motion,
-            rotation_radians=rotation_radians,
+            rotation_radians=rotation_radians * rate,
             residual_motion=residual_motion,
             deformation=float(deformation),
             coherence=coherence,
@@ -403,7 +519,7 @@ class TSTMotionEngine:
             temporal_ready=temporal_ready,
             area_ratio=area_ratio,
             inlier_ratio=inlier_ratio,
-            rigid_vector=rigid_vector,
+            rigid_vector=rigid_vector * rate,
             camera_stabilized=camera_stabilized,
         )
 
@@ -417,7 +533,12 @@ class TSTMotionEngine:
         deformation: float,
         body_scale: float,
     ) -> Tuple[float, bool]:
-        """Estimate passive pendulum evidence from a bounded temporal window."""
+        """Estimate passive pendulum evidence from a bounded temporal window.
+
+        ``rotation_delta`` is the raw per-frame rotation (its cumulative sum
+        is a rate-invariant angle); ``residual_motion`` and ``deformation``
+        are already rate-normalized.
+        """
         if centroid is None:
             return 0.0, False
 
@@ -482,7 +603,10 @@ class TSTMotionEngine:
             ))
             amplitude = centroid_range
 
-        velocity = np.diff(signal)
+        # Ranges and amplitudes of position (centroid, rotation) are already
+        # rate-invariant. The per-frame velocity floor is not, so it is
+        # compared at the reference frame rate.
+        velocity = np.diff(signal) * self.rate_scale
         nonzero = velocity[np.abs(velocity) > 1e-4]
         reversals = 0
         if len(nonzero) >= 2:
@@ -739,19 +863,23 @@ class TSTMotionEngine:
                 name: self._uncertain(0.0, "missing_frame")
                 for name in self.rois
             }
+            for history in self.histories.values():
+                history.reset_temporal()
             self.last_observations = observations
             return observations
         if not self._initialized:
-            self._init_masks(frame.shape)
+            self._init_geometry(frame.shape)
+        elif (frame.shape[1], frame.shape[0]) != self._source_size:
+            raise ValueError(
+                "TST frame size changed during analysis: expected "
+                f"{self._source_size}, got "
+                f"{(frame.shape[1], frame.shape[0])}"
+            )
 
-        current_gray = self._gray(frame)
-        previous_gray = self._gray(previous_frame)
-        combined_roi = np.zeros_like(current_gray, dtype=np.uint8)
-        for roi_mask in self.masks.values():
-            combined_roi = cv2.bitwise_or(combined_roi, roi_mask)
-        background_feature_mask = cv2.bitwise_not(combined_roi)
+        current_gray = self._analysis_gray(frame)
+        previous_gray = self._analysis_gray(previous_frame)
         aligned_previous, camera_stabilized = self._stabilize_previous(
-            previous_gray, current_gray, background_feature_mask
+            previous_gray, current_gray, self._background_feature_mask
         )
         flow = cv2.calcOpticalFlowFarneback(
             aligned_previous,
@@ -780,6 +908,7 @@ class TSTMotionEngine:
                 observations[name] = self._uncertain(
                     area_ratio, current_error or previous_error
                 )
+                history.reset_temporal()
                 continue
             self.last_mouse_masks[name] = current_mask.copy()
             observations[name] = self._decompose(
@@ -792,6 +921,8 @@ class TSTMotionEngine:
                 area_ratio,
                 camera_stabilized,
             )
+            if observations[name].qc_flag in _GAP_QC_FLAGS:
+                history.reset_temporal()
 
         self.last_observations = observations
         return observations
@@ -800,7 +931,8 @@ class TSTMotionEngine:
         """Return a compact contour for the latest segmentation of ``name``.
 
         The contour supports preview/validation overlays without retaining a
-        full raster mask for every processed frame.
+        full raster mask for every processed frame. Points are in SOURCE
+        pixel coordinates, whatever the internal analysis scale and crop.
         """
         mask = self.last_mouse_masks.get(name)
         if mask is None:
@@ -813,7 +945,15 @@ class TSTMotionEngine:
         contour = max(contours, key=cv2.contourArea)
         epsilon = max(1.0, 0.01 * cv2.arcLength(contour, True))
         simplified = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2)
-        return [[int(point[0]), int(point[1])] for point in simplified]
+        x0, y0, _, _ = self._crop
+        scale_x, scale_y = self._scale
+        return [
+            [
+                int(round((point[0] + x0) / scale_x)),
+                int(round((point[1] + y0) / scale_y)),
+            ]
+            for point in simplified
+        ]
 
     def export_state(self) -> Dict[str, object]:
         """Serialize temporal state for checkpoint-equivalent resume."""

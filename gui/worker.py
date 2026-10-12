@@ -22,13 +22,14 @@ from core.models import AppConfig, BatchSettings
 from core.video import VideoHandler, ReferenceFrameGenerator, SafeVideoWriter, BufferedVideoReader
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.analysis_engine import Analyzer
+from core.tst_display import tst_display_style
 from core.tst_motion_engine import TSTMotionEngine
 from core.version import APP_NAME, APP_VERSION
 
 # --- LEGACY/UTILITY IMPORTS ---
 from core.analysis_engine import apply_scale_to_result
 from mazes.base_maze import BaseAnalysisResult, Maze
-from mazes.tst import TST
+from mazes.tst import TST, describe_window_truncation
 from output import DataExporter, Visualizer
 from checkpoint_manager import CheckpointManager, ProgressEstimator
 
@@ -177,6 +178,17 @@ class AnalysisWorker(QObject):
                         global_est, global_offset, to_batch_pct, base_name,
                         checkpoint, resume_from_frame
                     )
+                    tst_first_frame = max(start_frame, resume_from_frame)
+                    early_end = self._early_end_warning(
+                        end_frame - tst_first_frame,
+                        frames_done,
+                        tst_first_frame,
+                        end_frame,
+                    )
+                    if early_end:
+                        quality_warnings.append((video_path, early_end))
+                        self.log.emit(f"⚠ {early_end}")
+                        logger.warning("%s: %s", video_path.name, early_end)
                     
                     self.emit_progress(to_batch_pct(60), f"Video: {base_name}", "Applying Temporal Filters...")
                     self.maze.calculate_metrics(result)
@@ -206,6 +218,11 @@ class AnalysisWorker(QObject):
                                 f"({mean_confidence:.2f})"
                             ))
                         qc = result.quality_metrics.get(mouse_name, {})
+                        truncation = describe_window_truncation(
+                            result, mouse_name
+                        )
+                        if truncation:
+                            quality_warnings.append((video_path, truncation))
                         if qc.get("segmentation_failure_pct", 0.0) > 5.0:
                             quality_warnings.append((
                                 video_path,
@@ -473,15 +490,16 @@ class AnalysisWorker(QObject):
         )
 
         local_est = ProgressEstimator(max(0, end_frame - processing_start))
-        ret, prev_frame = reader.read()
-        if not ret:
-            reader.release()
-            return result, 0
-
         curr = previous_frame_idx + 1
         frames_processed = 0
 
         try:
+            # The first read can raise VideoReadError, so it belongs inside
+            # the try/finally that releases the reader.
+            ret, prev_frame = reader.read()
+            if not ret:
+                return result, 0
+
             while curr < end_frame:
                 if self.is_cancelled:
                     checkpoint_payload = dict(result.__dict__)
@@ -852,19 +870,9 @@ class AnalysisWorker(QObject):
                                         if curr_idx < len(behavior_trace)
                                         else "uncertain"
                                     )
-                                    if is_immobile is None:
-                                        color = (0, 165, 255)
-                                        status = "UNCERTAIN"
-                                    elif is_immobile:
-                                        if behavior_state == "passive_swing":
-                                            color = (180, 0, 180)
-                                            status = "PASSIVE SWING"
-                                        else:
-                                            color = (0, 0, 255)
-                                            status = "IMMOBILE STATIC"
-                                    else:
-                                        color = (0, 255, 0)
-                                        status = "ACTIVE ESCAPE"
+                                    color, status = tst_display_style(
+                                        behavior_state, is_immobile
+                                    )
                                     evidence_trace = result.motion_evidence.get(
                                         name, []
                                     )
