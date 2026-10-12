@@ -71,5 +71,36 @@ class ScaleHelperTests(unittest.TestCase):
         self.assertEqual(rescale_for_new_reference(30.0, 0.0), 0.0)
 
 
+class SettingsAfterRedrawTests(unittest.TestCase):
+    def _settings(self, scale):
+        from core.models import AppConfig, BatchSettings
+        manager = ROIManager()
+        manager.add_roi("arm_a", _tilted_arm())
+        manager.set_reference_length(300.0, "User-drawn reference line")
+        return BatchSettings(manager, AppConfig().detection, scale, 5.0, 60.0)
+
+    def test_cm_is_carried_and_scale_recomputed(self):
+        from gui.main_window import MainWindow
+        settings = self._settings(0.1)
+        redrawn = ROIManager()
+        redrawn.add_roi("arm_a", _tilted_arm())
+        redrawn.set_reference_length(150.0, "User-drawn reference line")
+        result = MainWindow.settings_after_redraw(settings, redrawn, 30.0)
+        self.assertAlmostEqual(result.scale_factor, 0.2)
+        self.assertIs(result.roi_manager, redrawn)
+        self.assertEqual((result.start_time, result.end_time), (5.0, 60.0))
+        # The original is untouched.
+        self.assertAlmostEqual(settings.scale_factor, 0.1)
+
+    def test_redraw_without_line_falls_back_to_pixels(self):
+        from gui.main_window import MainWindow
+        redrawn = ROIManager()
+        redrawn.add_roi("arm_a", _tilted_arm())
+        result = MainWindow.settings_after_redraw(
+            self._settings(0.1), redrawn, 30.0
+        )
+        self.assertEqual(result.scale_factor, 0.0)
+
+
 if __name__ == "__main__":
     unittest.main()

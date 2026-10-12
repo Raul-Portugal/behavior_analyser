@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
 from PyQt6.QtGui import QAction
 
 # --- CORE IMPORTS ---
+from core.calibration import rescale_for_new_reference
 from core.models import AppConfig, BatchSettings
 from core.video import VideoHandler, ReferenceFrameGenerator
 from core.version import APP_NAME, APP_VERSION
@@ -587,19 +588,16 @@ class MainWindow(QMainWindow):
                         logger.info(f"Video '{video_path.name}' skipped")
                         break
                     elif action == "redraw":
+                        # Keep the times the user already set; the cm length
+                        # (not the old scale factor) is what carries over.
+                        carried = dialog.get_settings()
+                        real_world_cm = dialog.get_real_world_cm()
                         roi_dialog = RoiSelectorDialog(str(video_path), self.maze, self)
                         if roi_dialog.exec():
-                            new_roi_manager = roi_dialog.get_roi_manager()
-                            current_settings = BatchSettings(
-                                new_roi_manager,
-                                current_settings.detection_config,
-                                current_settings.scale_factor,
-                                current_settings.start_time,
-                                current_settings.end_time,
-                                current_settings.create_timelapse,
-                                current_settings.per_roi_times,
-                                current_settings.paradigm_id,
-                                current_settings.algorithm_parameters
+                            current_settings = self.settings_after_redraw(
+                                carried,
+                                roi_dialog.get_roi_manager(),
+                                real_world_cm,
                             )
             except Exception as e:
                 logger.error(f"Could not verify {video_path.name}: {e}")
@@ -617,6 +615,20 @@ class MainWindow(QMainWindow):
                 BatchSettings.save_batch_plan(plan_by_name, Path(filename))
         
         return analysis_plan
+
+    @staticmethod
+    def settings_after_redraw(
+        settings: BatchSettings,
+        new_roi_manager: ROIManager,
+        real_world_cm: float
+    ) -> BatchSettings:
+        """Rebuild settings around redrawn ROIs and a recomputed scale."""
+        redrawn = settings.copy()
+        redrawn.roi_manager = new_roi_manager
+        redrawn.scale_factor = rescale_for_new_reference(
+            real_world_cm, new_roi_manager.reference_length_pixels
+        )
+        return redrawn
 
     def run_worker(self, analysis_plan: Dict[Path, BatchSettings]):
         first_settings = next(iter(analysis_plan.values()), None)
