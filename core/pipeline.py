@@ -160,6 +160,7 @@ def run_video(
     one is created under ``job.checkpoint_root``.
     """
     if checkpoint_mgr is None:
+        job.checkpoint_root.mkdir(parents=True, exist_ok=True)
         checkpoint_mgr = CheckpointManager(job.checkpoint_root)
     pipeline = VideoPipeline(
         job, build_maze(job), reporter, cancel, checkpoint_mgr

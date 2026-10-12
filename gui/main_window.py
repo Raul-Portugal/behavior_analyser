@@ -6,6 +6,7 @@ Updated to use unified Core modules (VideoHandler, Models).
 import copy
 import html
 import logging
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,11 +15,12 @@ from typing import Dict, List, Optional, Tuple
 from PyQt6.QtCore import QObject, QThread, QTimer, QUrl, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
                              QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-                             QProgressBar, QProgressDialog, QPushButton, QTextEdit, QVBoxLayout,
-                             QWidget, QInputDialog)
+                             QProgressBar, QProgressDialog, QPushButton, QSpinBox,
+                             QTextEdit, QVBoxLayout, QWidget, QInputDialog)
 from PyQt6.QtGui import QAction, QDesktopServices, QKeySequence
 
 # --- CORE IMPORTS ---
+from core.batch_runner import default_worker_count
 from core.batch_plan_keys import (PlanMatch, build_plan_by_key,
                                   match_videos_to_plan)
 from core.calibration import rescale_for_new_reference
@@ -317,9 +319,25 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         self.preview_button.setEnabled(False)
         
+        self.workers_label = QLabel("Parallel videos:")
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(0, max(1, os.cpu_count() or 1))
+        self.workers_spin.setSpecialValueText("Auto")
+        self.workers_spin.setValue(self.app_settings.parallel_workers())
+        self.workers_spin.setToolTip(
+            "How many videos are analysed at the same time. Auto uses "
+            "min(CPU cores / 4, videos, RAM in GB / 3), at least 1; 1 runs "
+            "the videos one after another. Results are identical either way."
+        )
+        self.workers_spin.valueChanged.connect(
+            self.app_settings.set_parallel_workers
+        )
+
         action_layout.addWidget(self.start_button)
         action_layout.addWidget(self.preview_button)
         action_layout.addWidget(self.cancel_button)
+        action_layout.addWidget(self.workers_label)
+        action_layout.addWidget(self.workers_spin)
         main_layout.addLayout(action_layout)
         
         # Progress indicators
@@ -1632,7 +1650,8 @@ class MainWindow(QMainWindow):
         self.analysis_thread = QThread()
         try:
             self.analysis_worker = AnalysisWorker(
-                analysis_plan, self.output_dir, self.maze
+                analysis_plan, self.output_dir, self.maze,
+                workers=self._worker_count(len(analysis_plan)),
             )
         except Exception as exc:
             self.analysis_thread = None
@@ -1658,6 +1677,13 @@ class MainWindow(QMainWindow):
         self.analysis_thread.finished.connect(self.analysis_thread.deleteLater)
 
         self.analysis_thread.start()
+
+    def _worker_count(self, video_count: int) -> int:
+        """Videos to analyse at once: the spinbox, or the automatic default."""
+        chosen = self.workers_spin.value()
+        if chosen <= 0:
+            return default_worker_count(video_count)
+        return max(1, min(chosen, video_count))
 
     def _run_preflight(
         self,
@@ -2051,6 +2077,7 @@ class MainWindow(QMainWindow):
         self.add_folder_button.setEnabled(not is_running)
         self.clear_list_button.setEnabled(not is_running and bool(self.video_paths))
         self.recursive_check.setEnabled(not is_running)
+        self.workers_spin.setEnabled(not is_running)
         has_selection = bool(self.video_list_widget.selectedItems())
         for button in (self.remove_selected_button, self.move_up_button,
                        self.move_down_button):

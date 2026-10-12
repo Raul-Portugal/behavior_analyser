@@ -2,6 +2,7 @@
 Main entry point for the Behavioral Analysis Suite GUI application.
 """
 import logging
+import multiprocessing
 import sys
 import traceback
 from pathlib import Path
@@ -73,4 +74,7 @@ def main(arguments=None):
 
 
 if __name__ == '__main__':
+    # Frozen builds start parallel-batch child processes by re-running this
+    # executable; this call turns those children into pool workers.
+    multiprocessing.freeze_support()
     sys.exit(main())
