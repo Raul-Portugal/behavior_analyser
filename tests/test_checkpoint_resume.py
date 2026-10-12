@@ -11,13 +11,11 @@ try:
     import cv2
     import numpy as np
 
-    from core.models import BatchSettings, DetectionConfig
     from core.video import ReferenceFrameGenerator
     from gui.worker import AnalysisWorker
     from mazes.freestyle import Freestyle
     from mazes.tst import TST
-    from roi_manager import ROIManager
-    from tests import tst_synthetic as synthetic
+    from tests import worker_support as support
     HAS_RUNTIME = True
 except ModuleNotFoundError:
     HAS_RUNTIME = False
@@ -290,49 +288,16 @@ class WorkerResumeEquivalenceTests(unittest.TestCase):
         return worker, outcomes[0], logs
 
     # -- tracked path -------------------------------------------------
-    def _tracking_video(self):
-        path = self.root / "blob.avi"
-        writer = cv2.VideoWriter(
-            str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (160, 120)
-        )
-        for index in range(100):
-            frame = np.full((120, 160, 3), 40, dtype=np.uint8)
-            cx = 30 + index
-            cy = 60 + int(10 * np.sin(index / 9.0))
-            cv2.rectangle(
-                frame, (cx - 12, cy - 12), (cx + 12, cy + 12),
-                (255, 255, 255), -1,
-            )
-            writer.write(frame)
-        writer.release()
-        return path
-
-    @staticmethod
-    def _tracking_settings():
-        manager = ROIManager(source_dimensions=(160, 120))
-        manager.add_roi(
-            "arena", np.array([[0, 0], [159, 0], [159, 119], [0, 119]])
-        )
-        return BatchSettings(
-            manager,
-            DetectionConfig(
-                threshold_percentile=95.0, use_weighting=False,
-                min_component_area=20, morphology_kernel_size=3,
-                min_detection_confidence=0.1,
-            ),
-            0.0,
-        )
-
     def test_tracked_resume_matches_uninterrupted_run(self):
-        video = self._tracking_video()
+        video = support.write_tracking_video(self.root)
         _, full, _ = self._run(
-            Freestyle, self._tracking_settings, video, self.root / "full"
+            Freestyle, support.tracking_settings, video, self.root / "full"
         )
         self.assertEqual(full.failures, [])
 
         resume_dir = self.root / "resume"
         first, cancelled, _ = self._run(
-            Freestyle, self._tracking_settings, video, resume_dir, cancel=True
+            Freestyle, support.tracking_settings, video, resume_dir, cancel=True
         )
         self.assertTrue(cancelled.cancelled)
         self.assertEqual(
@@ -340,7 +305,7 @@ class WorkerResumeEquivalenceTests(unittest.TestCase):
         )
 
         _, resumed, logs = self._run(
-            Freestyle, self._tracking_settings, video, resume_dir
+            Freestyle, support.tracking_settings, video, resume_dir
         )
         self.assertTrue(any("Resuming from checkpoint" in m for m in logs), logs)
         self.assertEqual(resumed.failures, [])
@@ -363,39 +328,16 @@ class WorkerResumeEquivalenceTests(unittest.TestCase):
         )
 
     # -- TST path -----------------------------------------------------
-    def _tst_video(self):
-        path = self.root / "tst.avi"
-        writer = cv2.VideoWriter(
-            str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30.0,
-            synthetic.BASE_SIZE,
-        )
-        for frame in synthetic.render_clip(30.0, duration=4.0):
-            writer.write(frame)
-        writer.release()
-        return path
-
-    @staticmethod
-    def _tst_settings():
-        manager = ROIManager(source_dimensions=synthetic.BASE_SIZE)
-        manager.add_roi("mouse_1", synthetic.clip_roi_points())
-        return BatchSettings(
-            manager, DetectionConfig(), 0.0,
-            start_time=0.0, end_time=4.0,
-            per_roi_times={"mouse_1": (0.0, 4.0)},
-            paradigm_id="Tail Suspension Test",
-            algorithm_parameters=TST().get_algorithm_parameters(),
-        )
-
     def test_tst_resume_matches_uninterrupted_run(self):
-        video = self._tst_video()
+        video = support.write_tst_video(self.root)
         _, full, _ = self._run(
-            TST, self._tst_settings, video, self.root / "tst_full"
+            TST, support.tst_settings, video, self.root / "tst_full"
         )
         self.assertEqual(full.failures, [])
 
         resume_dir = self.root / "tst_resume"
         first, cancelled, _ = self._run(
-            TST, self._tst_settings, video, resume_dir, cancel=True
+            TST, support.tst_settings, video, resume_dir, cancel=True
         )
         self.assertTrue(cancelled.cancelled)
         checkpoints = first.checkpoint_mgr.find_all_checkpoints()
@@ -410,7 +352,7 @@ class WorkerResumeEquivalenceTests(unittest.TestCase):
         )
 
         _, resumed, logs = self._run(
-            TST, self._tst_settings, video, resume_dir
+            TST, support.tst_settings, video, resume_dir
         )
         self.assertTrue(any("Resuming from checkpoint" in m for m in logs), logs)
         self.assertEqual(resumed.failures, [])

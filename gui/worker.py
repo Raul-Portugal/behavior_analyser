@@ -11,6 +11,7 @@ import numpy as np
 import hashlib
 import time
 from collections import Counter
+from contextlib import contextmanager
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
@@ -34,6 +35,16 @@ from output import DataExporter, Visualizer
 from checkpoint_manager import CheckpointManager, ProgressEstimator
 
 logger = logging.getLogger(__name__)
+
+
+@contextmanager
+def _open_capture(video_path):
+    """Open a cv2.VideoCapture that is released even when a phase aborts."""
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        yield cap
+    finally:
+        cap.release()
 
 
 @dataclass
@@ -89,6 +100,11 @@ class AnalysisWorker(QObject):
         """Request the worker to stop processing."""
         self.log.emit("Cancellation requested by user - saving progress...")
         self.is_cancelled = True
+
+    def _raise_if_cancelled(self):
+        """Cooperative cancellation point for phases outside the frame loops."""
+        if self.is_cancelled:
+            raise InterruptedError("Analysis cancelled")
 
     def emit_progress(self, overall_pct: int, main_task: str, sub_task: str = ""):
         """Helper to emit detailed progress signals."""
@@ -191,6 +207,7 @@ class AnalysisWorker(QObject):
                         self.log.emit(f"⚠ {early_end}")
                         logger.warning("%s: %s", video_path.name, early_end)
                     
+                    self._raise_if_cancelled()
                     self.emit_progress(to_batch_pct(60), f"Video: {base_name}", "Applying Temporal Filters...")
                     self.maze.calculate_metrics(result)
                     for mouse_name, uncertain_time in result.uncertain_time.items():
@@ -237,16 +254,19 @@ class AnalysisWorker(QObject):
                                 f"(CV {qc['mask_area_cv_pct']:.1f}%)",
                             ))
                     
+                    self._raise_if_cancelled()
                     self.emit_progress(to_batch_pct(70), f"Video: {base_name}", "Exporting Data...")
                     self._export_all_data(result, base_name, settings, data_dir)
                     
                     if settings.create_timelapse:
+                        self._raise_if_cancelled()
                         self.emit_progress(to_batch_pct(80), f"Video: {base_name}", "Creating Validation Video...")
                         media_dir.mkdir(parents=True, exist_ok=True)
                         self._generate_tst_validation_video(
                             result, video_path, settings, base_name, media_dir
                         )
                     
+                    self._raise_if_cancelled()
                     self.emit_progress(to_batch_pct(90), f"Video: {base_name}", "Generating Plots...")
                     try:
                         self.maze.generate_specific_plots(
@@ -269,7 +289,8 @@ class AnalysisWorker(QObject):
                         video_path, 
                         num_samples=config.video.ref_frame_samples,
                         target_dims=handler.dimensions, 
-                        use_cache=True
+                        use_cache=True,
+                        should_cancel=lambda: self.is_cancelled
                     )
                     
                     self.emit_progress(to_batch_pct(15), f"Video: {base_name}", "Initializing detection engine...")
@@ -350,6 +371,7 @@ class AnalysisWorker(QObject):
                     self.maze.resolve_tracking_labels(result)
                     analyzer.finalize_result(result)
                     
+                    self._raise_if_cancelled()
                     self.emit_progress(to_batch_pct(70), f"Video: {base_name}", "Calculating Metrics...")
                     if settings.scale_factor > 0:
                         apply_scale_to_result(result, settings.scale_factor)
@@ -374,9 +396,11 @@ class AnalysisWorker(QObject):
                         quality_warnings.append((video_path, gap_message))
                         self.log.emit(f"⚠ {gap_message}")
 
+                    self._raise_if_cancelled()
                     self.emit_progress(to_batch_pct(78), f"Video: {base_name}", "Exporting Data...")
                     self._export_all_data(result, base_name, settings, data_dir)
                     
+                    self._raise_if_cancelled()
                     self.emit_progress(to_batch_pct(85), f"Video: {base_name}", "Generating Plots...")
                     plot_errors = self._generate_all_visualizations(
                         result, handler, base_name, video_progress_func, plots_dir
@@ -386,6 +410,7 @@ class AnalysisWorker(QObject):
                     )
                     
                     if settings.create_timelapse and timelapse_success:
+                        self._raise_if_cancelled()
                         self.emit_progress(to_batch_pct(95), f"Video: {base_name}", "Creating Timelapse...")
                         media_dir.mkdir(parents=True, exist_ok=True)
                         self._generate_tracking_validation_video(
@@ -675,8 +700,9 @@ class AnalysisWorker(QObject):
             # Use resolved visual labels if available, else raw roi labels
             labels = result.visual_labels if len(result.visual_labels) == len(result.timestamps) else result.roi_labels
 
-            with SafeVideoWriter(output_path, out_fps, handler.dimensions) as writer:
-                cap = cv2.VideoCapture(str(video_path))
+            with SafeVideoWriter(
+                output_path, out_fps, handler.dimensions
+            ) as writer, _open_capture(video_path) as cap:
                 first_result_frame = (
                     int(round(result.timestamps[0] * handler.fps))
                     if result.timestamps else result.start_frame
@@ -687,6 +713,7 @@ class AnalysisWorker(QObject):
                 total_frames = len(result.timestamps)
                 
                 while curr_idx < total_frames:
+                    self._raise_if_cancelled()
                     ret, frame = cap.read()
                     if not ret: break
                     
@@ -736,11 +763,21 @@ class AnalysisWorker(QObject):
                         
                         writer.write(frame)
                     curr_idx += 1
-                cap.release()
             self.log.emit(f"✓ Timelapse saved")
+        except InterruptedError:
+            self._discard_partial_video(output_path)
+            raise
         except Exception as e:
             logger.error(f"Error creating timelapse video: {e}", exc_info=True)
             raise
+
+    @staticmethod
+    def _discard_partial_video(output_path):
+        """Remove the half-written video left behind by a cancelled export."""
+        try:
+            Path(output_path).unlink(missing_ok=True)
+        except OSError:
+            logger.debug("Could not remove partial video", exc_info=True)
 
     def _export_all_data(self, result, base_name, settings, output_dir):
         """Export CSVs and JSONs."""
@@ -749,15 +786,18 @@ class AnalysisWorker(QObject):
             if isinstance(self.maze, TST) else
             f"{base_name}_tracking_data.csv"
         )
+        self._raise_if_cancelled()
         DataExporter.export_to_csv(
             result, output_dir / frame_data_name
         )
+        self._raise_if_cancelled()
         DataExporter.export_summary_csv(
             result,
             output_dir / f"{base_name}_analysis_summary.csv",
             self.maze
         )
         
+        self._raise_if_cancelled()
         # JSON Export - Handle differences in settings objects
         detection_params = None
         if hasattr(settings, 'detection_config'):
@@ -769,6 +809,7 @@ class AnalysisWorker(QObject):
             detection_params,
             settings.to_dict()
         )
+        self._raise_if_cancelled()
         self.maze.export_specific_data(result, output_dir, base_name)
         self.log.emit("✓ Data exported")
 
@@ -809,6 +850,7 @@ class AnalysisWorker(QObject):
             ),
         ]
         for label, job in jobs:
+            self._raise_if_cancelled()
             try:
                 job()
             except Exception as exc:
@@ -830,8 +872,9 @@ class AnalysisWorker(QObject):
             out_fps = vh.fps / step
             
             # Core: Use SafeVideoWriter
-            with SafeVideoWriter(output_path, out_fps, vh.dimensions) as writer:
-                cap = cv2.VideoCapture(str(video_path))
+            with SafeVideoWriter(
+                output_path, out_fps, vh.dimensions
+            ) as writer, _open_capture(video_path) as cap:
                 first_result_frame = (
                     int(round(result.timestamps[0] * vh.fps))
                     if result.timestamps else result.start_frame
@@ -843,6 +886,7 @@ class AnalysisWorker(QObject):
                 total_frames = len(result.timestamps)
                 
                 while curr_idx < total_frames:
+                    self._raise_if_cancelled()
                     ret, frame = cap.read()
                     if not ret: break
                     
@@ -916,9 +960,11 @@ class AnalysisWorker(QObject):
                         
                         writer.write(frame)
                     curr_idx += 1
-                cap.release()
-                
+
             self.log.emit(f"✓ Validation video saved")
+        except InterruptedError:
+            self._discard_partial_video(output_path)
+            raise
         except Exception as e:
             logger.error(f"Error creating validation video: {e}")
             raise
