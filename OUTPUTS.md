@@ -220,6 +220,28 @@ filename still match when the filename is unambiguous. A video that matches no
 entry is never given another video's settings; the application reports it as
 unmatched and asks whether to configure it separately, skip it or cancel.
 
+## Reference-line endpoints in configurations
+
+The `roi_manager` block of a saved template, batch plan or `run_plan.json`
+keeps the calibration length in `_reference_length_pixels` (source pixels).
+From 3.4 a reference line drawn in the application also records its two
+endpoints, in source pixels, as `reference_line`: `[[x1, y1], [x2, y2]]`.
+The key is written only when the endpoints are known, so configurations
+without it are byte-identical to what earlier versions wrote, and older
+configurations that hold only a length still load. The length always equals the
+distance between the endpoints; a file whose endpoints disagree with its stored
+length keeps the length and ignores the endpoints.
+
+Endpoints let the calibration follow a template that is aligned to another
+camera placement or resolution (see the quickstart): the aligned configuration
+for each video carries transformed ROI polygons (rounded to whole pixels),
+transformed endpoints, a recomputed `_reference_length_pixels`, and
+`source_dimensions` set to that video's frame size. When only a length is
+stored, the length is scaled by the alignment's scale factor and
+`_reference_name` gets the suffix ` (approximate: scaled by alignment)`.
+Alignment is applied before the run, so analysis outputs only ever see the
+aligned ROIs; results of an unaligned run are unchanged.
+
 ## Checkpoints
 
 Resumable runs write to a `.checkpoints/` folder in the output directory, two

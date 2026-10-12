@@ -63,6 +63,11 @@ interrupted run after a restart, and has keyboard shortcuts. See
   it, distances are reported in pixels and Freestyle immobility is N/A. There is
   no automatic scale estimate from the ROI bounding box.
 - **Interactive ROI Definition**: Visually draw polygons for each maze arm or testing zone directly on a video frame.
+- **Template Alignment**: Reuse ROIs on videos recorded with a slightly moved
+  camera or at another resolution. *Tools > Align template to videos...*
+  compares each video's background with the template's, flags the ones that no
+  longer fit, and aligns them automatically or from landmarks you click; the
+  reference line and cm calibration follow the alignment.
 - **Interactive Detection Tuning**: Fine-tune detection against the production
   segmentation mask, selected-component overlay, and deterministic Quick Scan
   quality monitor.
