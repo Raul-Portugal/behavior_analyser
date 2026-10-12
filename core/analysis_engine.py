@@ -126,6 +126,11 @@ class Analyzer:
             float(np.hypot(self.orig_w, self.orig_h))
             * self.engine.config.max_expected_jump_ratio
         )
+        result.jump_limit_px = jump_limit
+        arena = getattr(self.roi_manager, 'arena', None)
+        result.arena_polygon = (
+            None if arena is None else arena.points.tolist()
+        )
 
         # Distance is accumulated only across consecutive valid observations.
         # A missing observation breaks the trajectory instead of creating a

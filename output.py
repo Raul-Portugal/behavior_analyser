@@ -315,9 +315,14 @@ class DataExporter:
         normalized = metric.lower()
         if normalized in {"speed_unit", "immobility_threshold_unit"}:
             return ""
+        if normalized.endswith("_pct") or "percent" in normalized:
+            return "percent"
         if "distance" in normalized:
             return result.distance_unit
-        if normalized in {"average_speed", "peak_speed"}:
+        if normalized in {
+            "average_speed", "peak_speed",
+            "center_speed_mean", "periphery_speed_mean",
+        }:
             return f"{result.distance_unit}/s"
         if normalized == "immobility_threshold":
             return getattr(
@@ -327,8 +332,6 @@ class DataExporter:
             )
         if normalized.endswith("_s") or normalized.endswith("_time"):
             return "seconds"
-        if normalized.endswith("_pct") or "percent" in normalized:
-            return "percent"
         if "efficiency" in normalized:
             return "0-1"
         if any(
