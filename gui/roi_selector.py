@@ -12,7 +12,7 @@ from PyQt6.QtGui import QColor, QKeySequence, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
                              QPushButton, QScrollArea, QVBoxLayout)
 
-from roi_manager import ROIManager
+from roi_manager import ARENA_CATEGORY, ROIManager
 from mazes.base_maze import Maze
 from gui import ux_helpers
 from gui.dialog_layout import fit_dialog_to_available_screen
@@ -23,6 +23,10 @@ from gui.qt_image import bgr_to_qpixmap
 # anything below this as an issue that blocks the run, so refuse it here.
 MIN_ROI_AREA_PX = 100.0
 MIN_POLYGON_POINTS = 3
+
+# The open-field arena step: exactly one polygon, drawn before any zones and
+# stored as ``ROIManager.arena`` rather than as a zone.
+ARENA_STEP_DESCRIPTION = "the open-field arena (the floor boundary)"
 
 
 @dataclass(frozen=True)
@@ -38,6 +42,9 @@ class RoiStepState:
     can_advance: bool
     can_add_point: bool
     hint: str
+
+
+ARENA_RULE = RoiRule(1, 1)
 
 
 def roi_rule_for_maze(maze) -> RoiRule:
@@ -179,6 +186,15 @@ class ReferenceLineDialog(QDialog):
     def get_line_length(self): 
         return self.line_length
 
+    def get_line_points(self):
+        """The two clicked endpoints in SOURCE pixels, or None until both exist."""
+        if len(self.points) != 2:
+            return None
+        return tuple(
+            (p.x() * self.source_scale_x, p.y() * self.source_scale_y)
+            for p in self.points
+        )
+
 
 REFERENCE_LINE_NAME = "User-drawn reference line"
 REFERENCE_LINE_PROMPT = (
@@ -186,6 +202,21 @@ REFERENCE_LINE_PROMPT = (
     "Draw it over something of known length (e.g. an arm length). "
     "If you skip this, distances will be reported in pixels."
 )
+
+
+def apply_reference_line(roi_manager: ROIManager, dialog) -> bool:
+    """Store the dialog's line (endpoints and length) on the ROI manager.
+
+    Returns True only if the user drew a valid, non-degenerate line.
+    """
+    points = dialog.get_line_points()
+    if points is None or dialog.get_line_length() <= 0:
+        return False
+    try:
+        roi_manager.set_reference_line(points[0], points[1], REFERENCE_LINE_NAME)
+    except ValueError:
+        return False
+    return True
 
 
 def offer_reference_line(parent, video_path, roi_manager: ROIManager) -> bool:
@@ -216,11 +247,8 @@ def offer_reference_line(parent, video_path, roi_manager: ROIManager) -> bool:
         pixmap, source_scale=(source_w / w, source_h / h), parent=parent
     )
     try:
-        if dialog.exec() and dialog.get_line_length() > 0:
-            roi_manager.set_reference_length(
-                dialog.get_line_length(), REFERENCE_LINE_NAME
-            )
-            return True
+        if dialog.exec():
+            return apply_reference_line(roi_manager, dialog)
         return False
     finally:
         dialog.deleteLater()
@@ -233,7 +261,15 @@ class RoiSelectorDialog(QDialog):
         self.video_path = video_path
         self.roi_manager = ROIManager()
         self.maze = maze
-        self.roi_definitions = self.maze.get_roi_definitions()
+        # Zones come from the maze; an enabled open-field arena is asked for
+        # first, as its own step.
+        self.zone_definitions = list(self.maze.get_roi_definitions())
+        self.arena_step_enabled = bool(getattr(maze, "arena_enabled", False))
+        self.roi_definitions = (
+            [(ARENA_CATEGORY, ARENA_STEP_DESCRIPTION)] + self.zone_definitions
+            if self.arena_step_enabled else list(self.zone_definitions)
+        )
+        self._center_preview = None
         self.current_roi_index = 0
         self.current_polygon_points = []
         self.roi_rule = roi_rule_for_maze(maze)
@@ -336,8 +372,9 @@ class RoiSelectorDialog(QDialog):
             self.prompt_for_reference_line()
             return
         _, desc = self.roi_definitions[self.current_roi_index]
+        shapes = "the polygon" if self._is_arena_step() else "polygon(s)"
         self.instruction_label.setText(
-            f"Step {self.current_roi_index + 1}/{len(self.roi_definitions)}: Draw polygon(s) for {desc}.\n"
+            f"Step {self.current_roi_index + 1}/{len(self.roi_definitions)}: Draw {shapes} for {desc}.\n"
             "Left-click to add points. Right-click to finish a shape."
         )
         self.current_polygon_points = []
@@ -349,14 +386,21 @@ class RoiSelectorDialog(QDialog):
     def _current_category(self):
         return self.roi_definitions[self.current_roi_index]
 
+    def _is_arena_step(self) -> bool:
+        category, _ = self._current_category()
+        return category == ARENA_CATEGORY and self.arena_step_enabled
+
     def _finished_count(self) -> int:
+        if self._is_arena_step():
+            return 1 if self.roi_manager.arena is not None else 0
         category, _ = self._current_category()
         return len(self.roi_manager.rois.get(category, []))
 
     def step_state(self) -> RoiStepState:
         _, description = self._current_category()
+        rule = ARENA_RULE if self._is_arena_step() else self.roi_rule
         return evaluate_roi_step(
-            self.roi_rule, self._finished_count(),
+            rule, self._finished_count(),
             len(self.current_polygon_points), description
         )
 
@@ -385,9 +429,7 @@ class RoiSelectorDialog(QDialog):
                 parent=self
             )
             if ref_dialog.exec():
-                length = ref_dialog.get_line_length()
-                if length > 0:
-                    self.roi_manager.set_reference_length(length, REFERENCE_LINE_NAME)
+                apply_reference_line(self.roi_manager, ref_dialog)
         self.accept()
 
     def next_roi(self):
@@ -423,6 +465,9 @@ class RoiSelectorDialog(QDialog):
         """Remove the last point; with none pending, reopen the last closed shape."""
         if self.current_polygon_points:
             self.current_polygon_points.pop()
+        elif self._is_arena_step():
+            self.roi_manager.clear_arena()
+            self._center_preview = None
         else:
             category, _ = self._current_category()
             shapes = self.roi_manager.rois.get(category, [])
@@ -458,10 +503,34 @@ class RoiSelectorDialog(QDialog):
             )
             self.hint_label.setVisible(True)
             return False
-        self.roi_manager.add_roi(category, points)
+        if self._is_arena_step():
+            self.roi_manager.set_arena(points)
+            self._update_center_preview()
+        else:
+            self.roi_manager.add_roi(category, points)
         self.current_polygon_points = []
         self._refresh_step_state()
         return True
+
+    def _update_center_preview(self):
+        """Cache the derived center outline for the paint preview.
+
+        Only the area-share rule can be previewed here: the distance rule
+        needs the calibration, which is drawn after the regions.
+        """
+        self._center_preview = None
+        arena = self.roi_manager.arena
+        if arena is None or not hasattr(self.maze, "center_outline"):
+            return
+        if getattr(self.maze, "arena_center_mode", None) != "area_fraction":
+            return
+        try:
+            self._center_preview = self.maze.center_outline(arena.points, 0.0)
+        except ValueError:
+            self._center_preview = None
+        # Also carried on the ROI manager so later previews draw it.
+        if self._center_preview is not None:
+            self.roi_manager.set_center_overlay(self._center_preview)
 
     def keyPressEvent(self, event):
         key = event.key()
@@ -481,8 +550,19 @@ class RoiSelectorDialog(QDialog):
         painter = QPainter(pixmap)
         
         base_colors = [QColor(255, 0, 0, 100), QColor(0, 255, 0, 100), QColor(0, 0, 255, 100), QColor(255, 0, 255, 100)]
-        color_map = {cat: base_colors[i % len(base_colors)] for i, (cat, _) in enumerate(self.roi_definitions) if 'center' not in cat}
+        color_map = {cat: base_colors[i % len(base_colors)] for i, (cat, _) in enumerate(self.zone_definitions) if 'center' not in cat}
         color_map['center'] = QColor(255, 255, 0, 100)
+
+        # The arena is drawn first so zones stay visible on top of it.
+        arena = self.roi_manager.arena
+        if arena is not None:
+            painter.setPen(QPen(QColor(255, 165, 0), 3))
+            painter.setBrush(QColor(255, 165, 0, 40))
+            painter.drawPolygon(self._display_polygon(arena.points))
+            if self._center_preview is not None:
+                painter.setPen(QPen(QColor(0, 200, 200), 2, Qt.PenStyle.DashLine))
+                painter.setBrush(QColor(0, 200, 200, 40))
+                painter.drawPolygon(self._display_polygon(self._center_preview))
         
         # Draw existing ROIs
         for category, roi_list in self.roi_manager.rois.items():
@@ -490,14 +570,7 @@ class RoiSelectorDialog(QDialog):
             painter.setPen(QPen(color.darker(150), 2))
             painter.setBrush(color)
             for roi in roi_list:
-                poly = QPolygonF([
-                    QPointF(
-                        p[0] / self.display_to_source_x,
-                        p[1] / self.display_to_source_y
-                    )
-                    for p in roi.points
-                ])
-                painter.drawPolygon(poly)
+                painter.drawPolygon(self._display_polygon(roi.points))
         
         # Draw current polygon being drawn
         if self.current_polygon_points:
@@ -521,12 +594,25 @@ class RoiSelectorDialog(QDialog):
         painter.end()
         self.image_label.setPixmap(pixmap)
 
+    def _display_polygon(self, source_points) -> QPolygonF:
+        """Source-pixel polygon points as a polygon in display coordinates."""
+        return QPolygonF([
+            QPointF(
+                p[0] / self.display_to_source_x,
+                p[1] / self.display_to_source_y
+            )
+            for p in source_points
+        ])
+
     def get_roi_manager(self) -> ROIManager: 
         return self.roi_manager
 
     def has_unsaved_work(self) -> bool:
-        return ux_helpers.has_drawn_work(
-            self.roi_manager, len(self.current_polygon_points)
+        return bool(
+            ux_helpers.has_drawn_work(
+                self.roi_manager, len(self.current_polygon_points)
+            )
+            or self.roi_manager.arena is not None
         )
 
     def reject(self):

@@ -11,7 +11,8 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox,
                              QSlider, QVBoxLayout, QGroupBox, QWidget, QScrollArea,
                              QMessageBox)
 
-from core.calibration import (LEGACY_REFERENCE_WARNING, NO_CALIBRATION_NOTE,
+from core.calibration import (APPROXIMATE_REFERENCE_NOTE,
+                              LEGACY_REFERENCE_WARNING, NO_CALIBRATION_NOTE,
                               real_world_cm_from_scale, scale_factor_from_cm)
 from core.video import VideoHandler
 from gui import ux_helpers
@@ -162,6 +163,8 @@ class SettingsDialog(QDialog):
                     ref_text = (
                         f"Legacy ROI bounding-box width ({ref_len:.2f} px)"
                     )
+                elif roi_manager.reference_is_approximate:
+                    ref_text = f"Scaled reference length ({ref_len:.2f} px)"
                 else:
                     ref_text = f"User-drawn reference line ({ref_len:.2f} px)"
                 ref_label = QLabel(ref_text)
@@ -177,6 +180,10 @@ class SettingsDialog(QDialog):
                 if roi_manager.is_legacy_bbox_reference:
                     other_layout.addRow(self._note_label(
                         LEGACY_REFERENCE_WARNING, warning=True
+                    ))
+                elif roi_manager.reference_is_approximate:
+                    other_layout.addRow(self._note_label(
+                        APPROXIMATE_REFERENCE_NOTE, warning=True
                     ))
             else:
                 self.scale_spin.setEnabled(False)
@@ -198,6 +205,11 @@ class SettingsDialog(QDialog):
         if is_verification:
             self.accept_btn = self.button_box.addButton("Accept", QDialogButtonBox.ButtonRole.AcceptRole)
             self.redraw_btn = self.button_box.addButton("Redraw ROIs", QDialogButtonBox.ButtonRole.ActionRole)
+            self.align_btn = self.button_box.addButton("Check alignment", QDialogButtonBox.ButtonRole.ActionRole)
+            self.align_btn.setToolTip(
+                "Align the template's regions to this video if the camera "
+                "moved or the resolution differs"
+            )
             self.skip_btn = self.button_box.addButton("Skip Video", QDialogButtonBox.ButtonRole.DestructiveRole)
         else:
             self.accept_btn = self.button_box.addButton("OK", QDialogButtonBox.ButtonRole.AcceptRole)
@@ -222,6 +234,7 @@ class SettingsDialog(QDialog):
         self.cancel_btn.clicked.connect(self.reject)
         if hasattr(self, 'redraw_btn'):
             self.redraw_btn.clicked.connect(self.on_redraw)
+            self.align_btn.clicked.connect(self.on_align)
             self.skip_btn.clicked.connect(self.on_skip)
 
     @staticmethod
@@ -331,6 +344,9 @@ class SettingsDialog(QDialog):
         self.accept()
     def on_redraw(self): 
         self.result_action = "redraw"
+        self.accept()
+    def on_align(self):
+        self.result_action = "align"
         self.accept()
     def on_skip(self): 
         self.result_action = "skip"

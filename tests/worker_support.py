@@ -1,18 +1,23 @@
 """Tiny synthetic videos and settings shared by the worker-level tests."""
+import threading
 from pathlib import Path
 
 import cv2
 import numpy as np
 
+from checkpoint_manager import CheckpointManager
 from core.models import BatchSettings, DetectionConfig
+from core.pipeline import NullReporter, VideoJob, VideoPipeline
 from mazes.tst import TST
 from roi_manager import ROIManager
 from tests import tst_synthetic as synthetic
 
 
-def write_tracking_video(directory: Path, frames: int = 100) -> Path:
+def write_tracking_video(
+    directory: Path, frames: int = 100, name: str = "blob.avi"
+) -> Path:
     """A white square drifting across a dark 160x120 scene at 30 fps."""
-    path = Path(directory) / "blob.avi"
+    path = Path(directory) / name
     writer = cv2.VideoWriter(
         str(path), cv2.VideoWriter_fourcc(*"MJPG"), 30.0, (160, 120)
     )
@@ -69,3 +74,42 @@ def tst_settings(create_timelapse: bool = False) -> BatchSettings:
         paradigm_id="Tail Suspension Test",
         algorithm_parameters=TST().get_algorithm_parameters(),
     )
+
+
+def make_pipeline(root: Path, maze, settings=None, reporter=None):
+    """A ``VideoPipeline`` for calling its phases directly.
+
+    Returns ``(pipeline, cancel)`` where ``cancel`` is the threading.Event
+    the pipeline polls; the checkpoint manager is ``pipeline.checkpoint_mgr``.
+    """
+    root = Path(root)
+    output_root = root / "out"
+    output_root.mkdir(exist_ok=True)
+    job = VideoJob(
+        video_path=Path("unused.avi"),
+        settings=settings,
+        maze_name=maze.name,
+        algorithm_parameters=maze.get_algorithm_parameters(),
+        output_dir=output_root / "clip",
+        base_name="clip",
+        checkpoint_root=output_root,
+    )
+    cancel = threading.Event()
+    pipeline = VideoPipeline(
+        job, maze, reporter or NullReporter(), cancel,
+        CheckpointManager(output_root),
+    )
+    return pipeline, cancel
+
+
+# Three small tracking videos of different lengths for batch-level tests.
+FRAME_COUNTS = {"mouse_a.avi": 70, "mouse_b.avi": 90, "mouse_c.avi": 110}
+
+
+def data_files(run_dir: Path):
+    """Every deterministic output of a run: all files except the manifest."""
+    return {
+        path.relative_to(run_dir).as_posix(): path.read_bytes()
+        for path in sorted(Path(run_dir).rglob("*"))
+        if path.is_file() and path.name != "manifest.json"
+    }

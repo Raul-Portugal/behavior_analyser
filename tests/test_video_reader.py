@@ -14,7 +14,7 @@ except ModuleNotFoundError:
     HAS_RUNTIME = False
 
 try:
-    from gui.worker import AnalysisWorker
+    from core.pipeline import VideoPipeline
     HAS_WORKER = True
 except ModuleNotFoundError:
     HAS_WORKER = False
@@ -154,13 +154,13 @@ class BufferedVideoReaderTests(unittest.TestCase):
 @unittest.skipUnless(HAS_WORKER, "GUI/scientific runtime is not installed")
 class EarlyEndWarningTests(unittest.TestCase):
     def test_complete_and_near_complete_runs_do_not_warn(self):
-        warn = AnalysisWorker._early_end_warning
+        warn = VideoPipeline._early_end_warning
         self.assertIsNone(warn(1000, 1000, 0, 1000))
         self.assertIsNone(warn(1000, 990, 0, 1000))  # exactly 1%
         self.assertIsNone(warn(50, 48, 0, 50))  # within the 2 frame floor
 
     def test_shortfall_reports_stop_frame_and_expected_end(self):
-        message = AnalysisWorker._early_end_warning(1000, 400, 100, 1100)
+        message = VideoPipeline._early_end_warning(1000, 400, 100, 1100)
 
         self.assertIn("analysis ended early at frame 500 of 1100", message)
 

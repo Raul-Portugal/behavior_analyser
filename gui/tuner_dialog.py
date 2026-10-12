@@ -13,6 +13,7 @@ from PyQt6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel,
                              QGroupBox, QScrollArea, QWidget)
 
 from core.analysis_geometry import AnalysisGeometry
+from core.arena_zones import analysis_mask
 from core.models import AppConfig, DetectionConfig
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.video import VideoHandler
@@ -52,10 +53,12 @@ class QuickScanWorker(QThread):
     def __init__(self, video_path: str, analysis_ref: np.ndarray,
                  geometry: AnalysisGeometry, config: DetectionConfig,
                  total_frames: int,
-                 capture_factory: Callable = cv2.VideoCapture, parent=None):
+                 capture_factory: Callable = cv2.VideoCapture, parent=None,
+                 arena_mask: Optional[np.ndarray] = None):
         super().__init__(parent)
         self.video_path = video_path
         self.analysis_ref = analysis_ref
+        self.arena_mask = arena_mask
         self.geometry = geometry
         self.config = copy.copy(config)
         self.total_frames = total_frames
@@ -70,6 +73,7 @@ class QuickScanWorker(QThread):
             # while sampling the beginning, middle, and end of the recording.
             for start, length in quick_scan_windows(self.total_frames):
                 engine = DetectionEngine(self.analysis_ref, self.config)
+                engine.set_analysis_mask(self.arena_mask)
                 cap.set(cv2.CAP_PROP_POS_FRAMES, start)  # one seek per window
                 for _ in range(length):
                     if self.isInterruptionRequested():
@@ -112,6 +116,12 @@ class TunerDialog(QDialog):
             AppConfig().video.analysis_width,
         )
         self.analysis_ref = self.geometry.reference_to_analysis(ref_frame)
+        # Tune against the same arena restriction the analysis will use.
+        arena = getattr(roi_manager, 'arena', None)
+        self.arena_mask = (
+            None if arena is None
+            else analysis_mask(arena.points, self.geometry)
+        )
         self.cap = cv2.VideoCapture(video_path)
         self.current_frame_idx = self.video_info.total_frames // 2
         
@@ -293,6 +303,7 @@ class TunerDialog(QDialog):
 
         # Run the same segmentation and component scoring as production.
         engine = DetectionEngine(self.analysis_ref, self.config)
+        engine.set_analysis_mask(self.arena_mask)
         detection = engine.detect(
             self.geometry.to_analysis(frame), use_last_pos=False
         )
@@ -331,6 +342,13 @@ class TunerDialog(QDialog):
             for roi in rois:
                 pts = np.array(roi.points, np.int32).reshape((-1, 1, 2))
                 cv2.polylines(display_frame, [pts], True, (255, 255, 0), 2)
+        arena = getattr(self.roi_manager, 'arena', None)
+        if arena is not None:
+            cv2.polylines(
+                display_frame,
+                [np.array(arena.points, np.int32).reshape((-1, 1, 2))],
+                True, (0, 165, 255), 3,
+            )
 
         self._update_image(self.main_view, display_frame)
         
@@ -387,6 +405,7 @@ class TunerDialog(QDialog):
             self.config,
             self.video_info.total_frames,
             parent=self,
+            arena_mask=self.arena_mask,
         )
         self.scan_worker.scan_complete.connect(self._on_quick_scan_complete)
         self.scan_worker.scan_failed.connect(self._on_quick_scan_failed)

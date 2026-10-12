@@ -35,6 +35,12 @@ class BaseAnalysisResult:
     end_frame: int = 0
     fps: float = 0.0
     scale_factor: float = 0.0
+    # Run context recorded by Analyzer.finalize_result for paradigm metrics.
+    # Neither is exported: they are inputs, not results.
+    # Open-field arena polygon (Nx2 source pixels), None when no arena is set.
+    arena_polygon: Optional[List[List[int]]] = None
+    # Largest step (source px) counted in distances; None when unknown.
+    jump_limit_px: Optional[float] = None
 
     @property
     def distance_unit(self) -> str:

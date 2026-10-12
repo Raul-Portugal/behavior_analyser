@@ -3,17 +3,21 @@ Freestyle Configuration Dialog.
 Allows users to configure custom zones or choose zone-free tracking.
 """
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QButtonGroup, QDialog, QDialogButtonBox,
-                             QDoubleSpinBox, QFormLayout, QGroupBox, QLabel,
-                             QLineEdit, QListWidget, QPushButton, QRadioButton,
-                             QScrollArea, QSpinBox, QVBoxLayout, QHBoxLayout,
-                             QWidget, QMessageBox)
+from PyQt6.QtWidgets import (QButtonGroup, QCheckBox, QDialog,
+                             QDialogButtonBox, QDoubleSpinBox, QFormLayout,
+                             QGroupBox, QLabel, QLineEdit, QListWidget,
+                             QPushButton, QRadioButton, QScrollArea, QSpinBox,
+                             QVBoxLayout, QHBoxLayout, QWidget, QMessageBox)
 from gui import ux_helpers
 from gui.dialog_layout import fit_dialog_to_available_screen
+from mazes.freestyle import (CENTER_BY_AREA_FRACTION, CENTER_BY_DISTANCE,
+                             DEFAULT_CENTER_AREA_FRACTION,
+                             DEFAULT_CENTER_DISTANCE_CM)
 
 # Internal labels the tracking pipeline reserves for non-zone states; "mouse_"
-# prefixes are used for per-animal labels (e.g. TST detection).
-RESERVED_ZONE_NAMES = frozenset({'outside', 'undetected'})
+# prefixes are used for per-animal labels (e.g. TST detection). "arena" is the
+# open-field arena polygon, which is stored apart from the zones.
+RESERVED_ZONE_NAMES = frozenset({'outside', 'undetected', 'arena'})
 RESERVED_ZONE_PREFIX = 'mouse_'
 
 
@@ -133,6 +137,76 @@ class FreestyleConfigDialog(QDialog):
 
         movement_group.setLayout(movement_form)
         main_layout.addWidget(movement_group)
+
+        # Open field arena: center/periphery zones and thigmotaxis
+        arena_group = QGroupBox("Open Field Arena")
+        arena_layout = QVBoxLayout()
+        self.arena_checkbox = QCheckBox("Open field arena (center/periphery)")
+        self.arena_checkbox.setToolTip(
+            "Draw the arena boundary first. The center is derived from it "
+            "automatically; reports center/periphery time, center entries, "
+            "latency to center and thigmotaxis. Detection is also restricted "
+            "to the arena."
+        )
+        arena_layout.addWidget(self.arena_checkbox)
+
+        self.arena_options = QWidget()
+        options_layout = QVBoxLayout(self.arena_options)
+        options_layout.setContentsMargins(20, 0, 0, 0)
+        self.center_distance_radio = QRadioButton(
+            "Center starts this far from the walls:"
+        )
+        self.center_distance_radio.setChecked(True)
+        self.center_distance_spin = QDoubleSpinBox()
+        self.center_distance_spin.setRange(0.5, 200.0)
+        self.center_distance_spin.setDecimals(1)
+        self.center_distance_spin.setSingleStep(0.5)
+        self.center_distance_spin.setSuffix(" cm")
+        self.center_distance_spin.setValue(DEFAULT_CENTER_DISTANCE_CM)
+        self.center_distance_spin.setToolTip(
+            "Needs a reference line to calibrate the video. Without one the "
+            "area rule below is used instead."
+        )
+        self.center_area_radio = QRadioButton(
+            "Center covers this share of the arena area:"
+        )
+        self.center_area_spin = QDoubleSpinBox()
+        self.center_area_spin.setRange(1.0, 99.0)
+        self.center_area_spin.setDecimals(0)
+        self.center_area_spin.setSingleStep(5.0)
+        self.center_area_spin.setSuffix(" %")
+        self.center_area_spin.setValue(
+            100.0 * DEFAULT_CENTER_AREA_FRACTION
+        )
+        self.center_area_spin.setToolTip(
+            "The center is the arena shrunk until it covers this share of "
+            "its area. Works without calibration."
+        )
+        self.center_mode_group = QButtonGroup(self)
+        self.center_mode_group.setExclusive(True)
+        self.center_mode_group.addButton(self.center_distance_radio)
+        self.center_mode_group.addButton(self.center_area_radio)
+        for radio, spin in (
+            (self.center_distance_radio, self.center_distance_spin),
+            (self.center_area_radio, self.center_area_spin),
+        ):
+            row = QHBoxLayout()
+            row.addWidget(radio)
+            row.addWidget(spin)
+            row.addStretch()
+            options_layout.addLayout(row)
+        self.center_note = QLabel(
+            "Without a reference line (no calibration) the center is defined "
+            "by area share instead."
+        )
+        self.center_note.setWordWrap(True)
+        self.center_note.setStyleSheet("color: #555; font-style: italic;")
+        options_layout.addWidget(self.center_note)
+        arena_layout.addWidget(self.arena_options)
+        arena_group.setLayout(arena_layout)
+        main_layout.addWidget(arena_group)
+        self.arena_options.setEnabled(False)
+        self.arena_checkbox.toggled.connect(self.on_arena_toggled)
 
         # Zone configuration section
         self.zone_config_group = QGroupBox("Zone Configuration")
@@ -261,6 +335,11 @@ class FreestyleConfigDialog(QDialog):
         
         self.update_info_label()
     
+    def on_arena_toggled(self, checked: bool):
+        """Enable the center-definition controls only while the arena is on."""
+        self.arena_options.setEnabled(checked)
+        self.update_info_label()
+
     def on_num_zones_changed(self, count: int):
         """Resize the name list, keeping names the user already typed."""
         # Drop surplus rows from the end
@@ -331,16 +410,22 @@ class FreestyleConfigDialog(QDialog):
     
     def update_info_label(self):
         """Update the information label based on current configuration."""
+        arena_text = (
+            " You will first draw the arena boundary; the center and "
+            "periphery are derived from it."
+            if self.arena_checkbox.isChecked() else ""
+        )
         if self.zone_free_mode:
             self.info_label.setText(
                 "ℹ️ Zone-free mode: You will track movement without defining spatial regions. "
                 "Analysis will focus on speed, distance, and movement patterns."
+                + arena_text
             )
         else:
             count = self.num_zones_spin.value()
             self.info_label.setText(
                 f"ℹ️ You will draw {count} custom zone{'s' if count != 1 else ''} "
-                f"on your video in the next step."
+                f"on your video in the next step." + arena_text
             )
     
     def validate_and_accept(self):
@@ -373,8 +458,8 @@ class FreestyleConfigDialog(QDialog):
                 QMessageBox.warning(
                     self, "Reserved Zone Name",
                     f"Zone name '{name}' is reserved for internal tracking "
-                    f"states ('outside', 'undetected', or names starting with "
-                    f"'mouse_'). Please choose a different name."
+                    f"states ('outside', 'undetected', 'arena', or names "
+                    f"starting with 'mouse_'). Please choose a different name."
                 )
                 input_field.setFocus()
                 self.zone_names = []
@@ -418,15 +503,47 @@ class FreestyleConfigDialog(QDialog):
         self.speed_window_spin.setValue(maze.speed_window_seconds)
         self.min_immobility_spin.setValue(maze.min_immobility_seconds)
         self.min_dwell_spin.setValue(maze.min_dwell_seconds)
+        self.arena_checkbox.setChecked(maze.arena_mode)
+        self.center_distance_spin.setValue(maze.arena_center_distance_cm)
+        self.center_area_spin.setValue(100.0 * maze.arena_center_area_fraction)
+        by_area = maze.arena_center_mode == CENTER_BY_AREA_FRACTION
+        self.center_area_radio.setChecked(by_area)
+        self.center_distance_radio.setChecked(not by_area)
+
+    def center_mode(self) -> str:
+        """The selected center rule (a Freestyle ``CENTER_BY_*`` value)."""
+        return (
+            CENTER_BY_AREA_FRACTION if self.center_area_radio.isChecked()
+            else CENTER_BY_DISTANCE
+        )
+
+    def center_area_fraction(self) -> float:
+        return self.center_area_spin.value() / 100.0
+
+    def is_arena_enabled(self) -> bool:
+        """True when the open-field arena step was requested."""
+        return self.arena_checkbox.isChecked()
 
     def get_analysis_parameters(self) -> dict:
-        """Return the movement and zone-dwell parameters as Freestyle keys."""
-        return {
+        """Return the movement and zone-dwell parameters as Freestyle keys.
+
+        The arena keys are included only while the arena is enabled, matching
+        ``Freestyle.get_algorithm_parameters``.
+        """
+        parameters = {
             'immobility_threshold_cm_per_s': self.immobility_threshold_spin.value(),
             'speed_window_seconds': self.speed_window_spin.value(),
             'min_immobility_seconds': self.min_immobility_spin.value(),
             'min_dwell_seconds': self.min_dwell_spin.value(),
         }
+        if self.is_arena_enabled():
+            parameters.update({
+                'arena_mode': True,
+                'arena_center_mode': self.center_mode(),
+                'arena_center_distance_cm': self.center_distance_spin.value(),
+                'arena_center_area_fraction': self.center_area_fraction(),
+            })
+        return parameters
 
     def apply_to_maze(self, maze) -> None:
         """Set the dialog's analysis parameters on a Freestyle maze."""
@@ -434,6 +551,12 @@ class FreestyleConfigDialog(QDialog):
         maze.speed_window_seconds = self.speed_window_spin.value()
         maze.min_immobility_seconds = self.min_immobility_spin.value()
         maze.min_dwell_seconds = self.min_dwell_spin.value()
+        maze.configure_arena(
+            self.is_arena_enabled(),
+            self.center_mode(),
+            self.center_distance_spin.value(),
+            self.center_area_fraction(),
+        )
 
     def _current_state(self) -> tuple:
         return (
@@ -442,6 +565,10 @@ class FreestyleConfigDialog(QDialog):
             tuple(field.text() for field in self.zone_name_inputs),
             tuple(sorted(self.get_analysis_parameters().items())),
             self.min_dwell_spin.value(),
+            self.is_arena_enabled(),
+            self.center_mode(),
+            self.center_distance_spin.value(),
+            self.center_area_spin.value(),
         )
 
     def has_unsaved_work(self) -> bool:

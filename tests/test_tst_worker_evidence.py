@@ -10,7 +10,6 @@ try:
 
     from core.tst_motion_engine import TST_VALIDATION_FRAME_STEP, TSTMotionEngine
     from core.tst_validation import evaluate_annotations
-    from gui.worker import AnalysisWorker
     from mazes.tst import TST
     from output import DataExporter
     from tests import worker_support as support
@@ -33,20 +32,20 @@ def decoded_frames(video_path, first_frame):
 
 
 class WorkerRun:
-    """Drive ``_run_tst_analysis`` directly on a synthetic TST video."""
+    """Drive the pipeline's ``_run_tst_analysis`` directly on a synthetic TST video."""
 
     def __init__(self, root, **settings_options):
         self.root = Path(root)
         self.video = support.write_tst_video(self.root)
         self.settings = support.tst_settings(**settings_options)
-        output_dir = self.root / "out"
-        output_dir.mkdir()
-        self.worker = AnalysisWorker({}, output_dir, TST())
+        self.pipeline, self.cancel = support.make_pipeline(
+            self.root, TST(), self.settings
+        )
 
     def run(self, start_frame=0, end_frame=120, **kwargs):
-        return self.worker._run_tst_analysis(
+        return self.pipeline._run_tst_analysis(
             self.video, self.settings, start_frame, end_frame,
-            Mock(fps=30.0), Mock(), 0, lambda pct: pct, "clip", **kwargs
+            Mock(fps=30.0), **kwargs
         )
 
     def serial_observations(self, start_frame, end_frame):
@@ -55,7 +54,7 @@ class WorkerRun:
             for name, rois in self.settings.roi_manager.rois.items() if rois
         }
         engine = TSTMotionEngine(
-            roi_dict, self.worker.maze.motion_config, fps=30.0
+            roi_dict, self.pipeline.maze.motion_config, fps=30.0
         )
         frames = decoded_frames(self.video, start_frame)
         return [
@@ -106,7 +105,7 @@ class TSTProductionLoopEquivalenceTests(unittest.TestCase):
     def test_cancelled_run_checkpoints_only_consumed_frames(self):
         with tempfile.TemporaryDirectory() as directory:
             run = WorkerRun(directory)
-            manager = run.worker.checkpoint_mgr
+            manager = run.pipeline.checkpoint_mgr
             saved = []
             manager.save_checkpoint = Mock(
                 side_effect=lambda video, frame_idx, payload, settings: (
@@ -119,7 +118,7 @@ class TSTProductionLoopEquivalenceTests(unittest.TestCase):
                 # Called once per consumed frame: cancel after the 12th.
                 checks.append(1)
                 if len(checks) == 12:
-                    run.worker.is_cancelled = True
+                    run.cancel.set()
                 return False
 
             manager.should_save_checkpoint = should_save
@@ -134,7 +133,7 @@ class TSTProductionLoopEquivalenceTests(unittest.TestCase):
             # saved engine state must still be exactly that of frame 12.
             reference = TSTMotionEngine(
                 {"mouse_1": run.settings.roi_manager.rois["mouse_1"][0]},
-                run.worker.maze.motion_config, fps=30.0,
+                run.pipeline.maze.motion_config, fps=30.0,
             )
             frames = decoded_frames(run.video, 0)
             for index in range(1, 13):
@@ -179,7 +178,7 @@ class TSTContourStorageTests(unittest.TestCase):
             result, _ = run.run(end_frame=self.END)
             roi = run.settings.roi_manager.rois["mouse_1"][0]
             engine = TSTMotionEngine(
-                {"mouse_1": roi}, run.worker.maze.motion_config, fps=30.0
+                {"mouse_1": roi}, run.pipeline.maze.motion_config, fps=30.0
             )
             frames = decoded_frames(run.video, 0)
             expected = {}
@@ -224,7 +223,7 @@ class TSTContourStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             run = WorkerRun(directory, create_timelapse=False)
             result, _ = run.run(end_frame=self.END)
-            run.worker.maze.calculate_metrics(result)
+            run.pipeline.maze.calculate_metrics(result)
             csv_path = Path(directory) / "evidence.csv"
             DataExporter.export_to_csv(result, csv_path)
             lines = csv_path.read_text(encoding="utf-8").splitlines()
@@ -234,7 +233,7 @@ class TSTContourStorageTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             run = WorkerRun(directory, create_timelapse=True)
             result, _ = run.run(end_frame=self.END)
-            run.worker.maze.calculate_metrics(result)
+            run.pipeline.maze.calculate_metrics(result)
             lookups = []
             result.motion_evidence["mouse_1"] = [
                 _SpyEvidence(index, item, lookups)
@@ -242,7 +241,7 @@ class TSTContourStorageTests(unittest.TestCase):
             ]
             media_dir = Path(directory) / "media"
             media_dir.mkdir()
-            run.worker._generate_tst_validation_video(
+            run.pipeline._generate_tst_validation_video(
                 result, run.video, run.settings, "clip", media_dir
             )
             self.assertTrue((media_dir / "clip_validation.mp4").exists())
@@ -283,7 +282,7 @@ class TSTSourceFrameTests(unittest.TestCase):
         with tempfile.TemporaryDirectory() as directory:
             run = WorkerRun(directory)
             result, _ = run.run(end_frame=100)
-            run.worker.maze.calculate_metrics(result)
+            run.pipeline.maze.calculate_metrics(result)
             with_key = (
                 dict(result.total_immobility_time),
                 list(result.behavior_states["mouse_1"]),
@@ -291,7 +290,7 @@ class TSTSourceFrameTests(unittest.TestCase):
             )
             for item in result.motion_evidence["mouse_1"]:
                 del item["source_frame"]
-            run.worker.maze.calculate_metrics(result)
+            run.pipeline.maze.calculate_metrics(result)
         self.assertEqual(
             (
                 dict(result.total_immobility_time),

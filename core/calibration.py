@@ -9,6 +9,11 @@ LEGACY_REFERENCE_WARNING = (
     "back to it when no line was drawn), not from a measured line. "
     "Redraw the reference line before trusting cm values."
 )
+APPROXIMATE_REFERENCE_NOTE = (
+    "This reference length was scaled when the template was aligned to "
+    "this video (the original line's endpoints were not stored), so the "
+    "calibration is approximate. Redraw the reference line to be sure."
+)
 
 
 def scale_factor_from_cm(real_world_cm: float, reference_px: float) -> float:
