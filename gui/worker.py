@@ -128,6 +128,7 @@ class AnalysisWorker(QObject):
                 run_cancelled = True
                 break
 
+            self.checkpoint_mgr.reset_timer()
             base_name = self.output_base_names[video_path]
             video_output_dir = self.output_dir / base_name
             data_dir = video_output_dir / "data"
@@ -292,6 +293,11 @@ class AnalysisWorker(QObject):
                     if checkpoint and checkpoint.partial_result:
                         for k, v in checkpoint.partial_result.items():
                             if hasattr(result_container, k): setattr(result_container, k, v)
+                        # JSON turns (x, y) tuples into lists.
+                        result_container.positions = [
+                            tuple(p) if p is not None else None
+                            for p in result_container.positions
+                        ]
                         if (
                             not result_container.raw_roi_labels
                             and result_container.roi_labels
@@ -459,6 +465,11 @@ class AnalysisWorker(QObject):
             for key, value in checkpoint.partial_result.items():
                 if hasattr(result, key):
                     setattr(result, key, value)
+            # Run setup always wins over what the checkpoint recorded.
+            result.fps = handler.fps
+            result.per_roi_times = settings.per_roi_times
+            result.start_frame = start_frame
+            result.end_frame = end_frame
 
         # Setup ROI dict
         roi_dict = {cat: rois[0] for cat, rois in settings.roi_manager.rois.items() if rois}
@@ -553,7 +564,7 @@ class AnalysisWorker(QObject):
                         f"Motion Analysis | Video ETA: {l_eta} | Batch ETA: {g_eta}"
                     )
 
-                if self.checkpoint_mgr.should_save_checkpoint(processed_frame_idx):
+                if self.checkpoint_mgr.should_save_checkpoint():
                     checkpoint_payload = dict(result.__dict__)
                     checkpoint_payload["_tst_engine_state"] = (
                         engine.export_state()
@@ -635,8 +646,9 @@ class AnalysisWorker(QObject):
                 self.emit_progress(overall_pct, f"Video: {base_name}", 
                                  f"Frame {frame_idx} | ETA: {l_eta} | Speed: {speed:.1f} fps")
             
-            # Save Checkpoint
-            if self.is_cancelled:
+            # Cancel always saves; otherwise save on the wall-clock interval.
+            cancelled = self.is_cancelled
+            if cancelled or self.checkpoint_mgr.should_save_checkpoint():
                 checkpoint_payload = dict(result_container.__dict__)
                 checkpoint_payload["_detector_state"] = (
                     analyzer.engine.export_state()
@@ -644,16 +656,8 @@ class AnalysisWorker(QObject):
                 self.checkpoint_mgr.save_checkpoint(
                     video_path, frame_idx, checkpoint_payload, settings
                 )
+            if cancelled:
                 raise InterruptedError("Analysis cancelled")
-            
-            if self.checkpoint_mgr.should_save_checkpoint(frame_idx):
-                checkpoint_payload = dict(result_container.__dict__)
-                checkpoint_payload["_detector_state"] = (
-                    analyzer.engine.export_state()
-                )
-                self.checkpoint_mgr.save_checkpoint(
-                    video_path, frame_idx, checkpoint_payload, settings
-                )
 
         return result_container, True, frame_count
 

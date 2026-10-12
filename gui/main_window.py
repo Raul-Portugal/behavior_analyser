@@ -42,7 +42,7 @@ from mazes.epm import EPM
 from mazes.tst import TST
 from mazes.y_maze import YMaze
 from preflight_checker import PreflightChecker, ValidationDialog
-from checkpoint_manager import CheckpointManager, ResourceManager
+from checkpoint_manager import CheckpointManager
 
 logger = logging.getLogger(__name__)
 
@@ -810,9 +810,6 @@ class MainWindow(QMainWindow):
                 effective_parameters
             )
 
-        optimal_workers = ResourceManager.get_optimal_workers()
-        logger.info(f"System optimal parallel workers: {optimal_workers}")
-        
         self.set_ui_state(is_running=True)
         self.progress_bar.setValue(0)
         
