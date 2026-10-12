@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal
 
 # --- CORE IMPORTS ---
+from core.batch_plan_keys import build_plan_by_key
 from core.models import AppConfig, BatchSettings
 from core.video import VideoHandler, ReferenceFrameGenerator, SafeVideoWriter, BufferedVideoReader
 from core.detection import DetectionEngine, DetectionQualityMonitor
@@ -35,6 +36,9 @@ from output import DataExporter, Visualizer
 from checkpoint_manager import CheckpointManager, ProgressEstimator
 
 logger = logging.getLogger(__name__)
+
+# Written into every run folder so the run can be reloaded or resumed later.
+RUN_PLAN_FILENAME = "run_plan.json"
 
 
 @contextmanager
@@ -120,6 +124,8 @@ class AnalysisWorker(QObject):
         run_cancelled = False
         videos_to_process = list(self.analysis_plan.items())
         total_videos = len(videos_to_process)
+
+        self._write_run_plan()
 
         # --- PRE-CALCULATION FOR ETA ---
         self.log.emit("Preparing batch analysis...")
@@ -967,6 +973,22 @@ class AnalysisWorker(QObject):
         except Exception as e:
             logger.error(f"Error creating validation video: {e}")
             raise
+
+    def _write_run_plan(self):
+        """Save the exact per-video settings of this run as a batch plan.
+
+        Keys are relative to the run folder, so the plan can be reloaded with
+        File > Load Configuration or resumed after a restart. The paradigm
+        and algorithm parameters are part of every entry. A failure here is
+        logged but never stops the analysis.
+        """
+        plan_file = self.output_dir / RUN_PLAN_FILENAME
+        try:
+            BatchSettings.save_batch_plan(
+                build_plan_by_key(self.analysis_plan, plan_file), plan_file
+            )
+        except Exception:
+            logger.warning("Could not write %s", plan_file, exc_info=True)
 
     def _write_run_manifest(
         self, results, failures, quality_warnings, cancelled

@@ -33,6 +33,8 @@ from gui.settings_dialog import SettingsDialog
 from gui.tuner_dialog import TunerDialog
 from gui.tst_tuner import TstTunerDialog
 from gui.background_task import TaskCancelled, run_with_progress
+from gui.run_resume import (RUN_PLAN_FILENAME, ResumableRun, ResumeScan,
+                            describe_scan, scan_for_resumable_runs)
 from gui.worker import AnalysisWorker, BatchRunOutcome
 from gui.roi_preview import ROIPreviewDialog
 from gui.freestyle_config_dialog import FreestyleConfigDialog
@@ -45,7 +47,6 @@ from mazes.epm import EPM
 from mazes.tst import TST
 from mazes.y_maze import YMaze
 from preflight_checker import PreflightChecker, ValidationDialog
-from checkpoint_manager import CheckpointManager
 
 logger = logging.getLogger(__name__)
 
@@ -111,6 +112,9 @@ class MainWindow(QMainWindow):
         self.batch_plan_cache: Dict[str, BatchSettings] = {}
         self.batch_plan_path: Optional[Path] = None
         
+        # Interrupted runs found in the output folder (see run_resume).
+        self._resume_scan = ResumeScan()
+
         # Close-while-running handshake (see closeEvent)
         self._close_requested = False
         self._force_close = False
@@ -175,6 +179,22 @@ class MainWindow(QMainWindow):
         top_layout.addWidget(self.clear_list_button)
         main_layout.addLayout(top_layout)
         
+        # Banner offering to resume an interrupted run (hidden when none)
+        self.resume_bar = QWidget()
+        resume_layout = QHBoxLayout(self.resume_bar)
+        resume_layout.setContentsMargins(6, 4, 6, 4)
+        self.resume_label = QLabel()
+        self.resume_label.setWordWrap(True)
+        self.resume_button = QPushButton("Resume interrupted run")
+        self.resume_button.clicked.connect(self.resume_interrupted_run)
+        resume_layout.addWidget(self.resume_label, 1)
+        resume_layout.addWidget(self.resume_button)
+        self.resume_bar.setStyleSheet(
+            "background: #fff3cd; border: 1px solid #ffc107; border-radius: 4px;"
+        )
+        self.resume_bar.setVisible(False)
+        main_layout.addWidget(self.resume_bar)
+
         # Video list
         self.video_list_widget = QListWidget()
         main_layout.addWidget(self.video_list_widget)
@@ -246,8 +266,19 @@ class MainWindow(QMainWindow):
         load_config_action.triggered.connect(self.load_configuration)
         self.load_config_action = load_config_action
         
+        load_run_action = QAction('Load settings from &previous run...', self)
+        load_run_action.triggered.connect(self.load_settings_from_previous_run)
+        self.load_run_action = load_run_action
+
+        resume_action = QAction('Resume &interrupted run...', self)
+        resume_action.triggered.connect(self.resume_interrupted_run)
+        resume_action.setEnabled(False)
+        self.resume_action = resume_action
+
         file_menu.addAction(save_config_action)
         file_menu.addAction(load_config_action)
+        file_menu.addAction(load_run_action)
+        file_menu.addAction(resume_action)
         self.recent_menu = file_menu.addMenu('&Recent')
         self.recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
         self._rebuild_recent_menu()
@@ -425,12 +456,7 @@ class MainWindow(QMainWindow):
             
             if file_type == 'batch_plan':
                 plan = BatchSettings.load_batch_plan(file_path)
-                self.batch_plan_cache = plan
-                self.batch_plan_path = file_path
-                if plan:
-                    first_key = list(plan.keys())[0]
-                    self.current_settings = plan[first_key]
-                    self._infer_maze_from_settings(self.current_settings)
+                self._apply_batch_plan(plan, file_path)
                 match = self._match_plan(self.video_paths)
                 msg = (f"Loaded Batch Plan with {len(plan)} configurations.\n"
                        f"Matched to {len(match.matched)} of "
@@ -457,6 +483,35 @@ class MainWindow(QMainWindow):
             self.app_settings.remove_recent_file(file_path)
             logger.error(f"Failed to load configuration: {e}", exc_info=True)
             QMessageBox.critical(self, "Load Failed", f"Failed to load configuration:\n{e}")
+
+    def _apply_batch_plan(self, plan: Dict[str, BatchSettings], plan_path: Path):
+        """Make a loaded batch plan the active configuration."""
+        self.batch_plan_cache = plan
+        self.batch_plan_path = plan_path
+        if plan:
+            first_key = list(plan.keys())[0]
+            self.current_settings = plan[first_key]
+            self._infer_maze_from_settings(self.current_settings)
+
+    def load_settings_from_previous_run(self):
+        """Pick a run folder and load the plan it was analysed with."""
+        folder = QFileDialog.getExistingDirectory(
+            self, "Select a Previous Run Folder",
+            self.app_settings.dialog_dir("output", self.output_dir)
+        )
+        if not folder:
+            return
+        plan_path = Path(folder) / RUN_PLAN_FILENAME
+        if not plan_path.is_file():
+            QMessageBox.information(
+                self, "No Saved Settings",
+                f"'{Path(folder).name}' has no {RUN_PLAN_FILENAME}.\n\n"
+                "Only runs made with this version or later save their "
+                "settings. Use File > Load Configuration for older "
+                "templates or plans."
+            )
+            return
+        self.load_configuration_file(plan_path)
 
     def _match_plan(self, video_paths: List[Path]) -> PlanMatch:
         """Match videos to the loaded Batch Plan (never guessing on ambiguity)."""
@@ -503,23 +558,91 @@ class MainWindow(QMainWindow):
             QMessageBox.information(self, "Output Directory Set", f"Results will be saved to:\n{self.output_dir}")
 
     def check_for_resumable_analyses(self):
-        if self.output_dir is None: return
+        """Look for interrupted runs in the output folder and show a banner."""
+        scan = ResumeScan()
+        if self.output_dir is not None:
+            try:
+                scan = scan_for_resumable_runs(self.output_dir)
+            except Exception:
+                logger.warning(
+                    "Could not inspect resumable analyses",
+                    exc_info=True,
+                )
+        self._resume_scan = scan
+        self._refresh_resume_bar()
+
+    def _refresh_resume_bar(self):
+        scan = self._resume_scan
+        self.resume_label.setText(describe_scan(scan))
+        self.resume_bar.setVisible(bool(scan))
+        resumable = bool(scan.runs) and not self._analysis_running()
+        self.resume_button.setVisible(bool(scan.runs))
+        self.resume_button.setEnabled(resumable)
+        self.resume_action.setEnabled(resumable)
+
+    def resume_interrupted_run(self):
+        """Reload an interrupted run's plan and settings, then start it again."""
+        runs = self._resume_scan.runs
+        if not runs or self._analysis_running():
+            return
+        run = runs[0]
+        if len(runs) > 1:
+            names = [candidate.name for candidate in runs]
+            chosen, ok = QInputDialog.getItem(
+                self, "Resume Interrupted Run", "Which run?", names, 0, False
+            )
+            if not ok:
+                return
+            run = runs[names.index(chosen)]
+        self._resume_run(run)
+
+    def _resume_run(self, run: ResumableRun):
         try:
-            checkpoints = CheckpointManager.find_checkpoints_readonly(
-                self.output_dir
+            plan = BatchSettings.load_batch_plan(run.plan_path)
+        except Exception as exc:
+            logger.error("Could not load run plan", exc_info=True)
+            QMessageBox.critical(
+                self, "Cannot Resume",
+                f"Could not read the saved settings of '{run.name}':\n{exc}"
             )
-            if checkpoints:
-                reply = QMessageBox.question(self, 'Resume Analysis?', 
-                                           f"Found {len(checkpoints)} interrupted analysis session(s). See them?",
-                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-                if reply == QMessageBox.StandardButton.Yes:
-                    msg = "Resumable analyses:\n\n" + "\n".join(f"• {cp.stem.replace('_checkpoint', '')}" for cp in checkpoints)
-                    QMessageBox.information(self, 'Resumable Analyses', msg)
-        except Exception:
-            logger.warning(
-                "Could not inspect resumable analyses",
-                exc_info=True,
+            return
+        if not run.pending_videos:
+            QMessageBox.information(
+                self, "Nothing To Resume",
+                "None of the videos of that run are available any more."
             )
+            return
+        if run.paradigm_id not in AVAILABLE_MAZES:
+            QMessageBox.critical(
+                self, "Cannot Resume",
+                f"The run's paradigm ({run.paradigm_id or 'unknown'}) is not available."
+            )
+            return
+        if self.video_paths and set(self.video_paths) != set(run.pending_videos):
+            box = QMessageBox(self)
+            box.setIcon(QMessageBox.Icon.Question)
+            box.setWindowTitle("Resume Interrupted Run")
+            box.setText(
+                f"Resuming '{run.name}' replaces the current video list with "
+                f"its {len(run.pending_videos)} unfinished video(s)."
+            )
+            replace = box.addButton("Replace list", QMessageBox.ButtonRole.AcceptRole)
+            box.addButton(QMessageBox.StandardButton.Cancel)
+            box.exec()
+            if box.clickedButton() is not replace:
+                return
+
+        self._apply_batch_plan(plan, run.plan_path)
+        self._replace_video_list(run.pending_videos)
+        self.maze = create_maze(run.paradigm_id)
+        self.app_settings.set_last_paradigm(run.paradigm_id)
+        logger.info("Resuming '%s' (%d video(s))", run.name, len(run.pending_videos))
+        self._start_from_batch_plan(self._match_plan(self.video_paths), run.paradigm_id)
+
+    def _replace_video_list(self, paths: List[Path]):
+        self.video_paths = []
+        self.video_list_widget.clear()
+        self._add_video_paths(list(paths))
 
     def start_analysis_workflow(self):
         if not self.video_paths:
@@ -1171,6 +1294,7 @@ class MainWindow(QMainWindow):
         if thread is not None:
             thread.quit()
             thread.wait(5000)
+        self.check_for_resumable_analyses()
 
         if closing:
             QTimer.singleShot(0, self.close)
@@ -1187,7 +1311,11 @@ class MainWindow(QMainWindow):
             not is_running and self.current_settings is not None
         )
         self.load_config_action.setEnabled(not is_running)
+        self.load_run_action.setEnabled(not is_running)
         self.set_output_action.setEnabled(not is_running)
+        self.change_output_button.setEnabled(not is_running)
+        self.recent_menu.setEnabled(not is_running)
+        self._refresh_resume_bar()
 
     def _analysis_running(self) -> bool:
         thread = self.analysis_thread
