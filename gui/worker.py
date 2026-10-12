@@ -66,6 +66,8 @@ class AnalysisWorker(QObject):
     detailed_progress = pyqtSignal(int, str, str)
     log = pyqtSignal(str)
     finished = pyqtSignal(object)
+    # (video path, "running" | "done" | "warning" | "failed" | "queued", message)
+    video_status = pyqtSignal(str, str, str)
 
     def __init__(self, analysis_plan: Dict[Path, BatchSettings], output_dir: Path, maze: Maze):
         super().__init__()
@@ -157,6 +159,8 @@ class AnalysisWorker(QObject):
             plots_dir = video_output_dir / "plots"
             media_dir = video_output_dir / "media"
             self.log.emit(f"\n{'='*60}\nAnalyzing {self.maze.name} video {video_num}/{total_videos}: {video_path.name}\n{'='*60}")
+            self.video_status.emit(str(video_path), "running", "")
+            warnings_before = len(quality_warnings)
             
             to_batch_pct = lambda local_pct: int(
                 ((video_num - 1) + (local_pct / 100.0))
@@ -427,15 +431,28 @@ class AnalysisWorker(QObject):
 
                 self.log.emit(f"✓ Successfully processed: {video_path.name}")
                 all_results.append((video_path, result))
+                new_warnings = quality_warnings[warnings_before:]
+                if new_warnings:
+                    self.video_status.emit(
+                        str(video_path), "warning",
+                        "; ".join(message for _, message in new_warnings[:3]),
+                    )
+                else:
+                    self.video_status.emit(str(video_path), "done", "")
 
             except InterruptedError:
                 run_cancelled = True
                 self.log.emit(f"Analysis cancelled while processing {video_path.name}")
+                self.video_status.emit(
+                    str(video_path), "queued",
+                    "interrupted; resumes from its checkpoint",
+                )
                 break
             except Exception as e:
                 self.log.emit(f"✗ Error processing {video_path.name}: {str(e)}")
                 logger.error("Worker error", exc_info=True)
                 failures.append((video_path, str(e)))
+                self.video_status.emit(str(video_path), "failed", str(e))
             
             global_offset += frames_done
 

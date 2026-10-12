@@ -9,12 +9,12 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
-from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
-                             QListWidget, QMainWindow, QMessageBox,
+from PyQt6.QtCore import QObject, QThread, QTimer, QUrl, Qt, pyqtSignal
+from PyQt6.QtWidgets import (QApplication, QCheckBox, QFileDialog, QHBoxLayout,
+                             QLabel, QMainWindow, QMessageBox,
                              QProgressBar, QProgressDialog, QPushButton, QTextEdit, QVBoxLayout,
                              QWidget, QInputDialog)
-from PyQt6.QtGui import QAction
+from PyQt6.QtGui import QAction, QDesktopServices
 
 # --- CORE IMPORTS ---
 from core.batch_plan_keys import (PlanMatch, build_plan_by_key,
@@ -41,6 +41,9 @@ from gui.tst_tuner import TstTunerDialog
 from gui.background_task import TaskCancelled, run_with_progress
 from gui.run_resume import (RUN_PLAN_FILENAME, ResumableRun, ResumeScan,
                             describe_scan, scan_for_resumable_runs)
+from gui.video_list import (STATUS_QUEUED, STATUS_RUNNING, VideoListWidget,
+                            clear_list_choices, collect_video_files,
+                            move_selected, outcome_statuses, remove_at)
 from gui.worker import AnalysisWorker, BatchRunOutcome
 from gui.roi_preview import ROIPreviewDialog
 from gui.freestyle_config_dialog import FreestyleConfigDialog
@@ -121,6 +124,11 @@ class MainWindow(QMainWindow):
         self.batch_plan_cache: Dict[str, BatchSettings] = {}
         self.batch_plan_path: Optional[Path] = None
         
+        # {video: (status, message)} shown as the icon of each list row.
+        self._video_status: Dict[Path, Tuple[str, str]] = {}
+        # Folder of the most recent run, for "Open last run folder".
+        self._last_run_dir: Optional[Path] = None
+
         # What the setup wizard collected before it was cancelled; offered
         # again the next time Start is pressed (see setup_progress).
         self._pending_setup: Optional[SetupProgress] = None
@@ -132,6 +140,7 @@ class MainWindow(QMainWindow):
         self._close_requested = False
         self._force_close = False
 
+        self.setAcceptDrops(True)
         self.init_ui()
         self.create_menu_bar()
         self._restore_session()
@@ -181,17 +190,37 @@ class MainWindow(QMainWindow):
         top_layout = QHBoxLayout()
         self.add_videos_button = QPushButton("Add Videos")
         self.add_folder_button = QPushButton("Add Folder")
+        self.recursive_check = QCheckBox("Include subfolders")
+        self.recursive_check.setChecked(self.app_settings.add_folder_recursive())
+        self.recursive_check.setToolTip(
+            "Also add videos from the folders inside the chosen folder "
+            "(analysis_run_* result folders are skipped)."
+        )
+        self.recursive_check.toggled.connect(
+            self.app_settings.set_add_folder_recursive
+        )
+        self.remove_selected_button = QPushButton("Remove Selected")
+        self.move_up_button = QPushButton("Move Up")
+        self.move_down_button = QPushButton("Move Down")
         self.clear_list_button = QPushButton("Clear List")
-        
+
         self.add_videos_button.clicked.connect(self.add_videos)
         self.add_folder_button.clicked.connect(self.add_folder)
+        self.remove_selected_button.clicked.connect(self.remove_selected_videos)
+        self.move_up_button.clicked.connect(lambda: self.move_selected_videos(-1))
+        self.move_down_button.clicked.connect(lambda: self.move_selected_videos(1))
         self.clear_list_button.clicked.connect(self.clear_list)
-        
+
         top_layout.addWidget(self.add_videos_button)
         top_layout.addWidget(self.add_folder_button)
+        top_layout.addWidget(self.recursive_check)
+        top_layout.addStretch()
+        top_layout.addWidget(self.remove_selected_button)
+        top_layout.addWidget(self.move_up_button)
+        top_layout.addWidget(self.move_down_button)
         top_layout.addWidget(self.clear_list_button)
         main_layout.addLayout(top_layout)
-        
+
         # Banner offering to resume an interrupted run (hidden when none)
         self.resume_bar = QWidget()
         resume_layout = QHBoxLayout(self.resume_bar)
@@ -209,7 +238,10 @@ class MainWindow(QMainWindow):
         main_layout.addWidget(self.resume_bar)
 
         # Video list
-        self.video_list_widget = QListWidget()
+        self.video_list_widget = VideoListWidget()
+        self.video_list_widget.remove_requested.connect(self.remove_selected_videos)
+        self.video_list_widget.move_requested.connect(self.move_selected_videos)
+        self.video_list_widget.itemSelectionChanged.connect(self.update_button_states)
         main_layout.addWidget(self.video_list_widget)
 
         # Output folder
@@ -220,8 +252,12 @@ class MainWindow(QMainWindow):
         )
         self.change_output_button = QPushButton("Change…")
         self.change_output_button.clicked.connect(self.set_output_directory)
+        self.open_output_button = QPushButton("Open")
+        self.open_output_button.setToolTip("Open the output folder in the file manager")
+        self.open_output_button.clicked.connect(self.open_output_folder)
         output_layout.addWidget(self.output_label, 1)
         output_layout.addWidget(self.change_output_button)
+        output_layout.addWidget(self.open_output_button)
         main_layout.addLayout(output_layout)
         self._refresh_output_label()
         
@@ -288,10 +324,22 @@ class MainWindow(QMainWindow):
         resume_action.setEnabled(False)
         self.resume_action = resume_action
 
+        open_output_action = QAction('Open &output folder', self)
+        open_output_action.triggered.connect(self.open_output_folder)
+        self.open_output_action = open_output_action
+
+        open_last_run_action = QAction('Open &last run folder', self)
+        open_last_run_action.triggered.connect(self.open_last_run_folder)
+        open_last_run_action.setEnabled(False)
+        self.open_last_run_action = open_last_run_action
+
         file_menu.addAction(save_config_action)
         file_menu.addAction(load_config_action)
         file_menu.addAction(load_run_action)
         file_menu.addAction(resume_action)
+        file_menu.addSeparator()
+        file_menu.addAction(open_output_action)
+        file_menu.addAction(open_last_run_action)
         self.recent_menu = file_menu.addMenu('&Recent')
         self.recent_menu.aboutToShow.connect(self._rebuild_recent_menu)
         self._rebuild_recent_menu()
@@ -344,25 +392,33 @@ class MainWindow(QMainWindow):
             self.app_settings.dialog_dir("video")
         )
         if not folder: return
-        self.app_settings.set_last_video_dir(Path(folder))
-        
         folder_path = Path(folder)
-        video_extensions = {'.mp4', '.avi', '.mov', '.mkv'}
-        
-        found_videos = [f for f in folder_path.iterdir() if f.is_file() and f.suffix.lower() in video_extensions]
-        
-        if not found_videos:
-            QMessageBox.information(self, "No Videos Found", f"No video files found in:\n{folder_path}")
-            return
-        
-        reply = QMessageBox.question(
-            self, "Confirm Batch Import",
-            f"Found {len(found_videos)} video(s) in folder.\nAdd all?",
-            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
+        self.app_settings.set_last_video_dir(folder_path)
+
+        found_videos, _ = collect_video_files(
+            [folder_path], self.recursive_check.isChecked()
         )
-        
-        if reply == QMessageBox.StandardButton.Yes:
-            added_count = self._add_video_paths(sorted(found_videos))
+        if not found_videos:
+            hint = "" if self.recursive_check.isChecked() else (
+                "\n\nTick 'Include subfolders' to search the folders inside it too."
+            )
+            QMessageBox.information(
+                self, "No Videos Found",
+                f"No video files found in:\n{folder_path}{hint}"
+            )
+            return
+
+        answer = ux_helpers.ask_choice(
+            self, "Add Folder",
+            f"Found {len(found_videos)} video(s) in:\n{folder_path}",
+            [
+                Choice("add", f"Add {len(found_videos)} video(s)"),
+                Choice("cancel", "Cancel", QMessageBox.ButtonRole.RejectRole),
+            ],
+            default_key="add",
+        )
+        if answer == "add":
+            added_count = self._add_video_paths(found_videos)
             logger.info(f"Added {added_count} video(s) from folder: {folder_path.name}")
 
     def _add_video_paths(self, paths: List[Path]) -> int:
@@ -372,8 +428,8 @@ class MainWindow(QMainWindow):
         for path in paths:
             if path not in self.video_paths:
                 self.video_paths.append(path)
-                self.video_list_widget.addItem(str(path))
                 added_count += 1
+        self._refresh_video_list()
         if self.output_dir is None and self.video_paths:
             self._set_output_dir(self.video_paths[0].parent, explicit=False)
         if output_was_unset and self.output_dir is not None:
@@ -381,25 +437,143 @@ class MainWindow(QMainWindow):
         self.update_button_states()
         return added_count
 
-    def clear_list(self):
+    def _refresh_video_list(self, selected=()):
+        """Rebuild the rows from ``video_paths`` with each video's status."""
+        self.video_list_widget.set_videos(
+            self.video_paths, self._video_status, selected
+        )
+
+    # --- drag and drop ---------------------------------------------------------
+    def dragEnterEvent(self, event):
+        if not self._analysis_running() and event.mimeData().hasUrls():
+            event.acceptProposedAction()
+        else:
+            event.ignore()
+
+    def dropEvent(self, event):
+        if self._analysis_running():
+            event.ignore()
+            return
+        dropped = [
+            Path(url.toLocalFile()) for url in event.mimeData().urls()
+            if url.isLocalFile()
+        ]
+        event.acceptProposedAction()
+        self.add_dropped_paths(dropped)
+
+    def add_dropped_paths(self, dropped: List[Path]):
+        """Handle files and folders dropped on the window."""
+        configs = [p for p in dropped if p.suffix.lower() == ".json" and p.is_file()]
+        videos, ignored = collect_video_files(
+            [p for p in dropped if p not in configs],
+            self.recursive_check.isChecked()
+        )
+        if videos:
+            self.app_settings.set_last_video_dir(
+                videos[0].parent if videos[0].parent.is_dir() else None
+            )
+            added = self._add_video_paths(videos)
+            logger.info(f"Added {added} dropped video(s)")
+        if len(configs) == 1 and not videos:
+            self.load_configuration_file(configs[0])
+        elif configs:
+            ignored.extend(configs)
+        if ignored:
+            names = ", ".join(path.name for path in ignored[:5])
+            more = f" and {len(ignored) - 5} more" if len(ignored) > 5 else ""
+            logger.warning(f"Ignored dropped item(s): {names}{more}")
+            if not videos:
+                QMessageBox.information(
+                    self, "Nothing To Add",
+                    "Drop video files (.mp4, .avi, .mov, .mkv), a folder of "
+                    "videos, or one saved configuration (.json).\n\n"
+                    f"Ignored: {names}{more}"
+                )
+
+    # --- editing the list ---------------------------------------------------------
+    def remove_selected_videos(self):
+        if self._analysis_running():
+            return
+        rows = self.video_list_widget.selected_rows()
+        if not rows:
+            return
+        for row in rows:
+            self._video_status.pop(self.video_paths[row], None)
+        self.video_paths = remove_at(self.video_paths, rows)
+        self._refresh_video_list([min(rows[0], len(self.video_paths) - 1)])
+        self._reset_auto_output_dir()
+        self.update_button_states()
+        logger.info(f"Removed {len(rows)} video(s)")
+
+    def move_selected_videos(self, offset: int):
+        if self._analysis_running():
+            return
+        rows = self.video_list_widget.selected_rows()
+        if not rows:
+            return
+        self.video_paths, selected = move_selected(self.video_paths, rows, offset)
+        self._refresh_video_list(selected)
+        self.video_list_widget.setFocus()
+
+    def _reset_auto_output_dir(self):
+        """An output folder that only followed the first video follows it still."""
+        if self._output_dir_explicit:
+            return
         if self.video_paths:
-            reply = QMessageBox.question(self, "Clear List", "Remove all video(s)?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                self.video_paths.clear()
-                self.video_list_widget.clear()
-                self.current_settings = None
-                self.batch_plan_cache = {}
-                self.batch_plan_path = None
-                self.update_button_states()
-                logger.info("Video list cleared")
+            self._set_output_dir(self.video_paths[0].parent, explicit=False)
+        else:
+            self._set_output_dir(None, explicit=False)
+
+    def clear_list(self):
+        if not self.video_paths or self._analysis_running():
+            return
+        has_config = (
+            self.current_settings is not None
+            or bool(self.batch_plan_cache)
+            or self._pending_setup is not None
+        )
+        options = clear_list_choices(has_config)
+        choices = [
+            Choice(key, label, QMessageBox.ButtonRole.DestructiveRole
+                   if key == "all" else QMessageBox.ButtonRole.AcceptRole)
+            for key, label in options
+        ] + [Choice("cancel", "Cancel", QMessageBox.ButtonRole.RejectRole)]
+        answer = ux_helpers.ask_choice(
+            self, "Clear List",
+            f"Remove all {len(self.video_paths)} video(s) from the list?",
+            choices, default_key="cancel",
+            informative=(
+                "The loaded template, batch plan or unfinished setup can be "
+                "kept for the next videos." if has_config else ""
+            ),
+        )
+        if answer not in ("videos", "all"):
+            return
+        self.video_paths.clear()
+        self._video_status.clear()
+        self._refresh_video_list()
+        if answer == "all":
+            self.current_settings = None
+            self.batch_plan_cache = {}
+            self.batch_plan_path = None
+            self._pending_setup = None
+        self._reset_auto_output_dir()
+        self.update_button_states()
+        logger.info("Video list cleared" + (" with configuration" if answer == "all" else ""))
 
     def update_button_states(self):
         has_videos = len(self.video_paths) > 0
         has_settings = self.current_settings is not None or len(self.batch_plan_cache) > 0
-        
-        self.start_button.setEnabled(has_videos)
-        self.preview_button.setEnabled(has_videos and has_settings)
-        self.save_config_action.setEnabled(self.current_settings is not None)
+        has_selection = bool(self.video_list_widget.selectedItems())
+        idle = not self._analysis_running()
+
+        self.start_button.setEnabled(has_videos and idle)
+        self.preview_button.setEnabled(has_videos and has_settings and idle)
+        self.save_config_action.setEnabled(self.current_settings is not None and idle)
+        self.remove_selected_button.setEnabled(has_selection and idle)
+        self.move_up_button.setEnabled(has_selection and idle)
+        self.move_down_button.setEnabled(has_selection and idle)
+        self.clear_list_button.setEnabled(has_videos and idle)
 
     def preview_rois(self):
         if not self.video_paths: return
@@ -1286,6 +1460,10 @@ class MainWindow(QMainWindow):
                 effective_parameters
             )
 
+        self._video_status = {
+            video: (STATUS_QUEUED, "") for video in analysis_plan
+        }
+        self._refresh_video_list(self.video_list_widget.selected_rows())
         self.set_ui_state(is_running=True)
         self.progress_bar.setValue(0)
         
@@ -1311,6 +1489,7 @@ class MainWindow(QMainWindow):
         self.analysis_worker.progress.connect(self.update_progress)
         self.analysis_worker.detailed_progress.connect(self.update_progress_detailed)
         self.analysis_worker.log.connect(logging.info)
+        self.analysis_worker.video_status.connect(self._on_video_status)
         # Qt frees both objects once the thread has stopped; analysis_finished
         # drops our references first so nothing touches them afterwards.
         self.analysis_thread.finished.connect(self.analysis_worker.deleteLater)
@@ -1432,6 +1611,72 @@ class MainWindow(QMainWindow):
 
         return True
 
+    def _on_video_status(self, video: str, status: str, message: str):
+        """Update one row from the worker's per-video signal."""
+        self._video_status[Path(video)] = (status, message)
+        self._refresh_video_list(self.video_list_widget.selected_rows())
+        if status == STATUS_RUNNING:
+            row = next(
+                (i for i, path in enumerate(self.video_paths) if path == Path(video)),
+                None,
+            )
+            if row is not None:
+                self.video_list_widget.scrollToItem(self.video_list_widget.item(row))
+
+    def open_output_folder(self):
+        folder = self.output_dir or (
+            self.video_paths[0].parent if self.video_paths else None
+        )
+        if folder is None:
+            QMessageBox.information(
+                self, "No Output Folder",
+                "Add videos or choose an output folder first."
+            )
+            return
+        self._open_path(folder)
+
+    def open_last_run_folder(self):
+        if self._last_run_dir is not None:
+            self._open_path(self._last_run_dir)
+
+    def _open_path(self, path: Path) -> bool:
+        """Open a file or folder with the system's default application."""
+        if not Path(path).exists():
+            QMessageBox.warning(self, "Not Found", f"{path}\n\ndoes not exist (any more).")
+            return False
+        opened = QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
+        if not opened:
+            logger.warning("Could not open %s", path)
+            QMessageBox.warning(self, "Cannot Open", f"Could not open:\n{path}")
+        return opened
+
+    def _show_run_result(self, icon, title: str, text: str,
+                         run_output_dir: Optional[Path]):
+        """Result box that can open the run folder and the batch summary."""
+        summary = run_output_dir / "batch_summary.csv" if run_output_dir else None
+        while True:
+            choices = []
+            if run_output_dir is not None:
+                choices.append(Choice(
+                    "folder", "Open output folder",
+                    QMessageBox.ButtonRole.ActionRole,
+                ))
+            if summary is not None and summary.is_file():
+                choices.append(Choice(
+                    "summary", "Open batch summary",
+                    QMessageBox.ButtonRole.ActionRole,
+                ))
+            choices.append(Choice("ok", "OK", QMessageBox.ButtonRole.RejectRole))
+            answer = ux_helpers.ask_choice(
+                self, title, text, choices, default_key="ok", icon=icon
+            )
+            if answer == "folder":
+                self._open_path(run_output_dir)
+            elif answer == "summary":
+                self._open_path(summary)
+            else:
+                return
+
     def cancel_analysis(self):
         if self.analysis_worker:
             self.analysis_worker.stop()
@@ -1471,49 +1716,67 @@ class MainWindow(QMainWindow):
         run_output_dir = outcome.output_dir or self.output_dir
         closing = self._close_requested
 
+        # The per-video signals normally got there first; this makes the
+        # list agree with the final outcome whatever their order was.
+        for video, state in outcome_statuses(
+            (path for path, _ in all_results),
+            outcome.failures,
+            outcome.quality_warnings,
+        ).items():
+            if video in self._video_status:
+                self._video_status[video] = state
+        self._refresh_video_list(self.video_list_widget.selected_rows())
+        if outcome.output_dir is not None:
+            self._last_run_dir = outcome.output_dir
+            self.open_last_run_action.setEnabled(True)
+
         if closing:
             # The user is quitting: no result dialogs, just finish and close.
             pass
         elif outcome.cancelled:
-            QMessageBox.warning(
-                self,
+            self._show_run_result(
+                QMessageBox.Icon.Warning,
                 "Analysis Cancelled",
                 f"Analysis was cancelled.\n"
                 f"Completed: {len(all_results)} video(s)\n"
-                "The interrupted video can be resumed from its checkpoint."
+                "The interrupted video can be resumed from its checkpoint.",
+                run_output_dir,
             )
         elif outcome.failures:
             failure_lines = "\n".join(
                 f"• {path.name}: {message}"
                 for path, message in outcome.failures[:5]
             )
-            QMessageBox.warning(
-                self,
+            self._show_run_result(
+                QMessageBox.Icon.Warning,
                 "Analysis Completed with Errors",
                 f"Completed: {len(all_results)} video(s)\n"
                 f"Failed: {len(outcome.failures)} video(s)\n\n"
-                f"{failure_lines}\n\nSaved to: {run_output_dir}"
+                f"{failure_lines}\n\nSaved to: {run_output_dir}",
+                run_output_dir,
             )
         elif outcome.quality_warnings:
             warning_lines = "\n".join(
                 f"• {path.name}: {message}"
                 for path, message in outcome.quality_warnings[:5]
             )
-            QMessageBox.warning(
-                self,
+            self._show_run_result(
+                QMessageBox.Icon.Warning,
                 "Analysis Requires Quality Review",
                 f"Completed: {len(all_results)} video(s)\n\n"
                 f"{warning_lines}\n\n"
                 "Review the per-frame evidence and, when generated, the "
                 "validation video before "
-                f"interpreting these results.\n\nSaved to: {run_output_dir}"
+                f"interpreting these results.\n\nSaved to: {run_output_dir}",
+                run_output_dir,
             )
         else:
-            QMessageBox.information(
-                self,
+            self._show_run_result(
+                QMessageBox.Icon.Information,
                 "Complete",
                 f"Analysis finished!\nProcessed: {len(all_results)} video(s)\n"
-                f"Saved to: {run_output_dir}"
+                f"Saved to: {run_output_dir}",
+                run_output_dir,
             )
         self.set_ui_state(is_running=False)
         if outcome.cancelled:
@@ -1547,7 +1810,12 @@ class MainWindow(QMainWindow):
         self.start_button.setEnabled(not is_running)
         self.add_videos_button.setEnabled(not is_running)
         self.add_folder_button.setEnabled(not is_running)
-        self.clear_list_button.setEnabled(not is_running)
+        self.clear_list_button.setEnabled(not is_running and bool(self.video_paths))
+        self.recursive_check.setEnabled(not is_running)
+        has_selection = bool(self.video_list_widget.selectedItems())
+        for button in (self.remove_selected_button, self.move_up_button,
+                       self.move_down_button):
+            button.setEnabled(not is_running and has_selection)
         self.cancel_button.setEnabled(is_running)
         self.preview_button.setEnabled(not is_running and (self.current_settings is not None or len(self.batch_plan_cache) > 0))
         # Configuration and output-folder changes would race the running job.
