@@ -28,7 +28,7 @@ from core.version import APP_NAME, APP_VERSION
 # --- LEGACY/UTILITY IMPORTS ---
 from core.analysis_engine import apply_scale_to_result
 from mazes.base_maze import BaseAnalysisResult, Maze
-from mazes.tst import TST
+from mazes.tst import TST, describe_window_truncation
 from output import DataExporter, Visualizer
 from checkpoint_manager import CheckpointManager, ProgressEstimator
 
@@ -206,6 +206,11 @@ class AnalysisWorker(QObject):
                                 f"({mean_confidence:.2f})"
                             ))
                         qc = result.quality_metrics.get(mouse_name, {})
+                        truncation = describe_window_truncation(
+                            result, mouse_name
+                        )
+                        if truncation:
+                            quality_warnings.append((video_path, truncation))
                         if qc.get("segmentation_failure_pct", 0.0) > 5.0:
                             quality_warnings.append((
                                 video_path,

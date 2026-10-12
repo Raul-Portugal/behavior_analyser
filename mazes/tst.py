@@ -38,6 +38,15 @@ class TSTResult(BaseAnalysisResult):
     immobility_percentage: Dict[str, float] = field(default_factory=dict)
     mean_state_confidence: Dict[str, float] = field(default_factory=dict)
     quality_metrics: Dict[str, Dict[str, float]] = field(default_factory=dict)
+    # Window actually scored for each mouse versus the window requested
+    # through per_roi_times (or the whole trace when none was requested).
+    window_coverage_s: Dict[str, Tuple[float, float]] = field(
+        default_factory=dict
+    )
+    requested_window_s: Dict[str, Tuple[float, float]] = field(
+        default_factory=dict
+    )
+    bouts_split_by_uncertainty: Dict[str, int] = field(default_factory=dict)
 
     def to_dict(self) -> Dict[str, object]:
         return {
@@ -61,11 +70,56 @@ class TSTResult(BaseAnalysisResult):
                 "mean_state_confidence": self.mean_state_confidence,
                 "quality_metrics": self.quality_metrics,
                 "immobility_bouts": self.immobility_bouts,
+                "bouts_split_by_uncertainty": self.bouts_split_by_uncertainty,
+                "window_coverage_s": self.window_coverage_s,
+                "requested_window_s": self.requested_window_s,
                 "latency_to_first_immobility_s": (
                     self.latency_to_first_immobility
                 ),
             },
         }
+
+def count_bouts_split_by_uncertainty(
+    states: List[Optional[bool]]
+) -> int:
+    """Count immobile bouts divided only by uncertain frames.
+
+    ``True`` is immobile, ``False`` mobile and ``None`` uncertain. A split is
+    an uncertain stretch with immobility on both sides and no mobile frame in
+    between, so the two bouts may really be one.
+    """
+    splits = 0
+    after_immobile = False
+    uncertain_seen = False
+    for value in states:
+        if value is True:
+            if after_immobile and uncertain_seen:
+                splits += 1
+            after_immobile = True
+            uncertain_seen = False
+        elif value is False:
+            after_immobile = False
+            uncertain_seen = False
+        elif after_immobile:
+            uncertain_seen = True
+    return splits
+
+
+def describe_window_truncation(
+    result: TSTResult, mouse_name: str
+) -> Optional[str]:
+    """Return a quality warning when a mouse's requested window was cut."""
+    quality = result.quality_metrics.get(mouse_name, {})
+    if quality.get("window_truncated", 0.0) <= 0:
+        return None
+    requested = result.requested_window_s.get(mouse_name, (0.0, 0.0))
+    covered = result.window_coverage_s.get(mouse_name, (0.0, 0.0))
+    return (
+        f"{mouse_name}: requested window {requested[0]:.0f}-"
+        f"{requested[1]:.0f} s but video covers {covered[0]:.0f}-"
+        f"{covered[1]:.0f} s"
+    )
+
 
 class TST(Maze):
     name = "Tail Suspension Test"
@@ -147,6 +201,7 @@ class TST(Maze):
         for mouse_name in mouse_names:
             evidence_trace = result.motion_evidence.get(mouse_name, [])
             if not evidence_trace:
+                self._record_window(result, mouse_name, 0, 0, 0)
                 result.total_immobility_time[mouse_name] = 0.0
                 result.immobility_percentage[mouse_name] = 0.0
                 result.static_immobility_time[mouse_name] = 0.0
@@ -174,6 +229,9 @@ class TST(Maze):
                 end_idx = bisect_left(trace_times, target_end)
             
             valid_evidence = evidence_trace[start_idx:end_idx]
+            self._record_window(
+                result, mouse_name, start_idx, end_idx, len(evidence_trace)
+            )
             if not valid_evidence:
                 result.total_immobility_time[mouse_name] = 0.0
                 result.immobility_percentage[mouse_name] = 0.0
@@ -241,6 +299,9 @@ class TST(Maze):
             valid_minutes = max(len(valid_evidence) / fps / 60.0, 1e-9)
             mean_area = float(np.mean(areas)) if areas else 0.0
             result.quality_metrics[mouse_name] = {
+                "window_truncated": result.quality_metrics.get(
+                    mouse_name, {}
+                ).get("window_truncated", 0.0),
                 "mean_mask_area_ratio": mean_area,
                 "mask_area_cv_pct": (
                     float(np.std(areas) / mean_area * 100.0)
@@ -296,6 +357,13 @@ class TST(Maze):
                     bouts += 1
                 previous = current
             result.immobility_bouts[mouse_name] = bouts
+            split_bouts = count_bouts_split_by_uncertainty(
+                filtered_immobility
+            )
+            result.bouts_split_by_uncertainty[mouse_name] = split_bouts
+            result.quality_metrics[mouse_name][
+                "bouts_split_by_uncertainty"
+            ] = float(split_bouts)
             
             first_idx = next(
                 (
@@ -310,6 +378,51 @@ class TST(Maze):
             else:
                 result.latency_to_first_immobility[mouse_name] = None
 
+    @staticmethod
+    def _record_window(
+        result: TSTResult,
+        mouse_name: str,
+        start_idx: int,
+        end_idx: int,
+        trace_length: int,
+    ) -> None:
+        """Store requested/covered windows and flag a truncated request.
+
+        The covered window runs from the first to the end of the last frame
+        actually scored. Truncation is flagged when the request exceeds it by
+        more than one frame plus half a second.
+        """
+        frame_s = 1.0 / result.fps if result.fps > 0 else 0.0
+        trace_times = result.timestamps[:trace_length]
+        if trace_times:
+            requested = (trace_times[0], trace_times[-1] + frame_s)
+        else:
+            requested = (0.0, 0.0)
+        if result.per_roi_times and mouse_name in result.per_roi_times:
+            requested = tuple(
+                float(value) for value in result.per_roi_times[mouse_name]
+            )
+        if trace_times and end_idx > start_idx:
+            covered = (
+                trace_times[start_idx], trace_times[end_idx - 1] + frame_s
+            )
+        else:
+            covered = (requested[0], requested[0])
+        shortfall = (
+            max(0.0, covered[0] - requested[0])
+            + max(0.0, requested[1] - covered[1])
+        )
+        truncated = shortfall > frame_s + 0.5
+        result.requested_window_s[mouse_name] = requested
+        result.window_coverage_s[mouse_name] = covered
+        result.quality_metrics.setdefault(mouse_name, {})[
+            "window_truncated"
+        ] = 1.0 if truncated else 0.0
+        result.quality_metrics[mouse_name].setdefault(
+            "bouts_split_by_uncertainty", 0.0
+        )
+        result.bouts_split_by_uncertainty.setdefault(mouse_name, 0)
+
     def get_batch_summary_headers(self) -> List[str]:
         return [
             'mouse_name', 'total_immobility_s', 'immobility_pct',
@@ -318,7 +431,10 @@ class TST(Maze):
             'valid_time_s', 'bouts', 'latency_s',
             'mean_state_confidence', 'mask_area_cv_pct',
             'segmentation_failure_pct', 'low_confidence_pct',
-            'state_switches_per_min', 'window_start', 'window_end'
+            'state_switches_per_min', 'bouts_split_by_uncertainty',
+            'window_start', 'window_end',
+            'requested_window_start', 'requested_window_end',
+            'window_truncated'
         ]
 
     def get_batch_summary_row(self, result: BaseAnalysisResult) -> List[List[any]]:
@@ -337,8 +453,16 @@ class TST(Maze):
                 if result.timestamps and result.fps > 0 else
                 result.end_frame / result.fps
             )
+            requested_start, requested_end = start_t, end_t
             if result.per_roi_times and mouse in result.per_roi_times:
-                start_t, end_t = result.per_roi_times[mouse]
+                requested_start, requested_end = result.per_roi_times[mouse]
+                start_t, end_t = requested_start, requested_end
+            # Report the window actually scored, not the one requested.
+            if mouse in result.window_coverage_s:
+                start_t, end_t = result.window_coverage_s[mouse]
+                requested_start, requested_end = result.requested_window_s.get(
+                    mouse, (requested_start, requested_end)
+                )
             
             total = result.total_immobility_time.get(mouse, 0)
             bouts = result.immobility_bouts.get(mouse, 0)
@@ -362,8 +486,12 @@ class TST(Maze):
                 f"{quality.get('segmentation_failure_pct', 0.0):.2f}",
                 f"{quality.get('low_confidence_pct', 0.0):.2f}",
                 f"{quality.get('state_switches_per_min', 0.0):.2f}",
+                result.bouts_split_by_uncertainty.get(mouse, 0),
                 f"{start_t:.1f}",
-                f"{end_t:.1f}"
+                f"{end_t:.1f}",
+                f"{requested_start:.1f}",
+                f"{requested_end:.1f}",
+                int(quality.get('window_truncated', 0.0) > 0),
             ]
             rows.append(row)
         return rows
