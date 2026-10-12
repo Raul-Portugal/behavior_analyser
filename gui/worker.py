@@ -30,7 +30,9 @@ from core.video import (
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.analysis_engine import Analyzer
 from core.tst_display import blend_polygon, tst_display_style
-from core.tst_motion_engine import TSTFramePipeline, TSTMotionEngine
+from core.tst_motion_engine import (
+    TST_VALIDATION_FRAME_STEP, TSTFramePipeline, TSTMotionEngine,
+)
 from core.version import APP_NAME, APP_VERSION
 
 # --- LEGACY/UTILITY IMPORTS ---
@@ -579,7 +581,14 @@ class AnalysisWorker(QObject):
                     raise InterruptedError("Analysis cancelled")
 
                 _, observations = pipeline.pop()
+                # Position within the result, which is what the validation
+                # video indexes (also after a resume: lists are restored).
+                result_index = len(result.timestamps)
                 result.timestamps.append(curr / handler.fps)
+                keep_contour = (
+                    settings.create_timelapse
+                    and result_index % TST_VALIDATION_FRAME_STEP == 0
+                )
                 for name, observation in observations.items():
                     result.activity_scores[name].append(
                         observation.activity_score
@@ -587,10 +596,12 @@ class AnalysisWorker(QObject):
                     evidence = observation.to_dict()
                     # A compact contour gives the optional validation video a
                     # direct view of the body segmentation that produced this
-                    # classification, without exporting full frame masks.
-                    evidence["mask_contour"] = engine.get_last_mask_contour(
-                        name
-                    )
+                    # classification. Only the frames that video draws keep
+                    # one: contours were most of the per-frame memory.
+                    if keep_contour:
+                        evidence["mask_contour"] = (
+                            engine.get_last_mask_contour(name)
+                        )
                     result.motion_evidence[name].append(evidence)
 
                 processed_frame_idx = curr

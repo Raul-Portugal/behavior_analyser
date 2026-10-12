@@ -8,9 +8,10 @@ from unittest.mock import Mock
 try:
     import cv2
 
-    from core.tst_motion_engine import TSTMotionEngine
+    from core.tst_motion_engine import TST_VALIDATION_FRAME_STEP, TSTMotionEngine
     from gui.worker import AnalysisWorker
     from mazes.tst import TST
+    from output import DataExporter
     from tests import worker_support as support
     HAS_RUNTIME = True
 except ModuleNotFoundError:
@@ -142,6 +143,112 @@ class TSTProductionLoopEquivalenceTests(unittest.TestCase):
             self.assertEqual(
                 payload["_tst_engine_state"], reference.export_state()
             )
+
+
+class _SpyEvidence(dict):
+    """Evidence row that records whether a contour was looked up."""
+
+    def __init__(self, index, row, log):
+        super().__init__(row)
+        self._index, self._log = index, log
+
+    def get(self, key, default=None):
+        value = super().get(key, default)
+        if key == "mask_contour":
+            self._log.append((self._index, value))
+        return value
+
+
+@unittest.skipUnless(HAS_RUNTIME, "GUI/scientific runtime is not installed")
+class TSTContourStorageTests(unittest.TestCase):
+    END = 100
+
+    def test_contours_are_not_stored_without_a_validation_video(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = WorkerRun(directory, create_timelapse=False)
+            result, _ = run.run(end_frame=self.END)
+        self.assertGreater(len(result.motion_evidence["mouse_1"]), 90)
+        for item in result.motion_evidence["mouse_1"]:
+            self.assertNotIn("mask_contour", item)
+
+    def test_only_sampled_frames_keep_a_contour_when_requested(self):
+        self.assertEqual(TST_VALIDATION_FRAME_STEP, 3)
+        with tempfile.TemporaryDirectory() as directory:
+            run = WorkerRun(directory, create_timelapse=True)
+            result, _ = run.run(end_frame=self.END)
+            roi = run.settings.roi_manager.rois["mouse_1"][0]
+            engine = TSTMotionEngine(
+                {"mouse_1": roi}, run.worker.maze.motion_config, fps=30.0
+            )
+            frames = decoded_frames(run.video, 0)
+            expected = {}
+            for index in range(1, self.END):
+                engine.calculate_observations(frames[index], frames[index - 1])
+                expected[index - 1] = engine.get_last_mask_contour("mouse_1")
+
+        evidence = result.motion_evidence["mouse_1"]
+        for index, item in enumerate(evidence):
+            if index % TST_VALIDATION_FRAME_STEP == 0:
+                self.assertEqual(item["mask_contour"], expected[index], index)
+            else:
+                self.assertNotIn("mask_contour", item, index)
+        sampled = [
+            item for index, item in enumerate(evidence)
+            if index % TST_VALIDATION_FRAME_STEP == 0
+        ]
+        self.assertGreater(
+            sum(len(item["mask_contour"]) >= 3 for item in sampled),
+            len(sampled) - 3,
+        )
+
+    def test_contour_sampling_does_not_change_any_other_evidence(self):
+        with tempfile.TemporaryDirectory() as directory:
+            with_video, _ = WorkerRun(
+                directory, create_timelapse=True
+            ).run(end_frame=self.END)
+        with tempfile.TemporaryDirectory() as directory:
+            without_video, _ = WorkerRun(
+                directory, create_timelapse=False
+            ).run(end_frame=self.END)
+
+        def strip(result):
+            return [
+                {k: v for k, v in item.items() if k != "mask_contour"}
+                for item in result.motion_evidence["mouse_1"]
+            ]
+
+        self.assertEqual(strip(with_video), strip(without_video))
+
+    def test_exporters_accept_evidence_without_contours(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = WorkerRun(directory, create_timelapse=False)
+            result, _ = run.run(end_frame=self.END)
+            run.worker.maze.calculate_metrics(result)
+            csv_path = Path(directory) / "evidence.csv"
+            DataExporter.export_to_csv(result, csv_path)
+            lines = csv_path.read_text(encoding="utf-8").splitlines()
+        self.assertEqual(len(lines) - 1, len(result.timestamps))
+
+    def test_validation_video_frames_still_get_their_contours(self):
+        with tempfile.TemporaryDirectory() as directory:
+            run = WorkerRun(directory, create_timelapse=True)
+            result, _ = run.run(end_frame=self.END)
+            run.worker.maze.calculate_metrics(result)
+            lookups = []
+            result.motion_evidence["mouse_1"] = [
+                _SpyEvidence(index, item, lookups)
+                for index, item in enumerate(result.motion_evidence["mouse_1"])
+            ]
+            media_dir = Path(directory) / "media"
+            media_dir.mkdir()
+            run.worker._generate_tst_validation_video(
+                result, run.video, run.settings, "clip", media_dir
+            )
+            self.assertTrue((media_dir / "clip_validation.mp4").exists())
+        self.assertGreater(len(lookups), 20)
+        for index, contour in lookups:
+            self.assertEqual(index % TST_VALIDATION_FRAME_STEP, 0, index)
+            self.assertGreaterEqual(len(contour), 3, index)
 
 
 if __name__ == "__main__":
