@@ -3,11 +3,31 @@ Freestyle Configuration Dialog.
 Allows users to configure custom zones or choose zone-free tracking.
 """
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox, QFormLayout,
-                             QGroupBox, QLabel, QLineEdit, QListWidget, 
-                             QPushButton, QScrollArea, QSpinBox, QVBoxLayout,
-                             QHBoxLayout, QWidget, QMessageBox)
+from PyQt6.QtWidgets import (QButtonGroup, QDialog, QDialogButtonBox,
+                             QDoubleSpinBox, QFormLayout, QGroupBox, QLabel,
+                             QLineEdit, QListWidget, QPushButton, QRadioButton,
+                             QScrollArea, QSpinBox, QVBoxLayout, QHBoxLayout,
+                             QWidget, QMessageBox)
 from gui.dialog_layout import fit_dialog_to_available_screen
+
+# Internal labels the tracking pipeline reserves for non-zone states; "mouse_"
+# prefixes are used for per-animal labels (e.g. TST detection).
+RESERVED_ZONE_NAMES = frozenset({'outside', 'undetected'})
+RESERVED_ZONE_PREFIX = 'mouse_'
+
+
+def internal_zone_name(display_name: str) -> str:
+    """Return the internal (lowercase, underscored) form of a zone name."""
+    return display_name.strip().lower().replace(' ', '_')
+
+
+def is_reserved_zone_name(display_name: str) -> bool:
+    """True if a name collides with an internal tracking label."""
+    internal = internal_zone_name(display_name)
+    return (
+        internal in RESERVED_ZONE_NAMES
+        or internal.startswith(RESERVED_ZONE_PREFIX)
+    )
 
 
 class FreestyleConfigDialog(QDialog):
@@ -16,15 +36,19 @@ class FreestyleConfigDialog(QDialog):
     Allows users to define custom zones or proceed with zone-free tracking.
     """
     
-    def __init__(self, parent=None):
+    def __init__(self, parent=None, maze=None):
+        """Create the dialog; pass the Freestyle maze to read and set its parameters."""
         super().__init__(parent)
         self.setWindowTitle("Freestyle / Open Field Configuration")
-        
-        self.zone_names: list[str] = []
+
+        self.maze = maze
+        self.zone_names: list[tuple[str, str]] = []
         self.zone_free_mode = False
-        
+
         self.init_ui()
-    
+        if maze is not None:
+            self.load_from_maze(maze)
+
     def init_ui(self):
         """Initialize the user interface."""
         main_layout = QVBoxLayout()
@@ -46,26 +70,68 @@ class FreestyleConfigDialog(QDialog):
         mode_group = QGroupBox("Tracking Mode")
         mode_layout = QVBoxLayout()
         
-        self.zone_based_radio = QCheckBox("Zone-based tracking (define custom regions)")
+        # Exclusive radio buttons: exactly one mode is always selected.
+        self.zone_based_radio = QRadioButton("Zone-based tracking (define custom regions)")
         self.zone_based_radio.setChecked(True)
+
+        self.zone_free_radio = QRadioButton("Zone-free tracking (pure movement analysis)")
+
+        self.mode_button_group = QButtonGroup(self)
+        self.mode_button_group.setExclusive(True)
+        self.mode_button_group.addButton(self.zone_based_radio)
+        self.mode_button_group.addButton(self.zone_free_radio)
         self.zone_based_radio.toggled.connect(self.on_mode_changed)
-        
-        self.zone_free_radio = QCheckBox("Zone-free tracking (pure movement analysis)")
-        self.zone_free_radio.toggled.connect(self.on_mode_changed)
-        
-        # Make them mutually exclusive
-        self.zone_based_radio.toggled.connect(
-            lambda checked: self.zone_free_radio.setChecked(not checked) if checked else None
-        )
-        self.zone_free_radio.toggled.connect(
-            lambda checked: self.zone_based_radio.setChecked(not checked) if checked else None
-        )
-        
+
         mode_layout.addWidget(self.zone_based_radio)
         mode_layout.addWidget(self.zone_free_radio)
         mode_group.setLayout(mode_layout)
         main_layout.addWidget(mode_group)
         
+        # Movement / immobility parameters
+        movement_group = QGroupBox("Movement Parameters")
+        movement_form = QFormLayout()
+
+        self.immobility_threshold_spin = QDoubleSpinBox()
+        self.immobility_threshold_spin.setRange(0.0, 50.0)
+        self.immobility_threshold_spin.setDecimals(2)
+        self.immobility_threshold_spin.setSingleStep(0.1)
+        self.immobility_threshold_spin.setSuffix(" cm/s")
+        self.immobility_threshold_spin.setValue(2.0)
+        self.immobility_threshold_spin.setToolTip(
+            "Smoothed speed below this value counts as immobile. Applied only "
+            "when a reference line calibrates the video; uncalibrated runs "
+            "report immobility as N/A."
+        )
+        movement_form.addRow("Immobility threshold:", self.immobility_threshold_spin)
+
+        self.speed_window_spin = QDoubleSpinBox()
+        self.speed_window_spin.setRange(0.05, 2.0)
+        self.speed_window_spin.setDecimals(2)
+        self.speed_window_spin.setSingleStep(0.05)
+        self.speed_window_spin.setSuffix(" s")
+        self.speed_window_spin.setValue(0.2)
+        self.speed_window_spin.setToolTip(
+            "Speed is the displacement across this centered time window, which "
+            "suppresses centroid jitter. Longer windows give smoother but "
+            "less responsive speed."
+        )
+        movement_form.addRow("Speed smoothing window:", self.speed_window_spin)
+
+        self.min_immobility_spin = QDoubleSpinBox()
+        self.min_immobility_spin.setRange(0.0, 30.0)
+        self.min_immobility_spin.setDecimals(2)
+        self.min_immobility_spin.setSingleStep(0.1)
+        self.min_immobility_spin.setSuffix(" s")
+        self.min_immobility_spin.setValue(1.0)
+        self.min_immobility_spin.setToolTip(
+            "Speed must stay below the threshold for at least this long to "
+            "count as an immobility bout. Shorter pauses are scored as movement."
+        )
+        movement_form.addRow("Minimum immobility bout:", self.min_immobility_spin)
+
+        movement_group.setLayout(movement_form)
+        main_layout.addWidget(movement_group)
+
         # Zone configuration section
         self.zone_config_group = QGroupBox("Zone Configuration")
         zone_config_layout = QVBoxLayout()
@@ -82,6 +148,23 @@ class FreestyleConfigDialog(QDialog):
         num_zones_layout.addStretch()
         zone_config_layout.addLayout(num_zones_layout)
         
+        # Minimum dwell before a zone change is accepted
+        dwell_layout = QHBoxLayout()
+        dwell_layout.addWidget(QLabel("Minimum zone dwell:"))
+        self.min_dwell_spin = QDoubleSpinBox()
+        self.min_dwell_spin.setRange(0.0, 5.0)
+        self.min_dwell_spin.setDecimals(2)
+        self.min_dwell_spin.setSingleStep(0.05)
+        self.min_dwell_spin.setSuffix(" s")
+        self.min_dwell_spin.setValue(0.10)
+        self.min_dwell_spin.setToolTip(
+            "A zone change is counted only after the animal stays in the new "
+            "zone this long, which filters boundary flicker. 0 disables it."
+        )
+        dwell_layout.addWidget(self.min_dwell_spin)
+        dwell_layout.addStretch()
+        zone_config_layout.addLayout(dwell_layout)
+
         # Zone naming section
         zone_config_layout.addWidget(QLabel("Zone names (you will draw these regions next):"))
         
@@ -92,7 +175,8 @@ class FreestyleConfigDialog(QDialog):
         
         self.zone_names_widget = QWidget()
         self.zone_names_layout = QVBoxLayout(self.zone_names_widget)
-        self.zone_name_inputs = []
+        self.zone_name_inputs: list[QLineEdit] = []
+        self._zone_name_rows: list[QWidget] = []
         
         scroll_area.setWidget(self.zone_names_widget)
         zone_config_layout.addWidget(scroll_area)
@@ -176,43 +260,40 @@ class FreestyleConfigDialog(QDialog):
         self.update_info_label()
     
     def on_num_zones_changed(self, count: int):
-        """Handle change in number of zones."""
-        # Clear existing inputs properly
-        while self.zone_names_layout.count():
-            item = self.zone_names_layout.takeAt(0)
-            if item.widget():
-                item.widget().deleteLater()
-        
-        self.zone_name_inputs.clear()
-        
-        # Create new inputs
-        for i in range(count):
+        """Resize the name list, keeping names the user already typed."""
+        # Drop surplus rows from the end
+        while len(self.zone_name_inputs) > count:
+            self.zone_name_inputs.pop()
+            row = self._zone_name_rows.pop()
+            self.zone_names_layout.removeWidget(row)
+            row.deleteLater()
+
+        # Append rows for new zones
+        for i in range(len(self.zone_name_inputs), count):
             zone_layout = QHBoxLayout()
-            
+
             label = QLabel(f"Zone {i + 1}:")
             label.setMinimumWidth(60)
-            
+
             line_edit = QLineEdit()
             line_edit.setPlaceholderText(f"e.g., Zone {chr(65 + i)}")
             line_edit.textChanged.connect(self.update_zone_preview)
-            
+
             zone_layout.addWidget(label)
             zone_layout.addWidget(line_edit)
-            
+
             container = QWidget()
             container.setLayout(zone_layout)
-            
+
             self.zone_names_layout.addWidget(container)
             self.zone_name_inputs.append(line_edit)
-        
-        # Don't add stretch here - it was causing issues
+            self._zone_name_rows.append(container)
+
         self.update_zone_preview()
         self.update_info_label()
-    
+
     def quick_fill(self, pattern: str):
         """Quick fill zone names with a pattern."""
-        count = len(self.zone_name_inputs)
-        
         if pattern == 'letters':
             for i, input_field in enumerate(self.zone_name_inputs):
                 if i < 26:
@@ -265,7 +346,7 @@ class FreestyleConfigDialog(QDialog):
         if self.zone_free_mode:
             # Zone-free mode is always valid
             self.zone_names = []
-            self.accept()
+            self._finish()
             return
         
         # Validate zone names
@@ -284,7 +365,18 @@ class FreestyleConfigDialog(QDialog):
                 return
             
             # Convert to internal format (lowercase with underscores)
-            internal_name = name.lower().replace(' ', '_')
+            internal_name = internal_zone_name(name)
+
+            if is_reserved_zone_name(name):
+                QMessageBox.warning(
+                    self, "Reserved Zone Name",
+                    f"Zone name '{name}' is reserved for internal tracking "
+                    f"states ('outside', 'undetected', or names starting with "
+                    f"'mouse_'). Please choose a different name."
+                )
+                input_field.setFocus()
+                self.zone_names = []
+                return
             
             # Check for duplicates
             if internal_name in seen_names:
@@ -309,9 +401,38 @@ class FreestyleConfigDialog(QDialog):
             )
             if reply != QMessageBox.StandardButton.Yes:
                 return
-        
+
+        self._finish()
+
+    def _finish(self):
+        """Push parameters into the maze (if any) and close the dialog."""
+        if self.maze is not None:
+            self.apply_to_maze(self.maze)
         self.accept()
-    
+
+    def load_from_maze(self, maze) -> None:
+        """Show the maze's current analysis parameters."""
+        self.immobility_threshold_spin.setValue(maze.immobility_threshold_cm_per_s)
+        self.speed_window_spin.setValue(maze.speed_window_seconds)
+        self.min_immobility_spin.setValue(maze.min_immobility_seconds)
+        self.min_dwell_spin.setValue(maze.min_dwell_seconds)
+
+    def get_analysis_parameters(self) -> dict:
+        """Return the movement and zone-dwell parameters as Freestyle keys."""
+        return {
+            'immobility_threshold_cm_per_s': self.immobility_threshold_spin.value(),
+            'speed_window_seconds': self.speed_window_spin.value(),
+            'min_immobility_seconds': self.min_immobility_spin.value(),
+            'min_dwell_seconds': self.min_dwell_spin.value(),
+        }
+
+    def apply_to_maze(self, maze) -> None:
+        """Set the dialog's analysis parameters on a Freestyle maze."""
+        maze.set_immobility_threshold(self.immobility_threshold_spin.value())
+        maze.speed_window_seconds = self.speed_window_spin.value()
+        maze.min_immobility_seconds = self.min_immobility_spin.value()
+        maze.min_dwell_seconds = self.min_dwell_spin.value()
+
     def get_zone_definitions(self) -> list[tuple[str, str]]:
         """
         Get the configured zone definitions.

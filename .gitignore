@@ -26,3 +26,6 @@ dist/
 .checkpoints/
 .*_ref_v*.npz
 outputs/
+
+# Claude Code agent worktrees
+.claude/

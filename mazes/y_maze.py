@@ -18,7 +18,7 @@ from mazes.base_maze import BaseAnalysisResult, Maze
 from core.zone_events import (
     debounce_zone_labels,
     dwell_frames,
-    extract_center_mediated_entries,
+    analyze_center_mediated_entries,
     overlapping_zones_to_candidates,
 )
 
@@ -44,7 +44,7 @@ def _generate_sequence_plot(result: 'YMazeAnalysisResult', output_path: Path):
         
         # Use Figure object
         fig = Figure(figsize=(14, 6))
-        canvas = FigureCanvasAgg(fig)
+        FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
         
         ax.plot(x, y, 'k-', alpha=0.3, linewidth=1, zorder=2)
@@ -90,7 +90,7 @@ def _generate_transition_matrix(result: 'YMazeAnalysisResult', output_path: Path
                 matrix[from_idx, to_idx] += 1
         
         fig = Figure(figsize=(8, 6))
-        canvas = FigureCanvasAgg(fig)
+        FigureCanvasAgg(fig)
         ax = fig.add_subplot(111)
         
         # Manual heatmap using imshow (thread-safe)
@@ -121,61 +121,6 @@ def _generate_transition_matrix(result: 'YMazeAnalysisResult', output_path: Path
 
 # --- CLASS IMPLEMENTATIONS ---
 
-class _YMazeSequenceTracker:
-    """Internal helper to track arm entry sequence for a Y-Maze."""
-    def __init__(self):
-        self.sequence: List[str] = []
-        self.entry_timestamps: List[float] = []
-        self.full_sequence: List[str] = []
-        self.definitive_zone: str | None = None
-
-    def _is_exclusive_arm(self, zones: List[str]) -> str | None:
-        is_arm = any(z.startswith('arm_') for z in zones)
-        is_center = 'center' in zones
-        if is_arm and not is_center and len(zones) == 1:
-            return zones[0]
-        return None
-
-    def _is_exclusive_center(self, zones: List[str]) -> bool:
-        return zones == ['center']
-
-    def update(self, zones: List[str], timestamp: float):
-        exclusive_arm = self._is_exclusive_arm(zones)
-        exclusive_center = self._is_exclusive_center(zones)
-        if self.definitive_zone is None:
-            if exclusive_arm:
-                self.definitive_zone = exclusive_arm
-                self.full_sequence.append(exclusive_arm)
-                self.sequence.append(exclusive_arm.split('_')[-1].upper())
-                self.entry_timestamps.append(timestamp)
-            elif exclusive_center:
-                self.definitive_zone = 'center'
-            return
-
-        if self.definitive_zone == 'center' and exclusive_arm:
-            self.definitive_zone = exclusive_arm
-            self.full_sequence.append(exclusive_arm)
-            self.sequence.append(exclusive_arm.split('_')[-1].upper())
-            self.entry_timestamps.append(timestamp)
-        elif self.definitive_zone.startswith('arm_') and exclusive_center:
-            self.definitive_zone = 'center'
-
-    def calculate_alternation(self) -> Tuple[float, int, int]:
-        if len(self.sequence) < 3: return 0.0, 0, 0
-        correct = sum(1 for i in range(len(self.sequence) - 2) if len(set(self.sequence[i:i + 3])) == 3)
-        total_possible = len(self.sequence) - 2
-        return (correct / total_possible * 100) if total_possible > 0 else 0.0, correct, total_possible
-
-    def calculate_same_arm_returns(self) -> Tuple[float, int]:
-        if len(self.sequence) < 2: return 0.0, 0
-        returns = sum(1 for i in range(len(self.sequence) - 1) if self.sequence[i] == self.sequence[i + 1])
-        total_transitions = len(self.sequence) - 1
-        return (returns / total_transitions * 100) if total_transitions > 0 else 0.0, returns
-
-    def get_sequence_string(self) -> str:
-        return "".join(self.sequence)
-
-
 @dataclass
 class YMazeAnalysisResult(BaseAnalysisResult):
     """Y-Maze specific result fields."""
@@ -187,6 +132,8 @@ class YMazeAnalysisResult(BaseAnalysisResult):
     same_arm_returns: float = 0.0
     same_arm_return_count: int = 0
     total_arm_entries: int = 0
+    # Arm entries a tracking gap may have hidden (not included in the counts).
+    entries_possibly_missed: int = 0
 
 
 class YMaze(Maze):
@@ -216,12 +163,14 @@ class YMaze(Maze):
             raise TypeError("YMaze logic requires a YMazeAnalysisResult instance.")
 
         arm_labels = {'arm_a', 'arm_b', 'arm_c'}
-        result.arm_entries = extract_center_mediated_entries(
+        counted = analyze_center_mediated_entries(
             result.roi_labels,
             result.timestamps,
             arm_labels=arm_labels,
             count_initial_arm=self.count_initial_arm
         )
+        result.arm_entries = counted.entries
+        result.entries_possibly_missed = counted.possibly_missed
         sequence = [
             arm.split('_')[-1].upper()
             for arm, _ in result.arm_entries
@@ -268,11 +217,12 @@ class YMaze(Maze):
     def get_batch_summary_headers(self) -> List[str]:
         return [
             'arm_sequence', 'alternation_score_pct', 'correct_alternations',
-            'possible_alternations', 'total_arm_entries', 'same_arm_return_pct', 'same_arm_return_count'
+            'possible_alternations', 'total_arm_entries', 'same_arm_return_pct', 'same_arm_return_count',
+            'entries_possibly_missed'
         ]
 
     def get_batch_summary_row(self, result: BaseAnalysisResult) -> List[any]:
-        if not isinstance(result, YMazeAnalysisResult): return ['N/A'] * 7
+        if not isinstance(result, YMazeAnalysisResult): return ['N/A'] * 8
         return [
             result.arm_sequence,
             f"{result.alternation_score:.2f}",
@@ -280,7 +230,8 @@ class YMaze(Maze):
             result.possible_alternations,
             result.total_arm_entries,
             f"{result.same_arm_returns:.2f}",
-            result.same_arm_return_count
+            result.same_arm_return_count,
+            result.entries_possibly_missed
         ]
 
     def generate_specific_plots(self, result: BaseAnalysisResult, output_dir: Path, base_name: str) -> None:

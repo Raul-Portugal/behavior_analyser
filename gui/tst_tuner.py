@@ -8,21 +8,20 @@ import cv2
 import logging
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QElapsedTimer
-from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QProgressBar, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget,
+    QProgressBar, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
 
 from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
+from core.tst_display import tst_display_style
 from core.tst_events import smooth_tst_immobility_states
 from gui.dialog_layout import fit_dialog_to_available_screen
-from roi_manager import ROI
+from gui.qt_image import bgr_to_qpixmap
 
 logger = logging.getLogger(__name__)
 
@@ -42,7 +41,6 @@ class EnergyScanner(QThread):
         rois,
         motion_config,
         review_segments,
-        preview_width=480,
         target_fps=12.0,
     ):
         super().__init__()
@@ -50,59 +48,52 @@ class EnergyScanner(QThread):
         self.rois = dict(rois)
         self.motion_config = TSTMotionConfig(**motion_config.__dict__)
         self.review_segments = list(review_segments)
-        self.preview_width = max(160, int(preview_width))
         self.target_fps = max(1.0, float(target_fps))
         self.state_data = {name: [] for name in self.rois}
         self.evidence_data = {name: [] for name in self.rois}
         self._capture = None
 
-    @staticmethod
-    def _scale_rois(rois, scale_x, scale_y):
-        scaled = {}
-        for name, roi in rois.items():
-            points = roi.points.astype(np.float32)
-            points[:, 0] *= scale_x
-            points[:, 1] *= scale_y
-            scaled[name] = ROI(np.rint(points).astype(np.int32), name)
-        return scaled
-
     def cancel(self):
-        """Request cancellation and unblock a pending local video read."""
+        """Request cancellation; the scan loop stops at its next frame.
+
+        The capture is deliberately not touched from the GUI thread: the
+        scanner thread owns it and releases it in ``run``'s ``finally``.
+        """
         self.requestInterruption()
-        capture = self._capture
-        if capture is not None:
-            capture.release()
-        
+
     def run(self):
+        try:
+            self._scan()
+        except Exception:
+            logger.exception("TST tuner scan failed")
+            if not self.isInterruptionRequested():
+                self.scan_complete.emit({}, [], (1, 1), 30.0)
+        finally:
+            capture = self._capture
+            self._capture = None
+            if capture is not None:
+                capture.release()
+
+    def _scan(self):
         cap = cv2.VideoCapture(str(self.video_path))
         self._capture = cap
         if not cap.isOpened():
-            self._capture = None
             self.scan_complete.emit({}, [], (1, 1), 30.0)
             return
-        
+
         # Get video properties
         orig_w = int(cap.get(cv2.CAP_PROP_FRAME_WIDTH))
         orig_h = int(cap.get(cv2.CAP_PROP_FRAME_HEIGHT))
-        fps = cap.get(cv2.CAP_PROP_FPS) or 30.0
+        fps = cap.get(cv2.CAP_PROP_FPS)
+        if not fps or not np.isfinite(fps) or fps <= 0:
+            fps = 30.0
         total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
-        
-        if total_frames < 2:
-            cap.release()
-            self._capture = None
-            self.scan_complete.emit({}, [], (orig_w, orig_h), fps)
+
+        if orig_w <= 0 or orig_h <= 0 or total_frames < 2:
+            self.scan_complete.emit({}, [], (max(1, orig_w), max(1, orig_h)), fps)
             return
         source_step = max(1, int(round(fps / self.target_fps)))
         analysis_fps = fps / source_step
-        preview_height = max(
-            1, int(round(orig_h * min(1.0, self.preview_width / orig_w)))
-        )
-        preview_width = max(
-            1, int(round(orig_w * min(1.0, self.preview_width / orig_w)))
-        )
-        scale_x = preview_width / max(1, orig_w)
-        scale_y = preview_height / max(1, orig_h)
-        scaled_rois = self._scale_rois(self.rois, scale_x, scale_y)
 
         segments = []
         for start_frame, end_frame in self.review_segments:
@@ -120,78 +111,65 @@ class EnergyScanner(QThread):
         energy_data = {name: [] for name in self.rois}
         frame_indices = []
         count = 0
-        
-        try:
-            for segment_number, (start, end) in enumerate(segments):
-                if self.isInterruptionRequested():
-                    break
-                cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-                ret, previous_source = cap.read()
-                if not ret or previous_source is None:
-                    continue
-                previous = cv2.resize(
-                    previous_source, (preview_width, preview_height),
-                    interpolation=cv2.INTER_AREA,
-                )
-                engine = TSTMotionEngine(
-                    scaled_rois,
-                    self.motion_config,
-                    fps=analysis_fps,
-                )
-                current_source_frame = start
-                first_interval = True
-                while (
-                    current_source_frame + source_step < end
-                    and not self.isInterruptionRequested()
-                ):
-                    current_source = None
-                    for _ in range(source_step):
-                        ret, current_source = cap.read()
-                        if not ret:
-                            break
-                    if not ret or current_source is None:
+
+        for segment_number, (start, end) in enumerate(segments):
+            if self.isInterruptionRequested():
+                break
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start)
+            ret, previous = cap.read()
+            if not ret or previous is None:
+                continue
+            # Source frames and source-space ROIs go straight to the
+            # engine, which applies the same canonical analysis geometry
+            # as the production run. Its rate normalization makes the
+            # reduced analysis_fps comparable with native-rate analysis.
+            engine = TSTMotionEngine(
+                self.rois,
+                self.motion_config,
+                fps=analysis_fps,
+            )
+            current_source_frame = start
+            first_interval = True
+            while (
+                current_source_frame + source_step < end
+                and not self.isInterruptionRequested()
+            ):
+                current_source = None
+                for _ in range(source_step):
+                    ret, current_source = cap.read()
+                    if not ret:
                         break
-                    current_source_frame += source_step
-                    current = cv2.resize(
-                        current_source, (preview_width, preview_height),
-                        interpolation=cv2.INTER_AREA,
-                    )
-                    observations = engine.calculate_observations(
-                        current, previous
-                    )
-                    for name, observation in observations.items():
-                        evidence = observation.to_dict()
-                        if segment_number and first_interval:
-                            evidence.update({
-                                "state": "uncertain",
-                                "confidence": 0.0,
-                                "qc_flag": "review_segment_boundary",
-                            })
-                        contour = engine.get_last_mask_contour(name)
-                        if contour:
-                            evidence["mask_contour"] = [
-                                [
-                                    int(round(point[0] / scale_x)),
-                                    int(round(point[1] / scale_y)),
-                                ]
-                                for point in contour
-                            ]
-                        evidence["source_frame"] = current_source_frame
-                        evidence["timestamp_s"] = current_source_frame / fps
-                        energy_data[name].append(observation.activity_score)
-                        self.state_data[name].append(evidence["state"])
-                        self.evidence_data[name].append(evidence)
-                    frame_indices.append(current_source_frame)
-                    previous = current
-                    first_interval = False
-                    count += 1
-                    if count % 25 == 0 or count == expected_intervals:
-                        self.progress.emit(int(
-                            count / max(1, expected_intervals) * 100
-                        ))
-        finally:
-            cap.release()
-            self._capture = None
+                if not ret or current_source is None:
+                    break
+                current_source_frame += source_step
+                current = current_source
+                observations = engine.calculate_observations(
+                    current, previous
+                )
+                for name, observation in observations.items():
+                    evidence = observation.to_dict()
+                    if segment_number and first_interval:
+                        evidence.update({
+                            "state": "uncertain",
+                            "confidence": 0.0,
+                            "qc_flag": "review_segment_boundary",
+                        })
+                    contour = engine.get_last_mask_contour(name)
+                    if contour:
+                        evidence["mask_contour"] = contour
+                    evidence["source_frame"] = current_source_frame
+                    evidence["timestamp_s"] = current_source_frame / fps
+                    energy_data[name].append(observation.activity_score)
+                    self.state_data[name].append(evidence["state"])
+                    self.evidence_data[name].append(evidence)
+                frame_indices.append(current_source_frame)
+                previous = current
+                first_interval = False
+                count += 1
+                if count % 25 == 0 or count == expected_intervals:
+                    self.progress.emit(int(
+                        count / max(1, expected_intervals) * 100
+                    ))
         if not self.isInterruptionRequested():
             self.scan_complete.emit(
                 energy_data,
@@ -199,17 +177,15 @@ class EnergyScanner(QThread):
                 (orig_w, orig_h),
                 fps,
             )
-    
+
+
 class OptimizedCanvas(FigureCanvasQTAgg):
     """
     Custom canvas with blitting support for high-performance updates.
     """
     def __init__(self, figure):
         super().__init__(figure)
-        self.background = None
-        self.cursor_background = None
-        self._bg_cache = {}  # Cache multiple backgrounds for different states
-        
+
 
 class TstTunerDialog(QDialog):
     """
@@ -257,7 +233,6 @@ class TstTunerDialog(QDialog):
         
         # Performance timer for accurate FPS
         self.elapsed_timer = QElapsedTimer()
-        self.frame_accumulator = 0.0
         
         # Matplotlib elements for blitting
         self.figure = None
@@ -271,10 +246,9 @@ class TstTunerDialog(QDialog):
         
         # Blitting backgrounds
         self.graph_background = None
-        self.cursor_bbox = None
         
         # Pre-computed data for performance
-        self.timestamps = []
+        self.timestamps = np.array([], dtype=np.float64)
         self.filtered_immobile = None
         self.raw_immobile = None
         self.state_data = {}
@@ -661,14 +635,7 @@ class TstTunerDialog(QDialog):
         if not filename:
             return
         try:
-            with open(filename, encoding="utf-8") as profile_file:
-                payload = json.load(profile_file)
-            if payload.get("engine_id") != TSTMotionEngine.ENGINE_ID:
-                raise ValueError("This profile was made for a different TST engine.")
-            config = TSTMotionConfig(**payload["motion_config"])
-            config.validate()
-            if config.min_mouse_area_ratio >= config.max_mouse_area_ratio:
-                raise ValueError("Profile has an invalid body-area range.")
+            config, min_immobility = self._read_profile(filename)
         except (OSError, ValueError, KeyError, TypeError, json.JSONDecodeError) as exc:
             QMessageBox.warning(self, "Could not load profile", str(exc))
             return
@@ -677,9 +644,47 @@ class TstTunerDialog(QDialog):
             control.blockSignals(True)
             control.setValue(float(getattr(config, name)))
             control.blockSignals(False)
-        self.time_slider.setValue(int(round(float(payload.get("min_immobility_seconds", 0.5)) * 10)))
+        self.time_slider.setValue(int(round(
+            np.clip(min_immobility * 10.0, 1, 50)
+        )))
         self._on_advanced_changed()
-    
+
+    @staticmethod
+    def _read_profile(filename):
+        """Parse and validate a saved profile; raises ValueError if invalid."""
+        with open(filename, encoding="utf-8") as profile_file:
+            payload = json.load(profile_file)
+        if not isinstance(payload, dict):
+            raise ValueError("A TST profile must be a JSON object.")
+        if payload.get("engine_id") != TSTMotionEngine.ENGINE_ID:
+            raise ValueError(
+                "This profile was made for a different TST engine "
+                f"({payload.get('engine_id') or 'unversioned'}); the "
+                f"current engine is {TSTMotionEngine.ENGINE_ID}. "
+                "Re-tune and save a new profile."
+            )
+        motion_values = payload.get("motion_config")
+        if not isinstance(motion_values, dict):
+            raise ValueError("Profile has no valid motion_config section.")
+        valid_keys = TSTMotionConfig.__annotations__.keys()
+        unknown = sorted(set(motion_values) - set(valid_keys))
+        if unknown:
+            raise ValueError(
+                f"Profile has unknown motion settings: {', '.join(unknown)}."
+            )
+        config = TSTMotionConfig(**motion_values)
+        config.validate()
+        if config.min_mouse_area_ratio >= config.max_mouse_area_ratio:
+            raise ValueError("Profile has an invalid body-area range.")
+        raw_minimum = payload.get("min_immobility_seconds", 0.5)
+        if isinstance(raw_minimum, bool) or not isinstance(
+            raw_minimum, (int, float)
+        ) or not np.isfinite(raw_minimum) or raw_minimum <= 0:
+            raise ValueError(
+                "Profile min_immobility_seconds must be a positive number."
+            )
+        return config, float(raw_minimum)
+
     def start_scan(self):
         """Start background video scanning."""
         self.progress_bar.setVisible(True)
@@ -844,9 +849,6 @@ class TstTunerDialog(QDialog):
         # CRITICAL: Store the background AFTER drawing but BEFORE any animations
         # This captures everything except the animated artists
         self.graph_background = self.canvas.copy_from_bbox(self.ax.bbox)
-        
-        # Store cursor bbox for efficient updates
-        self.cursor_bbox = self.ax.bbox
         
         # Initialize the cursor at position 0
         self.update_cursor_blit(0)
@@ -1074,25 +1076,10 @@ class TstTunerDialog(QDialog):
                         else False
                     )
 
-                    if behavior_state == "uncertain":
-                        color = (0, 165, 255)
-                        status = "UNCERTAIN"
-                    elif is_immobile:
-                        if behavior_state == "passive_swing":
-                            color = (180, 0, 180)
-                            status = "PASSIVE SWING"
-                        else:
-                            color = (0, 0, 255)
-                            status = "IMMOBILE STATIC"
-                    elif behavior_state in {
-                        "immobile_static", "passive_swing"
-                    }:
-                        color = (0, 215, 255)
-                        status = "SHORT PAUSE"
-                    else:
-                        color = (0, 255, 0)
-                        status = "ACTIVE ESCAPE"
-                    
+                    color, status = tst_display_style(
+                        behavior_state, bool(is_immobile)
+                    )
+
                     # Draw ROI visualization
                     roi = self.roi_dict[self.selected_mouse]
                     orig_w, orig_h = self.orig_dims
@@ -1163,14 +1150,7 @@ class TstTunerDialog(QDialog):
                                   font, font_scale, (255, 255, 255),
                                   thickness, cv2.LINE_AA)
             
-            # Convert BGR to RGB for Qt
-            frame_rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-            h, w, ch = frame_rgb.shape
-            bytes_per_line = ch * w
-            
-            # Create QImage and pixmap
-            qimg = QImage(frame_rgb.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-            pixmap = QPixmap.fromImage(qimg)
+            pixmap = bgr_to_qpixmap(frame)
             
             # Scale to fit label if needed
             if pixmap.width() > self.image_label.width() or pixmap.height() > self.image_label.height():
@@ -1242,7 +1222,6 @@ class TstTunerDialog(QDialog):
             
             # Start timer and elapsed timer
             self.elapsed_timer.start()
-            self.frame_accumulator = 0.0
             self.play_timer.start(max(1, interval))
         else:
             # Stop playback
@@ -1303,7 +1282,7 @@ class TstTunerDialog(QDialog):
     
     def reset_zoom(self):
         """Reset graph zoom to show full data range."""
-        if not self.timestamps.size:
+        if self.timestamps.size == 0 or self.ax is None:
             return
         
         self.ax.set_xlim(0, self.timestamps[-1])
@@ -1315,7 +1294,7 @@ class TstTunerDialog(QDialog):
     
     def zoom_in(self):
         """Zoom in on the graph around current position."""
-        if not self.timestamps.size:
+        if self.timestamps.size == 0 or self.ax is None:
             return
         
         current_time = self.timestamps[min(self.current_frame, len(self.timestamps) - 1)]
@@ -1341,7 +1320,7 @@ class TstTunerDialog(QDialog):
     
     def zoom_out(self):
         """Zoom out on the graph."""
-        if not self.timestamps.size:
+        if self.timestamps.size == 0 or self.ax is None:
             return
         
         current_time = self.timestamps[min(self.current_frame, len(self.timestamps) - 1)]
@@ -1372,16 +1351,14 @@ class TstTunerDialog(QDialog):
             return
         self.tst.motion_config = copy.deepcopy(self.preview_motion_config)
         self.tst.set_parameters(time_threshold)
-        
-        # Clean up
-        self.cleanup()
         super().accept()
-    
-    def reject(self):
-        """Cancel and close dialog."""
+
+    def done(self, result: int):
+        """Release the video capture and worker on every way of closing."""
+        # accept()/reject()/Esc all end up here without going through closeEvent.
         self.cleanup()
-        super().reject()
-    
+        super().done(result)
+
     def cleanup(self):
         """Clean up resources before closing."""
         # Stop playback

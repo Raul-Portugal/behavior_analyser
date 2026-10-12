@@ -5,13 +5,14 @@ Updated to use the MIDDLE frame of the video to ensure animals are visible.
 import cv2
 import numpy as np
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QImage, QPainter, QPen, QPixmap, QPolygonF
+from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
                              QPushButton, QScrollArea, QVBoxLayout)
 
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
 from gui.dialog_layout import fit_dialog_to_available_screen
+from gui.qt_image import bgr_to_qpixmap
 
 
 class ReferenceLineDialog(QDialog):
@@ -100,6 +101,52 @@ class ReferenceLineDialog(QDialog):
         return self.line_length
 
 
+REFERENCE_LINE_NAME = "User-drawn reference line"
+REFERENCE_LINE_PROMPT = (
+    "Would you like to draw a reference line for distance calibration?\n\n"
+    "Draw it over something of known length (e.g. an arm length). "
+    "If you skip this, distances will be reported in pixels."
+)
+
+
+def offer_reference_line(parent, video_path, roi_manager: ROIManager) -> bool:
+    """Ask for a reference line on a middle frame of the video.
+
+    Sets the ROI manager's reference length (in source pixels) and returns
+    True only if the user drew a valid line.
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames > 10:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames // 2)
+        ret, frame = cap.read()
+    finally:
+        cap.release()
+    if not ret:
+        return False
+
+    source_h, source_w = frame.shape[:2]
+    roi_manager.set_source_dimensions((source_w, source_h))
+    if source_w > 1280:
+        scale = 1280 / source_w
+        frame = cv2.resize(frame, (int(source_w * scale), int(source_h * scale)))
+    h, w = frame.shape[:2]
+    pixmap = bgr_to_qpixmap(frame)
+    dialog = ReferenceLineDialog(
+        pixmap, source_scale=(source_w / w, source_h / h), parent=parent
+    )
+    try:
+        if dialog.exec() and dialog.get_line_length() > 0:
+            roi_manager.set_reference_length(
+                dialog.get_line_length(), REFERENCE_LINE_NAME
+            )
+            return True
+        return False
+    finally:
+        dialog.deleteLater()
+
+
 class RoiSelectorDialog(QDialog):
     """A dialog for interactively drawing polygonal ROIs on a video frame."""
     def __init__(self, video_path: str, maze: Maze, parent=None):
@@ -127,8 +174,8 @@ class RoiSelectorDialog(QDialog):
         if not ret: 
             raise IOError("Could not read frame from video.")
             
-        self.base_frame = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = self.base_frame.shape
+        self.base_frame = frame
+        h, w = self.base_frame.shape[:2]
         self.source_width = w
         self.source_height = h
         self.display_width = w
@@ -147,7 +194,7 @@ class RoiSelectorDialog(QDialog):
         self.display_to_source_y = self.source_height / self.display_height
         self.roi_manager.set_source_dimensions((self.source_width, self.source_height))
             
-        self.base_pixmap = QPixmap.fromImage(QImage(self.base_frame.data, w, h, ch * w, QImage.Format.Format_RGB888))
+        self.base_pixmap = bgr_to_qpixmap(self.base_frame)
         
         self.setWindowTitle("ROI Selection")
         
@@ -205,7 +252,12 @@ class RoiSelectorDialog(QDialog):
         self.update()
 
     def prompt_for_reference_line(self):
-        reply = QMessageBox.question(self, 'Calibration', 'Would you like to draw a reference line for distance calibration?',
+        needs_line = getattr(self.maze, "needs_reference_line", None)
+        if callable(needs_line) and not needs_line():
+            # Paradigms without distance metrics (e.g. TST) skip calibration.
+            self.accept()
+            return
+        reply = QMessageBox.question(self, 'Calibration', REFERENCE_LINE_PROMPT,
                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                        QMessageBox.StandardButton.Yes)
         if reply == QMessageBox.StandardButton.Yes:
@@ -217,7 +269,7 @@ class RoiSelectorDialog(QDialog):
             if ref_dialog.exec():
                 length = ref_dialog.get_line_length()
                 if length > 0:
-                    self.roi_manager.set_reference_length(length, "User-drawn reference line")
+                    self.roi_manager.set_reference_length(length, REFERENCE_LINE_NAME)
         self.accept()
 
     def next_roi(self):

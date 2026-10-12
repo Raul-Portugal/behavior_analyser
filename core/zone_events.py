@@ -1,7 +1,8 @@
 """Pure zone debouncing, transition, and center-mediated entry rules."""
 
 from math import ceil
-from typing import Iterable, List, Optional, Sequence, Set, Tuple
+from typing import (Iterable, List, NamedTuple, Optional, Sequence, Set,
+                    Tuple)
 
 
 UNDETECTED = "undetected"
@@ -118,6 +119,66 @@ def extract_zone_transitions(
     return transitions
 
 
+class CenterEntries(NamedTuple):
+    """Counted arm entries plus how many entries tracking gaps may have hidden."""
+    entries: List[Tuple[str, float]]
+    possibly_missed: int
+
+
+def analyze_center_mediated_entries(
+    labels: Sequence[str],
+    timestamps: Sequence[float],
+    *,
+    arm_labels: Set[str],
+    center_label: str = "center",
+    count_initial_arm: bool = True
+) -> CenterEntries:
+    """Count center-mediated arm entries and flag entries hidden by gaps.
+
+    Counting stays conservative: an arm seen right after an undetected gap is
+    not counted, because the route taken during the gap is unknown. Such a
+    resume is counted in ``possibly_missed`` when the animal may have entered
+    that arm: it resumes in a different arm than the last one seen before the
+    gap, or it was last seen in the center, and no center was confirmed
+    after the gap. A gap before any zone was seen is not flagged.
+    """
+    entries: List[Tuple[str, float]] = []
+    possibly_missed = 0
+    state: Optional[str] = None
+    initial_segment = True
+    last_arm: Optional[str] = None
+    gap_pending = False
+    state_before_gap: Optional[str] = None
+
+    for label, timestamp in zip(labels, timestamps):
+        if label == UNDETECTED:
+            if state is not None:
+                gap_pending = True
+                state_before_gap = state
+            state = None
+            initial_segment = False
+            continue
+        if label == center_label:
+            state = center_label
+            gap_pending = False
+            continue
+        if label not in arm_labels:
+            continue
+
+        if state == center_label:
+            entries.append((label, timestamp))
+        elif state is None and initial_segment and count_initial_arm:
+            entries.append((label, timestamp))
+        elif state is None and gap_pending:
+            if state_before_gap == center_label or label != last_arm:
+                possibly_missed += 1
+        gap_pending = False
+        state = label
+        last_arm = label
+
+    return CenterEntries(entries, possibly_missed)
+
+
 def extract_center_mediated_entries(
     labels: Sequence[str],
     timestamps: Sequence[float],
@@ -127,25 +188,10 @@ def extract_center_mediated_entries(
     count_initial_arm: bool = True
 ) -> List[Tuple[str, float]]:
     """Return arm entries that begin initially or follow a confirmed center."""
-    entries: List[Tuple[str, float]] = []
-    state: Optional[str] = None
-    initial_segment = True
-
-    for label, timestamp in zip(labels, timestamps):
-        if label == UNDETECTED:
-            state = None
-            initial_segment = False
-            continue
-        if label == center_label:
-            state = center_label
-            continue
-        if label not in arm_labels:
-            continue
-
-        if state == center_label:
-            entries.append((label, timestamp))
-        elif state is None and initial_segment and count_initial_arm:
-            entries.append((label, timestamp))
-        state = label
-
-    return entries
+    return analyze_center_mediated_entries(
+        labels,
+        timestamps,
+        arm_labels=arm_labels,
+        center_label=center_label,
+        count_initial_arm=count_initial_arm,
+    ).entries

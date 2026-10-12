@@ -3,10 +3,8 @@ ROI Preview Dialog - Phase 2 Enhancement
 Allows users to preview configured ROIs before starting analysis.
 """
 import cv2
-import numpy as np
 from pathlib import Path
 from PyQt6.QtCore import Qt
-from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QLabel, QPushButton, QSlider,
                              QVBoxLayout, QHBoxLayout, QGroupBox,
                              QScrollArea, QWidget)
@@ -14,6 +12,7 @@ from PyQt6.QtWidgets import (QDialog, QLabel, QPushButton, QSlider,
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
 from gui.dialog_layout import fit_dialog_to_available_screen
+from gui.qt_image import bgr_to_qpixmap
 
 
 class ROIPreviewDialog(QDialog):
@@ -28,9 +27,13 @@ class ROIPreviewDialog(QDialog):
         self.video_path = video_path
         self.roi_manager = roi_manager
         self.maze = maze
-        
+        # Nothing reads the dialog after exec(), so Qt may free it (and its
+        # widgets) as soon as it is closed instead of keeping it under parent.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
         self.cap = cv2.VideoCapture(str(video_path))
         if not self.cap.isOpened():
+            self.cap.release()
             raise IOError(f"Cannot open video: {video_path}")
         
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -175,11 +178,7 @@ class ROIPreviewDialog(QDialog):
         vis_frame = self.roi_manager.draw_on_frame(frame, thickness=2)
         
         # Convert to QPixmap
-        rgb_frame = cv2.cvtColor(vis_frame, cv2.COLOR_BGR2RGB)
-        h, w, ch = rgb_frame.shape
-        bytes_per_line = ch * w
-        q_img = QImage(rgb_frame.data, w, h, bytes_per_line, QImage.Format.Format_RGB888)
-        pixmap = QPixmap.fromImage(q_img)
+        pixmap = bgr_to_qpixmap(vis_frame)
         
         # Scale to fit
         scaled_pixmap = pixmap.scaled(
@@ -196,13 +195,25 @@ class ROIPreviewDialog(QDialog):
             f"Time: {timestamp:.2f}s / {self.total_frames / self.fps:.2f}s"
         )
 
+    def done(self, result):
+        """Release the capture however the dialog is dismissed.
+
+        accept()/reject() do not go through closeEvent, so doing this only
+        there leaked one open capture per preview.
+        """
+        self._release_capture()
+        super().done(result)
+
+    def _release_capture(self):
+        cap = getattr(self, "cap", None)
+        if cap is not None:
+            cap.release()
+
     def closeEvent(self, event):
-        """Clean up resources on close."""
-        if self.cap:
-            self.cap.release()
+        # QDialog only routes close through done() while visible.
+        self._release_capture()
         super().closeEvent(event)
 
     def __del__(self):
         """Ensure video capture is released."""
-        if hasattr(self, 'cap') and self.cap:
-            self.cap.release()
+        self._release_capture()
