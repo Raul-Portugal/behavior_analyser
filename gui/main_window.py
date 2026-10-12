@@ -8,7 +8,7 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
                              QListWidget, QMainWindow, QMenu, QMessageBox,
                              QProgressBar, QProgressDialog, QPushButton, QTextEdit, QVBoxLayout,
@@ -30,6 +30,7 @@ from gui.arm_entry_dialog import ArmEntryParametersDialog
 from gui.settings_dialog import SettingsDialog
 from gui.tuner_dialog import TunerDialog
 from gui.tst_tuner import TstTunerDialog
+from gui.background_task import TaskCancelled, run_with_progress
 from gui.worker import AnalysisWorker, BatchRunOutcome
 from gui.roi_preview import ROIPreviewDialog
 from gui.freestyle_config_dialog import FreestyleConfigDialog
@@ -42,7 +43,7 @@ from mazes.epm import EPM
 from mazes.tst import TST
 from mazes.y_maze import YMaze
 from preflight_checker import PreflightChecker, ValidationDialog
-from checkpoint_manager import CheckpointManager, ResourceManager
+from checkpoint_manager import CheckpointManager
 
 logger = logging.getLogger(__name__)
 
@@ -64,7 +65,11 @@ class QTextEditLogger(logging.Handler, QObject):
 
 class MainWindow(QMainWindow):
     """Enhanced main window using Core architecture."""
-    
+
+    # How long a close request waits for the worker to stop before offering
+    # to force quit.
+    FORCE_QUIT_DELAY_MS = 10_000
+
     def __init__(self):
         super().__init__()
         self.setWindowTitle(f"{APP_NAME} v{APP_VERSION}")
@@ -86,7 +91,11 @@ class MainWindow(QMainWindow):
         self.batch_plan_path: Optional[Path] = None
         
         self.checkpoint_mgr = None
-        
+
+        # Close-while-running handshake (see closeEvent)
+        self._close_requested = False
+        self._force_close = False
+
         self.init_ui()
         self.create_menu_bar()
         self.check_for_resumable_analyses()
@@ -169,6 +178,7 @@ class MainWindow(QMainWindow):
         
         load_config_action = QAction('&Load Configuration / Plan...', self)
         load_config_action.triggered.connect(self.load_configuration)
+        self.load_config_action = load_config_action
         
         file_menu.addAction(save_config_action)
         file_menu.addAction(load_config_action)
@@ -182,6 +192,7 @@ class MainWindow(QMainWindow):
         set_output_action = QAction('Set &Output Directory...', self)
         set_output_action.triggered.connect(self.set_output_directory)
         tools_menu.addAction(set_output_action)
+        self.set_output_action = set_output_action
 
     def add_videos(self):
         files, _ = QFileDialog.getOpenFileNames(
@@ -568,6 +579,19 @@ class MainWindow(QMainWindow):
                 count = sum(1 for k in rois.keys() if k.startswith('mouse_'))
             self.maze.configure_mice(count)
 
+    def _generate_reference_frame(self, ref_video_path: Path):
+        """Build the reference frame off the UI thread (raises TaskCancelled)."""
+        samples = AppConfig().video.ref_frame_samples
+        return run_with_progress(
+            self,
+            f"Generating reference frame for {ref_video_path.name}...",
+            lambda should_cancel: ReferenceFrameGenerator.generate(
+                ref_video_path, samples, use_cache=True,
+                should_cancel=should_cancel
+            ),
+            title="Reference Frame",
+        )
+
     def _run_setup_wizard(self, ref_video_path: Path, maze_choice: str) -> Optional[BatchSettings]:
         """Interactive ROI / reference-line / detection setup; None if cancelled."""
         # --- WIZARD SETUP ---
@@ -624,11 +648,11 @@ class MainWindow(QMainWindow):
                         VideoHandler(ref_video_path).dimensions
                     )
             
-            config = AppConfig()
-            # Core: Reference generation
-            ref_frame = ReferenceFrameGenerator.generate(
-                ref_video_path, config.video.ref_frame_samples, use_cache=True
-            )
+            try:
+                ref_frame = self._generate_reference_frame(ref_video_path)
+            except TaskCancelled:
+                self.update_progress_detailed(0, "Ready", "")
+                return
             tuner_dialog = TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)
             if not tuner_dialog.exec(): return
             detection_config = tuner_dialog.get_detection_config()
@@ -646,15 +670,13 @@ class MainWindow(QMainWindow):
                 if not arm_dialog.exec(): return
                 self.maze.configure_algorithm_parameters(arm_dialog.get_parameters())
             
-            config = AppConfig()
             self.update_progress_detailed(20, "Configuration", "Generating reference frame...")
-            QApplication.processEvents()
-            
-            # Core: Reference generation
-            ref_frame = ReferenceFrameGenerator.generate(
-                ref_video_path, config.video.ref_frame_samples, use_cache=True
-            )
-            
+            try:
+                ref_frame = self._generate_reference_frame(ref_video_path)
+            except TaskCancelled:
+                self.update_progress_detailed(0, "Ready", "")
+                return
+
             self.update_progress_detailed(35, "Configuration", "Tuning detection parameters...")
             tuner_dialog = TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)
             if not tuner_dialog.exec(): return
@@ -675,11 +697,13 @@ class MainWindow(QMainWindow):
         )
 
         if not settings_dialog.exec():
+            settings_dialog.deleteLater()
             logger.info("Settings cancelled.")
             self.update_progress_detailed(0, "Ready", "")
             return None
 
         base_settings = settings_dialog.get_settings()
+        settings_dialog.deleteLater()
         base_settings.paradigm_id = self.maze.name
         base_settings.algorithm_parameters = self.maze.get_algorithm_parameters()
         self.current_settings = base_settings
@@ -720,15 +744,19 @@ class MainWindow(QMainWindow):
                     )
                     redraw_cm = None
                     dialog.setWindowTitle(f"Verify: {video_path.name}")
-                    if not dialog.exec(): return {}
-                    
+                    if not dialog.exec():
+                        dialog.deleteLater()
+                        return {}
+
                     action = dialog.result_action
                     if action == "accept":
                         final_settings = dialog.get_settings()
+                        dialog.deleteLater()
                         analysis_plan[video_path] = final_settings.copy()
                         current_settings = final_settings
                         break
                     elif action == "skip":
+                        dialog.deleteLater()
                         logger.info(f"Video '{video_path.name}' skipped")
                         break
                     elif action == "redraw":
@@ -736,6 +764,7 @@ class MainWindow(QMainWindow):
                         # (not the old scale factor) is what carries over.
                         carried = dialog.get_settings()
                         real_world_cm = dialog.get_real_world_cm()
+                        dialog.deleteLater()
                         roi_dialog = RoiSelectorDialog(str(video_path), self.maze, self)
                         if roi_dialog.exec():
                             current_settings = self.settings_after_redraw(
@@ -810,9 +839,6 @@ class MainWindow(QMainWindow):
                 effective_parameters
             )
 
-        optimal_workers = ResourceManager.get_optimal_workers()
-        logger.info(f"System optimal parallel workers: {optimal_workers}")
-        
         self.set_ui_state(is_running=True)
         self.progress_bar.setValue(0)
         
@@ -838,7 +864,11 @@ class MainWindow(QMainWindow):
         self.analysis_worker.progress.connect(self.update_progress)
         self.analysis_worker.detailed_progress.connect(self.update_progress_detailed)
         self.analysis_worker.log.connect(logging.info)
-        
+        # Qt frees both objects once the thread has stopped; analysis_finished
+        # drops our references first so nothing touches them afterwards.
+        self.analysis_thread.finished.connect(self.analysis_worker.deleteLater)
+        self.analysis_thread.finished.connect(self.analysis_thread.deleteLater)
+
         self.analysis_thread.start()
 
     def _run_preflight(
@@ -974,8 +1004,12 @@ class MainWindow(QMainWindow):
         logger.info("Analysis run finished.")
         all_results = outcome.results
         run_output_dir = outcome.output_dir or self.output_dir
-        
-        if outcome.cancelled:
+        closing = self._close_requested
+
+        if closing:
+            # The user is quitting: no result dialogs, just finish and close.
+            pass
+        elif outcome.cancelled:
             QMessageBox.warning(
                 self,
                 "Analysis Cancelled",
@@ -1031,11 +1065,17 @@ class MainWindow(QMainWindow):
                 status = "Finished"
             self.update_progress_detailed(100, status, "")
         
-        if self.analysis_thread:
-            self.analysis_thread.quit()
-            self.analysis_thread.wait()
+        thread = self.analysis_thread
+        # Drop our references before the thread's finished signal lets Qt
+        # delete the worker and thread.
         self.analysis_thread = None
         self.analysis_worker = None
+        if thread is not None:
+            thread.quit()
+            thread.wait(5000)
+
+        if closing:
+            QTimer.singleShot(0, self.close)
 
     def set_ui_state(self, is_running: bool):
         self.start_button.setEnabled(not is_running)
@@ -1044,19 +1084,91 @@ class MainWindow(QMainWindow):
         self.clear_list_button.setEnabled(not is_running)
         self.cancel_button.setEnabled(is_running)
         self.preview_button.setEnabled(not is_running and (self.current_settings is not None or len(self.batch_plan_cache) > 0))
+        # Configuration and output-folder changes would race the running job.
+        self.save_config_action.setEnabled(
+            not is_running and self.current_settings is not None
+        )
+        self.load_config_action.setEnabled(not is_running)
+        self.set_output_action.setEnabled(not is_running)
+
+    def _analysis_running(self) -> bool:
+        thread = self.analysis_thread
+        return thread is not None and thread.isRunning()
 
     def closeEvent(self, event):
-        if self.analysis_thread and self.analysis_thread.isRunning():
-            reply = QMessageBox.question(self, 'Analysis in Progress', "Quit and cancel analysis?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-            if reply == QMessageBox.StandardButton.Yes:
-                self.cancel_analysis()
-                if self.analysis_thread: self.analysis_thread.quit(); self.analysis_thread.wait()
-                self._detach_log_handler()
-                event.accept()
-            else: event.ignore()
-        else:
+        if not self._analysis_running():
             self._detach_log_handler()
             event.accept()
+            return
+
+        if self._force_close:
+            # Last resort after the worker failed to stop in time.
+            self._stop_thread_forcefully()
+            self._detach_log_handler()
+            event.accept()
+            return
+
+        if self._close_requested:
+            # Already stopping; keep the window until the worker is done.
+            event.ignore()
+            return
+
+        reply = QMessageBox.question(
+            self, 'Analysis in Progress', "Quit and cancel analysis?",
+            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+            QMessageBox.StandardButton.No
+        )
+        if reply != QMessageBox.StandardButton.Yes:
+            event.ignore()
+            return
+
+        # Never block the GUI thread waiting for the worker: ask it to stop,
+        # keep the window open, and close from analysis_finished.
+        self._close_requested = True
+        self.cancel_analysis()
+        self.update_progress_detailed(
+            self.progress_bar.value(), "Stopping analysis…",
+            "Saving progress; the window closes automatically when done."
+        )
+        QTimer.singleShot(self.FORCE_QUIT_DELAY_MS, self._offer_force_quit)
+        event.ignore()
+
+    def _offer_force_quit(self):
+        """The worker did not stop in time; let the user stop waiting."""
+        if not (self._close_requested and self._analysis_running()):
+            return
+        if self._confirm_force_quit():
+            self._force_close = True
+            self.close()
+        else:
+            QTimer.singleShot(self.FORCE_QUIT_DELAY_MS, self._offer_force_quit)
+
+    def _confirm_force_quit(self) -> bool:
+        box = QMessageBox(self)
+        box.setIcon(QMessageBox.Icon.Warning)
+        box.setWindowTitle("Analysis Still Stopping")
+        box.setText(
+            "The analysis has not stopped yet.\n\n"
+            "Force quit now? The checkpoint of the video in progress may be "
+            "stale, so the next run may redo some of its frames, and any "
+            "video or plot being written will be incomplete."
+        )
+        force = box.addButton(
+            "Force Quit", QMessageBox.ButtonRole.DestructiveRole
+        )
+        box.addButton("Keep Waiting", QMessageBox.ButtonRole.RejectRole)
+        box.exec()
+        return box.clickedButton() is force
+
+    def _stop_thread_forcefully(self):
+        thread = self.analysis_thread
+        if thread is None:
+            return
+        thread.quit()
+        if not thread.wait(2000):
+            logger.warning("Analysis thread did not stop; terminating it")
+            thread.terminate()
+            thread.wait(2000)
 
     def _detach_log_handler(self):
         """Remove the Qt-backed handler before its widget is destroyed."""

@@ -350,6 +350,23 @@ class SettingsDialog(QDialog):
         self.settings.create_timelapse = self.timelapse_check.isChecked()
         return self.settings
 
+    def done(self, result):
+        """Release the capture on accept, reject and window close alike.
+
+        QDialog.accept()/reject() never reach closeEvent, so the capture
+        (which keeps the video file locked on Windows) is freed here.  The
+        widgets stay alive so callers can still read get_settings() after
+        exec() returns.
+        """
+        self._release_capture()
+        super().done(result)
+
+    def _release_capture(self):
+        cap = getattr(self, "cap", None)
+        if cap is not None:
+            cap.release()
+
     def closeEvent(self, event):
-        self.cap.release()
+        # QDialog only routes close through done() while visible.
+        self._release_capture()
         super().closeEvent(event)

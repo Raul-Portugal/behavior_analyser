@@ -12,7 +12,7 @@ import numpy as np
 from pathlib import Path
 from queue import Queue, Empty, Full
 from threading import Thread, Event
-from typing import Optional, Tuple, Generator
+from typing import Callable, Optional, Tuple, Generator
 from tqdm import tqdm
 
 logger = logging.getLogger(__name__)
@@ -219,8 +219,13 @@ class ReferenceFrameGenerator:
 
     @classmethod
     def generate(cls, path: Path, num_samples: int = 100, 
-                 target_dims: Optional[Tuple[int, int]] = None, use_cache: bool = True) -> np.ndarray:
-        
+                 target_dims: Optional[Tuple[int, int]] = None, use_cache: bool = True,
+                 should_cancel: Optional[Callable[[], bool]] = None) -> np.ndarray:
+        """Return the median background frame for ``path``.
+
+        ``should_cancel`` is polled before every sampled frame; when it
+        returns True an ``InterruptedError`` is raised and nothing is cached.
+        """
         cache_path = cls.get_cache_path(path)
         file_hash = cls.get_hash(path)
         handler = VideoHandler(path)
@@ -252,15 +257,19 @@ class ReferenceFrameGenerator:
         frames = []
         
         cap = cv2.VideoCapture(str(path))
-        for i in indices:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, i)
-            ret, frame = cap.read()
-            if ret:
-                gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
-                if target_dims:
-                    gray = cv2.resize(gray, target_dims)
-                frames.append(gray)
-        cap.release()
+        try:
+            for i in indices:
+                if should_cancel is not None and should_cancel():
+                    raise InterruptedError("Reference frame generation cancelled")
+                cap.set(cv2.CAP_PROP_POS_FRAMES, i)
+                ret, frame = cap.read()
+                if ret:
+                    gray = cv2.cvtColor(frame, cv2.COLOR_BGR2GRAY)
+                    if target_dims:
+                        gray = cv2.resize(gray, target_dims)
+                    frames.append(gray)
+        finally:
+            cap.release()
 
         if not frames:
             raise ValueError("Could not read frames for reference")

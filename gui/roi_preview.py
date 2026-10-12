@@ -28,9 +28,13 @@ class ROIPreviewDialog(QDialog):
         self.video_path = video_path
         self.roi_manager = roi_manager
         self.maze = maze
-        
+        # Nothing reads the dialog after exec(), so Qt may free it (and its
+        # widgets) as soon as it is closed instead of keeping it under parent.
+        self.setAttribute(Qt.WidgetAttribute.WA_DeleteOnClose)
+
         self.cap = cv2.VideoCapture(str(video_path))
         if not self.cap.isOpened():
+            self.cap.release()
             raise IOError(f"Cannot open video: {video_path}")
         
         self.total_frames = int(self.cap.get(cv2.CAP_PROP_FRAME_COUNT))
@@ -196,13 +200,25 @@ class ROIPreviewDialog(QDialog):
             f"Time: {timestamp:.2f}s / {self.total_frames / self.fps:.2f}s"
         )
 
+    def done(self, result):
+        """Release the capture however the dialog is dismissed.
+
+        accept()/reject() do not go through closeEvent, so doing this only
+        there leaked one open capture per preview.
+        """
+        self._release_capture()
+        super().done(result)
+
+    def _release_capture(self):
+        cap = getattr(self, "cap", None)
+        if cap is not None:
+            cap.release()
+
     def closeEvent(self, event):
-        """Clean up resources on close."""
-        if self.cap:
-            self.cap.release()
+        # QDialog only routes close through done() while visible.
+        self._release_capture()
         super().closeEvent(event)
 
     def __del__(self):
         """Ensure video capture is released."""
-        if hasattr(self, 'cap') and self.cap:
-            self.cap.release()
+        self._release_capture()
