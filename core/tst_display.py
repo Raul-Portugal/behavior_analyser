@@ -6,6 +6,9 @@ share one mapping instead of keeping two copies in sync by hand.
 
 from typing import Optional, Tuple
 
+import cv2
+import numpy as np
+
 IMMOBILE_STATES = frozenset({"immobile_static", "passive_swing"})
 KNOWN_STATES = IMMOBILE_STATES | {"active_escape"}
 
@@ -37,3 +40,34 @@ def tst_display_style(
     if behavior_state in IMMOBILE_STATES:
         return SHORT_PAUSE_STYLE
     return ACTIVE_ESCAPE_STYLE
+
+
+def blend_polygon(
+    frame: np.ndarray,
+    points: np.ndarray,
+    color: Tuple[int, int, int],
+    alpha: float = 0.35,
+    beta: float = 0.65,
+) -> None:
+    """Alpha-blend a filled polygon into ``frame`` in place.
+
+    Only the polygon's bounding box (clamped to the frame) is copied and
+    blended, which gives exactly the same pixels as copying and blending the
+    whole frame because every pixel outside the polygon blends with itself.
+    ``points`` is an int32 array reshapeable to (N, 1, 2); ``alpha`` weights
+    the colour and ``beta`` the original frame.
+    """
+    points = np.asarray(points, dtype=np.int32).reshape(-1, 1, 2)
+    if len(points) == 0:
+        return
+    frame_h, frame_w = frame.shape[:2]
+    x, y, w, h = cv2.boundingRect(points)
+    x0, y0 = max(0, x), max(0, y)
+    x1, y1 = min(frame_w, x + w), min(frame_h, y + h)
+    if x1 <= x0 or y1 <= y0:
+        return
+    region = frame[y0:y1, x0:x1]
+    overlay = region.copy()
+    shifted = points - np.array([x0, y0], dtype=np.int32)
+    cv2.fillPoly(overlay, [shifted], color)
+    cv2.addWeighted(overlay, alpha, region, beta, 0, region)

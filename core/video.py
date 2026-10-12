@@ -60,6 +60,43 @@ class VideoHandler:
         return frame if ret else None
 
 
+def position_capture_at_frame(
+    cap,
+    frame_index: int,
+    should_cancel: Optional[Callable[[], bool]] = None,
+) -> None:
+    """Position ``cap`` so the next read returns frame ``frame_index``.
+
+    ``CAP_PROP_POS_FRAMES`` seeks are not frame-accurate for some codecs, so
+    the landing position is verified; if it differs the capture is rewound to
+    frame 0 and decoded forward with ``grab()``, which is always accurate.
+    ``should_cancel`` is polled during that slow fallback and raises
+    ``InterruptedError`` when it returns True.
+    """
+    frame_index = max(0, int(frame_index))
+    cap.set(cv2.CAP_PROP_POS_FRAMES, frame_index)
+    if frame_index == 0:
+        return
+    actual = cap.get(cv2.CAP_PROP_POS_FRAMES)
+    if actual == actual and int(round(actual)) == frame_index:
+        return
+
+    logger.warning(
+        "Seek to frame %d landed on %s; reading forward from frame 0 "
+        "for frame-accurate overlays", frame_index, actual,
+    )
+    cap.set(cv2.CAP_PROP_POS_FRAMES, 0)
+    for skipped in range(frame_index):
+        if (
+            should_cancel is not None
+            and skipped % 256 == 0
+            and should_cancel()
+        ):
+            raise InterruptedError("Cancelled while positioning the video")
+        if not cap.grab():
+            break
+
+
 class VideoReadError(IOError):
     """Decoding stalled or failed before the end of the video."""
 
