@@ -42,7 +42,6 @@ class EnergyScanner(QThread):
         rois,
         motion_config,
         review_segments,
-        preview_width=480,
         target_fps=12.0,
     ):
         super().__init__()
@@ -50,21 +49,10 @@ class EnergyScanner(QThread):
         self.rois = dict(rois)
         self.motion_config = TSTMotionConfig(**motion_config.__dict__)
         self.review_segments = list(review_segments)
-        self.preview_width = max(160, int(preview_width))
         self.target_fps = max(1.0, float(target_fps))
         self.state_data = {name: [] for name in self.rois}
         self.evidence_data = {name: [] for name in self.rois}
         self._capture = None
-
-    @staticmethod
-    def _scale_rois(rois, scale_x, scale_y):
-        scaled = {}
-        for name, roi in rois.items():
-            points = roi.points.astype(np.float32)
-            points[:, 0] *= scale_x
-            points[:, 1] *= scale_y
-            scaled[name] = ROI(np.rint(points).astype(np.int32), name)
-        return scaled
 
     def cancel(self):
         """Request cancellation and unblock a pending local video read."""
@@ -94,15 +82,6 @@ class EnergyScanner(QThread):
             return
         source_step = max(1, int(round(fps / self.target_fps)))
         analysis_fps = fps / source_step
-        preview_height = max(
-            1, int(round(orig_h * min(1.0, self.preview_width / orig_w)))
-        )
-        preview_width = max(
-            1, int(round(orig_w * min(1.0, self.preview_width / orig_w)))
-        )
-        scale_x = preview_width / max(1, orig_w)
-        scale_y = preview_height / max(1, orig_h)
-        scaled_rois = self._scale_rois(self.rois, scale_x, scale_y)
 
         segments = []
         for start_frame, end_frame in self.review_segments:
@@ -126,15 +105,15 @@ class EnergyScanner(QThread):
                 if self.isInterruptionRequested():
                     break
                 cap.set(cv2.CAP_PROP_POS_FRAMES, start)
-                ret, previous_source = cap.read()
-                if not ret or previous_source is None:
+                ret, previous = cap.read()
+                if not ret or previous is None:
                     continue
-                previous = cv2.resize(
-                    previous_source, (preview_width, preview_height),
-                    interpolation=cv2.INTER_AREA,
-                )
+                # Source frames and source-space ROIs go straight to the
+                # engine, which applies the same canonical analysis geometry
+                # as the production run. Its rate normalization makes the
+                # reduced analysis_fps comparable with native-rate analysis.
                 engine = TSTMotionEngine(
-                    scaled_rois,
+                    self.rois,
                     self.motion_config,
                     fps=analysis_fps,
                 )
@@ -152,10 +131,7 @@ class EnergyScanner(QThread):
                     if not ret or current_source is None:
                         break
                     current_source_frame += source_step
-                    current = cv2.resize(
-                        current_source, (preview_width, preview_height),
-                        interpolation=cv2.INTER_AREA,
-                    )
+                    current = current_source
                     observations = engine.calculate_observations(
                         current, previous
                     )
@@ -169,13 +145,7 @@ class EnergyScanner(QThread):
                             })
                         contour = engine.get_last_mask_contour(name)
                         if contour:
-                            evidence["mask_contour"] = [
-                                [
-                                    int(round(point[0] / scale_x)),
-                                    int(round(point[1] / scale_y)),
-                                ]
-                                for point in contour
-                            ]
+                            evidence["mask_contour"] = contour
                         evidence["source_frame"] = current_source_frame
                         evidence["timestamp_s"] = current_source_frame / fps
                         energy_data[name].append(observation.activity_score)

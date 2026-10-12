@@ -419,8 +419,10 @@ class TSTRateNormalizationTests(unittest.TestCase):
         self.assertIn("active_escape", reference)
 
     def test_normalized_features_agree_across_frame_rates(self):
-        swing = (2.5, 4.5)
-        wiggle = (5.75, 7.0)
+        swing = (synthetic.STATIC_END_S + 1.0, synthetic.SWING_END_S - 0.1)
+        wiggle = (
+            synthetic.WIGGLE_START_S + 0.25, synthetic.WIGGLE_END_S
+        )
         for name, window, tolerance in (
             ("rigid_motion", swing, 0.25),
             ("residual_motion", swing, 0.25),
@@ -438,16 +440,17 @@ class TSTRateNormalizationTests(unittest.TestCase):
 
     def test_normalized_injection_stays_below_active_threshold(self):
         threshold = TSTMotionConfig().active_injection_threshold
-        expected = self._median(30.0, "motion_injection", 2.5, 4.5)
+        window = (synthetic.STATIC_END_S + 1.0, synthetic.SWING_END_S - 0.1)
+        expected = self._median(30.0, "motion_injection", *window)
         for fps in (15.0, 60.0):
-            value = self._median(fps, "motion_injection", 2.5, 4.5)
+            value = self._median(fps, "motion_injection", *window)
             self.assertLess(abs(value - expected), 0.25 * threshold)
 
     def test_static_period_has_no_motion_at_any_rate(self):
         for fps in self.RATES:
             for name in ("rigid_motion", "residual_motion", "deformation"):
                 self.assertLess(
-                    self._median(fps, name, 0.3, 1.4), 0.003, name
+                    self._median(fps, name, 0.3, 1.1), 0.003, name
                 )
 
     def test_rate_scales_are_relative_to_reference_fps(self):
