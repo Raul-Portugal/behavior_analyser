@@ -122,6 +122,10 @@ class BatchSettings:
     Container for all settings required for a single analysis run.
     """
     SCHEMA_VERSION = 5
+    # Written instead of SCHEMA_VERSION only when the ROI manager carries an
+    # open-field arena, so older builds reject such files instead of silently
+    # dropping the arena, and arena-free configs keep their exact content.
+    ARENA_SCHEMA_VERSION = 6
 
     def __init__(
         self,
@@ -182,7 +186,11 @@ class BatchSettings:
 
     def to_dict(self) -> Dict[str, Any]:
         return {
-            'schema_version': self.SCHEMA_VERSION,
+            'schema_version': (
+                self.ARENA_SCHEMA_VERSION
+                if getattr(self.roi_manager, 'arena', None) is not None
+                else self.SCHEMA_VERSION
+            ),
             'roi_manager': self.roi_manager.to_dict(),
             'detection_config': self.detection_config.to_dict(),
             'scale_factor': self.scale_factor,
@@ -197,10 +205,10 @@ class BatchSettings:
     @classmethod
     def from_dict(cls, data: Dict[str, Any]) -> 'BatchSettings':
         schema_version = int(data.get('schema_version', 1))
-        if schema_version > cls.SCHEMA_VERSION:
+        if schema_version > cls.ARENA_SCHEMA_VERSION:
             raise ValueError(
                 f"Configuration schema {schema_version} is newer than "
-                f"supported schema {cls.SCHEMA_VERSION}"
+                f"supported schema {cls.ARENA_SCHEMA_VERSION}"
             )
         paradigm_id = data.get('paradigm_id')
         algorithm_parameters = data.get('algorithm_parameters', {})

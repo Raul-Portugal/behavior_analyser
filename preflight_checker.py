@@ -379,7 +379,9 @@ class PreflightChecker:
             return
         roi_manager = settings.roi_manager
         has_pixel_geometry = (
-            bool(roi_manager.rois) or roi_manager.reference_length_pixels > 0
+            bool(roi_manager.rois)
+            or roi_manager.reference_length_pixels > 0
+            or getattr(roi_manager, 'arena', None) is not None
         )
         source_dims = roi_manager.source_dimensions
         if (

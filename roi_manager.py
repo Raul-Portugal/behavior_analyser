@@ -13,6 +13,20 @@ logger = logging.getLogger(__name__)
 # Pre-3.2 configs may carry a reference named like "Width of first Arm A ROI".
 LEGACY_BBOX_REFERENCE_PREFIX = "Width of first"
 
+# Reserved ROI name for the optional open-field arena. The arena is stored
+# apart from ``ROIManager.rois`` so it is never treated as an analysis zone.
+ARENA_CATEGORY = "arena"
+
+# ROIManager.to_dict schema versions. Version 2 is written whenever no arena
+# is set, so configurations without an arena serialize (and hash) exactly as
+# they did before the arena existed.
+ROI_SCHEMA_VERSION = 2
+ROI_SCHEMA_VERSION_ARENA = 3
+
+# Drawing styles (BGR) for the arena outline and its derived center region.
+ARENA_DRAW_COLOR = (0, 165, 255)
+CENTER_DRAW_COLOR = (255, 255, 0)
+
 
 class ROI:
     """
@@ -168,6 +182,11 @@ class ROIManager:
     def __init__(self, source_dimensions: Optional[Tuple[int, int]] = None):
         """Initialize an empty ROI manager."""
         self.rois: Dict[str, List[ROI]] = {}
+        # Optional open-field arena (floor boundary). Not an analysis zone:
+        # it is excluded from zone assignment and from ``rois``.
+        self.arena: Optional[ROI] = None
+        # Cached center-region polygon, for overlays only. Never serialized.
+        self.center_overlay: Optional[np.ndarray] = None
         self._reference_length_pixels = 0.0
         self._reference_name = "N/A"
         self._source_dimensions: Optional[Tuple[int, int]] = None
@@ -212,6 +231,38 @@ class ROIManager:
         except Exception as e:
             logger.error(f"Failed to add ROI for category '{category}': {e}")
             raise ValueError(f"Invalid ROI: {e}")
+
+    def set_arena(self, points: np.ndarray) -> None:
+        """Define (or replace) the open-field arena polygon.
+
+        Raises:
+            ValueError: If the polygon is invalid.
+        """
+        try:
+            self.arena = ROI(points, ARENA_CATEGORY)
+        except Exception as e:
+            logger.error(f"Failed to set arena: {e}")
+            raise ValueError(f"Invalid arena: {e}")
+        self.center_overlay = None
+
+    def clear_arena(self) -> None:
+        """Remove the arena and any cached center overlay."""
+        self.arena = None
+        self.center_overlay = None
+
+    @property
+    def has_arena(self) -> bool:
+        return self.arena is not None
+
+    def set_center_overlay(self, points: Optional[np.ndarray]) -> None:
+        """Cache the center-region polygon that ``draw_on_frame`` should show."""
+        if points is None:
+            self.center_overlay = None
+            return
+        polygon = np.asarray(points)
+        if polygon.ndim != 2 or polygon.shape[1] != 2 or len(polygon) < 3:
+            raise ValueError("Center overlay must be an Nx2 polygon (N >= 3)")
+        self.center_overlay = polygon.astype(np.int32)
 
     def get_category(self, point: Optional[Tuple[int, int]]) -> str:
         """
@@ -277,6 +328,9 @@ class ROIManager:
         if not self.rois:
             issues.append("No ROIs defined")
             return False, issues
+
+        if self.arena is not None and self.arena.area < 100:
+            issues.append(f"Arena has very small area ({self.arena.area:.2f})")
         
         # Check for empty categories
         for category, roi_list in self.rois.items():
@@ -389,6 +443,24 @@ class ROIManager:
                     except Exception as e:
                         logger.warning(f"Error drawing ROI {category}: {e}")
             
+            if self.arena is not None:
+                arena_color = ARENA_DRAW_COLOR
+                if colors is not None:
+                    arena_color = colors.get(ARENA_CATEGORY, arena_color)
+                try:
+                    cv2.polylines(output, [self.arena.points.astype(np.int32)],
+                                  isClosed=True, color=arena_color,
+                                  thickness=thickness + 1)
+                except Exception as e:
+                    logger.warning(f"Error drawing arena: {e}")
+            if self.center_overlay is not None:
+                try:
+                    cv2.polylines(output, [self.center_overlay.astype(np.int32)],
+                                  isClosed=True, color=CENTER_DRAW_COLOR,
+                                  thickness=max(1, thickness - 1))
+                except Exception as e:
+                    logger.warning(f"Error drawing center overlay: {e}")
+
             return output
         except Exception as e:
             logger.error(f"Error drawing ROIs on frame: {e}")
@@ -416,18 +488,29 @@ class ROIManager:
                 'count': len(roi_list),
                 'total_area': total_area
             }
-        
+
+        if self.arena is not None:
+            stats['arena_area'] = self.arena.area
+
         return stats
 
     def to_dict(self) -> Dict:
         """Serializes the entire ROIManager to a dictionary."""
-        return {
-            'schema_version': 2,
+        data = {
+            'schema_version': (
+                ROI_SCHEMA_VERSION_ARENA if self.arena is not None
+                else ROI_SCHEMA_VERSION
+            ),
             'rois': {cat: [r.to_dict() for r in r_list] for cat, r_list in self.rois.items()},
             '_reference_length_pixels': self._reference_length_pixels,
             '_reference_name': self._reference_name,
             'source_dimensions': list(self._source_dimensions) if self._source_dimensions else None
         }
+        # Written only when set, so configurations without an arena are
+        # exactly what earlier versions wrote.
+        if self.arena is not None:
+            data['arena'] = self.arena.to_dict()
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'ROIManager':
@@ -446,6 +529,13 @@ class ROIManager:
         if not isinstance(data, dict):
             raise ValueError("Data must be a dictionary")
         
+        schema_version = int(data.get('schema_version', 1))
+        if schema_version > ROI_SCHEMA_VERSION_ARENA:
+            raise ValueError(
+                f"ROI schema {schema_version} is newer than supported "
+                f"schema {ROI_SCHEMA_VERSION_ARENA}"
+            )
+
         raw_dimensions = data.get('source_dimensions')
         manager = cls(tuple(raw_dimensions) if raw_dimensions else None)
         
@@ -453,6 +543,10 @@ class ROIManager:
             for category, roi_list_data in data.get('rois', {}).items():
                 manager.rois[category] = [ROI.from_dict(roi_data) for roi_data in roi_list_data]
             
+            raw_arena = data.get('arena')
+            if raw_arena is not None:
+                manager.arena = ROI.from_dict(raw_arena)
+
             manager._reference_length_pixels = data.get('_reference_length_pixels', 0.0)
             manager._reference_name = data.get('_reference_name', 'N/A')
             
