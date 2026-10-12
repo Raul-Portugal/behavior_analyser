@@ -132,8 +132,6 @@ class AnalysisWorker(QObject):
             data_dir = video_output_dir / "data"
             plots_dir = video_output_dir / "plots"
             media_dir = video_output_dir / "media"
-            for directory in (data_dir, plots_dir):
-                directory.mkdir(parents=True, exist_ok=True)
             self.log.emit(f"\n{'='*60}\nAnalyzing {self.maze.name} video {video_num}/{total_videos}: {video_path.name}\n{'='*60}")
             
             to_batch_pct = lambda local_pct: int(
@@ -144,6 +142,11 @@ class AnalysisWorker(QObject):
             frames_done = 0
 
             try:
+                # Inside the try so an unwritable output folder is recorded
+                # as a per-video failure instead of escaping run().
+                for directory in (data_dir, plots_dir):
+                    directory.mkdir(parents=True, exist_ok=True)
+
                 # Initialize VideoHandler
                 handler = VideoHandler(video_path)
                 start_frame = int(settings.start_time * handler.fps)
