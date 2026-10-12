@@ -27,6 +27,7 @@ from core.version import APP_NAME, APP_VERSION
 # --- DIALOGS ---
 from gui import ux_helpers
 from gui.app_settings import AppSettings
+from gui.config_checks import dimension_mismatches, format_dimension_mismatches
 from gui.roi_selector import (REFERENCE_LINE_PROMPT, RoiSelectorDialog,
                               offer_reference_line)
 from gui.arm_entry_dialog import ArmEntryParametersDialog
@@ -664,12 +665,43 @@ class MainWindow(QMainWindow):
             self.app_settings.add_recent_file(file_path)
             self._rebuild_recent_menu()
             logger.info(f"Configuration loaded from: {filename}")
-            QMessageBox.information(self, "Configuration Loaded", msg)
+            mismatch_text = self._dimension_mismatch_text()
+            if mismatch_text:
+                QMessageBox.warning(
+                    self, "Configuration Loaded - Check Video Sizes",
+                    f"{msg}\n\n{mismatch_text}"
+                )
+            else:
+                QMessageBox.information(self, "Configuration Loaded", msg)
             
         except Exception as e:
             self.app_settings.remove_recent_file(file_path)
             logger.error(f"Failed to load configuration: {e}", exc_info=True)
             QMessageBox.critical(self, "Load Failed", f"Failed to load configuration:\n{e}")
+
+    def _expected_dimensions_for(self, video: Path):
+        """Frame size the loaded ROIs for ``video`` were drawn on, if known."""
+        if self.batch_plan_cache:
+            settings = self._plan_settings_for(video)
+            if settings is None:
+                return None  # not covered by the plan: it will be configured anew
+        else:
+            settings = self.current_settings
+        if settings is None or settings.roi_manager is None:
+            return None
+        return settings.roi_manager.source_dimensions
+
+    def _dimension_mismatch_text(self) -> str:
+        """List videos whose size differs from the loaded configuration's ROIs."""
+        if not self.video_paths:
+            return ""
+        try:
+            return format_dimension_mismatches(
+                dimension_mismatches(self.video_paths, self._expected_dimensions_for)
+            )
+        except Exception:
+            logger.warning("Could not compare video sizes", exc_info=True)
+            return ""
 
     def _apply_batch_plan(self, plan: Dict[str, BatchSettings], plan_path: Path):
         """Make a loaded batch plan the active configuration."""
@@ -940,7 +972,9 @@ class MainWindow(QMainWindow):
                     ),
                 )
                 if answer == "review":
-                    self.run_batch_with_verification(base_settings)
+                    self.run_batch_with_verification(
+                        base_settings, reviewed_video=ref_video_path
+                    )
                 elif answer == "run":
                     self.run_batch_analysis(base_settings)
                 else:
@@ -1276,15 +1310,26 @@ class MainWindow(QMainWindow):
 
     def run_batch_analysis(self, base_settings: BatchSettings):
         analysis_plan = {video: base_settings.copy() for video in self.video_paths}
-        reply = QMessageBox.question(self, 'Start Analysis', f"Ready to analyze {len(self.video_paths)} video(s).\nProceed?", 
-                                   QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
-        if reply == QMessageBox.StandardButton.Yes: self.run_worker(analysis_plan)
+        # run_worker's pre-flight summary is the single "Start" confirmation.
+        self.run_worker(analysis_plan)
 
-    def run_batch_with_verification(self, base_settings: BatchSettings):
-        analysis_plan = self.build_analysis_plan(base_settings, verify_each=True)
-        if analysis_plan: self.run_worker(analysis_plan)
+    def run_batch_with_verification(
+        self, base_settings: BatchSettings,
+        reviewed_video: Optional[Path] = None,
+    ):
+        analysis_plan = self.build_analysis_plan(
+            base_settings, verify_each=True, reviewed_video=reviewed_video
+        )
+        # Verification ended with its own Run now step, so only warnings ask again.
+        if analysis_plan:
+            self.run_worker(analysis_plan, confirm_start=False)
 
-    def build_analysis_plan(self, base_settings: BatchSettings, verify_each: bool) -> Dict[Path, BatchSettings]:
+    def build_analysis_plan(
+        self, base_settings: BatchSettings, verify_each: bool,
+        reviewed_video: Optional[Path] = None,
+    ) -> Dict[Path, BatchSettings]:
+        """Per-video settings; ``reviewed_video`` was just reviewed in setup and
+        is accepted as is instead of being shown a second time."""
         analysis_plan: Dict[Path, BatchSettings] = {}
         if not verify_each:
             for video_path in self.video_paths: analysis_plan[video_path] = base_settings.copy()
@@ -1298,6 +1343,11 @@ class MainWindow(QMainWindow):
         redraw_cm = None  # cm length to pre-fill right after a Redraw
         for i, video_path in enumerate(self.video_paths):
             logger.info(f"Verifying video {i+1}/{len(self.video_paths)}: {video_path.name}")
+            if reviewed_video is not None and video_path == reviewed_video:
+                logger.info(f"'{video_path.name}' was just reviewed; not shown again")
+                analysis_plan[video_path] = base_settings.copy()
+                reviewed_video = None
+                continue
             self._show_setup_status(
                 "Verification", f"Video {i + 1} of {len(self.video_paths)}: {video_path.name}"
             )
@@ -1437,7 +1487,8 @@ class MainWindow(QMainWindow):
         )
         return redrawn
 
-    def run_worker(self, analysis_plan: Dict[Path, BatchSettings]):
+    def run_worker(self, analysis_plan: Dict[Path, BatchSettings],
+                   confirm_start: bool = True):
         first_settings = next(iter(analysis_plan.values()), None)
         try:
             if first_settings and first_settings.algorithm_parameters:
@@ -1451,7 +1502,7 @@ class MainWindow(QMainWindow):
                 str(exc),
             )
             return
-        if not self._validate_analysis_plan(analysis_plan):
+        if not self._validate_analysis_plan(analysis_plan, confirm_start):
             return
         effective_parameters = self.maze.get_algorithm_parameters()
         for settings in analysis_plan.values():
@@ -1527,9 +1578,15 @@ class MainWindow(QMainWindow):
 
     def _validate_analysis_plan(
         self,
-        analysis_plan: Dict[Path, BatchSettings]
+        analysis_plan: Dict[Path, BatchSettings],
+        confirm_start: bool = True,
     ) -> bool:
-        """Validate every per-video configuration, including loaded plans."""
+        """Validate every per-video configuration, including loaded plans.
+
+        Problems that block the run are reported and stop here. Otherwise the
+        user sees one summary (with any warnings) and chooses Start; with
+        ``confirm_start`` False the box only appears when there are warnings.
+        """
         # Video, settings, disk and system checks run once for the batch.
         all_issues, all_warnings = self._run_preflight(analysis_plan)
         expected_parameters = None
@@ -1596,20 +1653,22 @@ class MainWindow(QMainWindow):
             QMessageBox.critical(self, title, message)
             return False
 
-        if all_warnings:
-            title, message = ValidationDialog.format_for_messagebox(
-                [], all_warnings
-            )
-            reply = QMessageBox.question(
-                self,
-                title,
-                message,
-                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No
-            )
-            if reply != QMessageBox.StandardButton.Yes:
-                return False
-
-        return True
+        if not all_warnings and not confirm_start:
+            return True
+        title, text, informative = ux_helpers.format_start_summary(
+            len(analysis_plan), self.maze.name, self.output_dir, all_warnings
+        )
+        answer = ux_helpers.ask_choice(
+            self, title, text,
+            [
+                Choice("start", "Start analysis"),
+                Choice("cancel", "Cancel", QMessageBox.ButtonRole.RejectRole),
+            ],
+            default_key="start",
+            informative=informative,
+            icon=QMessageBox.Icon.Warning if all_warnings else QMessageBox.Icon.Question,
+        )
+        return answer == "start"
 
     def _on_video_status(self, video: str, status: str, message: str):
         """Update one row from the worker's per-video signal."""

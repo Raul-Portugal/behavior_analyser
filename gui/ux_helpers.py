@@ -140,3 +140,37 @@ def partial_verification_outcome(choice: Optional[str], accepted_plan: Dict
     if choice == VERIFY_CONTINUE:
         return PartialVerificationOutcome({}, False, True)
     return PartialVerificationOutcome({}, False, False)
+
+
+MAX_LISTED_WARNINGS = 8
+
+
+def format_start_summary(
+    video_count: int,
+    paradigm: str,
+    output_dir,
+    warnings: Sequence[str],
+) -> tuple:
+    """(title, text, informative) of the single confirmation before a run.
+
+    Blocking problems never reach this box; ``warnings`` are the pre-flight
+    findings the user may accept.
+    """
+    noun = "video" if video_count == 1 else "videos"
+    text = f"Ready to analyze {video_count} {noun} ({paradigm})."
+    informative = (
+        "Results go into a new analysis_run_ folder inside:\n"
+        f"{output_dir if output_dir else 'the folder of the first video'}"
+    )
+    if not warnings:
+        return "Start Analysis", text, informative
+    listed = list(warnings[:MAX_LISTED_WARNINGS])
+    lines = "\n".join(f"• {warning}" for warning in listed)
+    if len(warnings) > len(listed):
+        lines += f"\n... and {len(warnings) - len(listed)} more"
+    count = len(warnings)
+    informative = (
+        f"The pre-flight checks found {count} warning"
+        f"{'s' if count != 1 else ''}:\n{lines}\n\n" + informative
+    )
+    return "Ready with Warnings", text, informative
