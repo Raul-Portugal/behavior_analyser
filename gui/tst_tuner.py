@@ -664,7 +664,12 @@ class TstTunerDialog(QDialog):
             with open(filename, encoding="utf-8") as profile_file:
                 payload = json.load(profile_file)
             if payload.get("engine_id") != TSTMotionEngine.ENGINE_ID:
-                raise ValueError("This profile was made for a different TST engine.")
+                raise ValueError(
+                    "This profile was made for a different TST engine "
+                    f"({payload.get('engine_id') or 'unversioned'}); the "
+                    f"current engine is {TSTMotionEngine.ENGINE_ID}. "
+                    "Re-tune and save a new profile."
+                )
             config = TSTMotionConfig(**payload["motion_config"])
             config.validate()
             if config.min_mouse_area_ratio >= config.max_mouse_area_ratio:

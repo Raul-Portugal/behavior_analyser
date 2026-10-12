@@ -37,7 +37,7 @@ class ConfigurationMigrationTests(unittest.TestCase):
                 "min_time_seconds": 1.0,
             }))
 
-    def test_v2_configuration_loads_and_upgrades_schema(self):
+    def test_v3_configuration_loads_and_upgrades_schema(self):
         parameters = TST().get_algorithm_parameters()
         settings = BatchSettings.from_dict(
             self._settings_dict(parameters)
@@ -45,12 +45,25 @@ class ConfigurationMigrationTests(unittest.TestCase):
 
         self.assertEqual(
             settings.algorithm_parameters["engine_id"],
-            "tst_motion_decomposition_v2",
+            "tst_motion_decomposition_v3",
         )
         self.assertEqual(
             settings.to_dict()["schema_version"],
             BatchSettings.SCHEMA_VERSION,
         )
+
+    def test_v2_configuration_requires_retuning(self):
+        parameters = TST().get_algorithm_parameters()
+        parameters["engine_id"] = "tst_motion_decomposition_v2"
+        with self.assertRaisesRegex(ValueError, "re-tune"):
+            BatchSettings.from_dict(self._settings_dict(parameters))
+
+    def test_tst_rejects_v2_engine_identifier_with_retune_message(self):
+        with self.assertRaisesRegex(ValueError, "re-tune"):
+            TST().configure_algorithm_parameters({
+                "engine_id": "tst_motion_decomposition_v2",
+                "min_time_seconds": 1.0,
+            })
 
     def test_tst_rejects_wrong_engine_identifier(self):
         with self.assertRaisesRegex(ValueError, "not compatible"):
