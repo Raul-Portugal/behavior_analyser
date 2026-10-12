@@ -59,6 +59,9 @@ def main(arguments=None):
         if argument != "--startup-check"
     ]
     sys.excepthook = _handle_uncaught_exception
+    # Root-logger level is application configuration, so it lives here rather
+    # than as a side effect of constructing the window.
+    logging.getLogger().setLevel(logging.INFO)
     app = QApplication(qt_arguments)
     main_win = MainWindow()
     if startup_check:

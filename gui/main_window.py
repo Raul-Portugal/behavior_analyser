@@ -160,7 +160,6 @@ class MainWindow(QMainWindow):
             logging.Formatter('%(asctime)s - %(levelname)s - %(message)s', datefmt='%H:%M:%S')
         )
         logging.getLogger().addHandler(self.log_handler)
-        logging.getLogger().setLevel(logging.INFO)
         main_layout.addWidget(self.log_handler.widget)
 
     def create_menu_bar(self):
@@ -405,8 +404,9 @@ class MainWindow(QMainWindow):
     def check_for_resumable_analyses(self):
         if self.output_dir is None: return
         try:
-            checkpoint_mgr = CheckpointManager(self.output_dir)
-            checkpoints = checkpoint_mgr.find_all_checkpoints()
+            checkpoints = CheckpointManager.find_checkpoints_readonly(
+                self.output_dir
+            )
             if checkpoints:
                 reply = QMessageBox.question(self, 'Resume Analysis?', 
                                            f"Found {len(checkpoints)} interrupted analysis session(s). See them?",

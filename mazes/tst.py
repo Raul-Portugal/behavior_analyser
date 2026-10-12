@@ -8,8 +8,6 @@ from pathlib import Path
 from typing import List, Tuple, Type, Dict, Optional
 import numpy as np
 
-import matplotlib
-matplotlib.use('Agg')
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 

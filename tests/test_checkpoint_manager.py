@@ -67,6 +67,26 @@ class CheckpointManagerTests(unittest.TestCase):
                 manager._get_checkpoint_path(second)
             )
 
+    def test_readonly_lookup_does_not_create_checkpoint_folder(self):
+        with tempfile.TemporaryDirectory() as temp_dir:
+            root = Path(temp_dir)
+
+            self.assertEqual(
+                CheckpointManager.find_checkpoints_readonly(root), []
+            )
+            self.assertFalse((root / '.checkpoints').exists())
+
+            manager = CheckpointManager(root)
+            video = root / 'trial.mp4'
+            video.write_bytes(b'video-data')
+            manager.save_checkpoint(
+                video, frame_idx=1, partial_result={'positions': []},
+                settings=FakeSettings()
+            )
+            self.assertEqual(
+                len(CheckpointManager.find_checkpoints_readonly(root)), 1
+            )
+
 
 if __name__ == '__main__':
     unittest.main()

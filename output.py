@@ -9,9 +9,6 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-import matplotlib
-# Force Agg backend for thread safety
-matplotlib.use('Agg')
 from matplotlib import colormaps
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
@@ -413,9 +410,12 @@ class Visualizer:
         w, h = dimensions
         heatmap = np.zeros((h, w), dtype=np.float32)
         xs, ys = zip(*valid_positions)
-        xs, ys = np.array(xs), np.array(ys)
+        # Positions are float sub-pixel; round to the nearest pixel (not truncate)
+        # and bounds-check the rounded indices.
+        xs = np.rint(np.array(xs, dtype=np.float64)).astype(int)
+        ys = np.rint(np.array(ys, dtype=np.float64)).astype(int)
         mask = (xs >= 0) & (xs < w) & (ys >= 0) & (ys < h)
-        np.add.at(heatmap, (ys[mask].astype(int), xs[mask].astype(int)), 1)
+        np.add.at(heatmap, (ys[mask], xs[mask]), 1)
         
         if blur_sigma > 0:
             heatmap = gaussian_filter(heatmap, sigma=blur_sigma)
