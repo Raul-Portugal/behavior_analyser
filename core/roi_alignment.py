@@ -485,3 +485,30 @@ def displacement_px(matrix: np.ndarray, dims: Tuple[int, int]) -> float:
     width, height = float(dims[0]), float(dims[1])
     corners = np.array([[0, 0], [width, 0], [width, height], [0, height]])
     return float(np.max(np.linalg.norm(transform_points(matrix, corners) - corners, axis=1)))
+
+
+def register_videos(
+    template_video,
+    target_video,
+    num_samples: int = 100,
+    should_cancel=None,
+    generate=None,
+) -> RegistrationResult:
+    """Auto-register two videos through their animal-free reference frames.
+
+    The median reference frames are the ones the setup wizard and the
+    pipeline already build (and cache on disk), so a repeat call is cheap.
+    ``generate`` replaces the frame builder (used by tests); it is called as
+    ``generate(path, num_samples, should_cancel)``.
+    """
+    if generate is None:
+        from core.video import ReferenceFrameGenerator
+
+        def generate(path, samples, cancel):
+            return ReferenceFrameGenerator.generate(
+                path, samples, use_cache=True, should_cancel=cancel
+            )
+
+    frame_template = generate(template_video, num_samples, should_cancel)
+    frame_target = generate(target_video, num_samples, should_cancel)
+    return auto_register(frame_template, frame_target)
