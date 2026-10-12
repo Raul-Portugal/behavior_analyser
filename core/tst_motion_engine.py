@@ -5,9 +5,13 @@ Whole-body translation/rotation is modelled separately from residual,
 non-rigid motion so pendulum-like movement can be treated as passive.
 """
 
+import os
+import weakref
+from collections import deque
+from concurrent.futures import Future, ThreadPoolExecutor
 from dataclasses import asdict, dataclass, field, replace
 from math import ceil, isfinite
-from typing import Dict, Optional, Tuple
+from typing import Any, Deque, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -24,6 +28,19 @@ MIN_ANALYSIS_WIDTH = 160
 # Processing is confined to the union bounding box of the ROIs plus this
 # fraction of its size on every side (clamped to the frame).
 ROI_MARGIN_FRACTION = 0.15
+
+# The validation video samples every Nth analysed frame (index relative to the
+# first frame of the result). Contours are only kept for those frames.
+TST_VALIDATION_FRAME_STEP = 3
+
+# Constant structuring elements; cv2 only reads them, so one instance is shared
+# by every segmentation call (and every thread).
+_ERODE_KERNEL = np.ones((7, 7), dtype=np.uint8)
+_OPEN_KERNEL = np.ones((3, 3), dtype=np.uint8)
+_CLOSE_KERNEL = np.ones((7, 7), dtype=np.uint8)
+# A ROI border band with fewer pixels than this is too small to estimate the
+# background from, so the whole ROI is used instead.
+_MIN_BACKGROUND_PIXELS = 20
 
 
 @dataclass
@@ -122,6 +139,78 @@ class TSTMotionObservation:
 
 
 @dataclass
+class _RoiGeometry:
+    """Per-ROI constants of the cropped analysis space, built once."""
+
+    mask: np.ndarray  # uint8 0/255 ROI mask in crop space
+    selector: np.ndarray  # bool, ``mask > 0``
+    area: int
+    roi_index: np.ndarray  # flat raster indices of the ROI pixels
+    background_index: np.ndarray  # flat indices used to estimate background
+
+
+@dataclass
+class _Segmentation:
+    """Foreground components of one ROI in one image.
+
+    Finding the components depends only on the image; which one is the mouse
+    depends on the mouse history (proximity to its previous centroid), so the
+    choice is made later, in frame order.
+    """
+
+    labels: Optional[np.ndarray] = None
+    # (label, area, area_ratio, centroid) of components within the area limits
+    options: List[Tuple[int, int, float, np.ndarray]] = field(
+        default_factory=list
+    )
+    error: str = ""
+
+
+@dataclass
+class _MotionFit:
+    """Everything about a (previous, current) mask pair that needs no history."""
+
+    failure: str = ""
+    inlier_ratio: float = 0.0
+    rigid_vector: Optional[np.ndarray] = None
+    rotation_radians: float = 0.0
+    rotation_motion: float = 0.0
+    rigid_motion: float = 0.0
+    residual_motion: float = 0.0
+    coherence: float = 0.0
+    deformation: float = 0.0
+    body_scale: float = 1.0
+    current_centroid: Optional[Tuple[float, float]] = None
+
+
+@dataclass
+class _RoiPrepared:
+    """History-independent work for one ROI, with its speculative fit.
+
+    ``selection`` holds the (previous, current) component labels that
+    ``fit`` and ``current_mask`` were computed for; the ordered stage reuses
+    them only if the history picks the same components.
+    """
+
+    previous: _Segmentation
+    current: _Segmentation
+    selection: Optional[Tuple[int, int]] = None
+    current_mask: Optional[np.ndarray] = None
+    fit: Optional[_MotionFit] = None
+
+
+@dataclass
+class _PreparedPair:
+    """Output of the pure, history-independent stage for one frame pair."""
+
+    current_gray: np.ndarray
+    aligned_previous: np.ndarray
+    flow: np.ndarray
+    camera_stabilized: bool
+    rois: Dict[str, _RoiPrepared]
+
+
+@dataclass
 class _MouseHistory:
     centroid: Optional[Tuple[float, float]] = None
     rigid_vector: Optional[np.ndarray] = None
@@ -190,6 +279,13 @@ class TSTMotionEngine:
         # operation live in the cropped analysis space; contours are mapped
         # back to source pixels.
         self.masks: Dict[str, np.ndarray] = {}
+        self._geometry: Dict[str, _RoiGeometry] = {}
+        # Integer source->analysis downscale factors (kx, ky) when the
+        # resize can be done on the ROI crop alone without changing a pixel.
+        self._exact_crop_factors: Optional[Tuple[int, int]] = None
+        # Gray analysis image of the most recent "current" frame, reused as
+        # the next pair's "previous" image. Keyed by frame identity.
+        self._gray_cache: Optional[Tuple[weakref.ref, np.ndarray]] = None
         self._source_size: Tuple[int, int] = (0, 0)
         self._analysis_size: Tuple[int, int] = (0, 0)
         self._scale: Tuple[float, float] = (1.0, 1.0)
@@ -241,20 +337,66 @@ class TSTMotionEngine:
             mask = np.zeros(crop_shape, dtype=np.uint8)
             cv2.fillPoly(mask, [points - np.asarray([x0, y0], np.int32)], 255)
             self.masks[name] = mask
+            self._geometry[name] = self._build_roi_geometry(mask)
             combined = cv2.bitwise_or(combined, mask)
         # Camera-motion features come from background inside the crop box
         # but outside every ROI.
         self._background_feature_mask = cv2.bitwise_not(combined)
+        factor_x, factor_y = width // analysis_width, height // analysis_height
+        if (
+            factor_x >= 2
+            and factor_y >= 2
+            and width == factor_x * analysis_width
+            and height == factor_y * analysis_height
+        ):
+            # INTER_AREA with integer factors averages disjoint source
+            # blocks, so resizing just the crop's source rows/columns is
+            # pixel-identical to cropping the resized frame.
+            self._exact_crop_factors = (factor_x, factor_y)
         self._initialized = True
+
+    @staticmethod
+    def _build_roi_geometry(mask: np.ndarray) -> _RoiGeometry:
+        selector = mask > 0
+        roi_index = np.flatnonzero(selector)
+        inner = cv2.erode(mask, _ERODE_KERNEL, iterations=2)
+        border_index = np.flatnonzero(cv2.subtract(mask, inner) > 0)
+        return _RoiGeometry(
+            mask=mask,
+            selector=selector,
+            area=int(roi_index.size),
+            roi_index=roi_index,
+            background_index=(
+                border_index
+                if border_index.size >= _MIN_BACKGROUND_PIXELS
+                else roi_index
+            ),
+        )
 
     def _analysis_gray(self, frame: np.ndarray) -> np.ndarray:
         """Resize to the analysis width, crop to the ROI box, blur to gray."""
-        if (frame.shape[1], frame.shape[0]) != self._analysis_size:
-            frame = cv2.resize(
-                frame, self._analysis_size, interpolation=cv2.INTER_AREA
-            )
         x0, y0, x1, y1 = self._crop
+        if (frame.shape[1], frame.shape[0]) == self._analysis_size:
+            return self._gray(frame[y0:y1, x0:x1])
+        if self._exact_crop_factors is not None:
+            factor_x, factor_y = self._exact_crop_factors
+            region = frame[
+                y0 * factor_y:y1 * factor_y, x0 * factor_x:x1 * factor_x
+            ]
+            return self._gray(cv2.resize(
+                region, (x1 - x0, y1 - y0), interpolation=cv2.INTER_AREA
+            ))
+        frame = cv2.resize(
+            frame, self._analysis_size, interpolation=cv2.INTER_AREA
+        )
         return self._gray(frame[y0:y1, x0:x1])
+
+    def _previous_gray(self, previous_frame: np.ndarray) -> np.ndarray:
+        """Analysis image of ``previous_frame``, reused when it is cached."""
+        cached = self._gray_cache
+        if cached is not None and cached[0]() is previous_frame:
+            return cached[1]
+        return self._analysis_gray(previous_frame)
 
     @staticmethod
     def _gray(frame: np.ndarray) -> np.ndarray:
@@ -304,27 +446,19 @@ class TSTMotionEngine:
         )
         return stabilized, True
 
-    def _segment_mouse(
-        self,
-        gray: np.ndarray,
-        roi_mask: np.ndarray,
-        previous_centroid: Optional[Tuple[float, float]],
-    ) -> Tuple[Optional[np.ndarray], float, str]:
-        roi_area = int(np.count_nonzero(roi_mask))
+    def _segment_candidates(
+        self, gray: np.ndarray, geometry: _RoiGeometry
+    ) -> _Segmentation:
+        """Find the mouse-sized foreground components inside one ROI."""
+        roi_area = geometry.area
         if roi_area == 0:
-            return None, 0.0, "empty_roi"
+            return _Segmentation(error="empty_roi")
 
-        kernel = np.ones((7, 7), dtype=np.uint8)
-        inner = cv2.erode(roi_mask, kernel, iterations=2)
-        border = cv2.subtract(roi_mask, inner)
-        background_pixels = gray[border > 0]
-        if background_pixels.size < 20:
-            background_pixels = gray[roi_mask > 0]
-        background_level = float(np.median(background_pixels))
+        background_level = float(np.median(gray.take(geometry.background_index)))
         contrast = cv2.absdiff(
             gray, np.full_like(gray, int(round(background_level)))
         )
-        roi_contrast = contrast[roi_mask > 0]
+        roi_contrast = contrast.take(geometry.roi_index)
         otsu_threshold, _ = cv2.threshold(
             roi_contrast.reshape(-1, 1),
             0,
@@ -333,13 +467,9 @@ class TSTMotionEngine:
         )
         threshold = max(self.config.segmentation_contrast, otsu_threshold)
         candidate = np.zeros_like(gray, dtype=np.uint8)
-        candidate[(contrast >= threshold) & (roi_mask > 0)] = 255
-        candidate = cv2.morphologyEx(
-            candidate, cv2.MORPH_OPEN, np.ones((3, 3), np.uint8)
-        )
-        candidate = cv2.morphologyEx(
-            candidate, cv2.MORPH_CLOSE, np.ones((7, 7), np.uint8)
-        )
+        candidate[(contrast >= threshold) & geometry.selector] = 255
+        candidate = cv2.morphologyEx(candidate, cv2.MORPH_OPEN, _OPEN_KERNEL)
+        candidate = cv2.morphologyEx(candidate, cv2.MORPH_CLOSE, _CLOSE_KERNEL)
 
         count, labels, stats, centroids = cv2.connectedComponentsWithStats(
             candidate, connectivity=8
@@ -354,22 +484,36 @@ class TSTMotionEngine:
                 <= self.config.max_mouse_area_ratio
             ):
                 continue
-            centroid = centroids[label]
+            options.append((label, area, area_ratio, centroids[label]))
+        if not options:
+            return _Segmentation(error="mouse_segmentation_failed")
+        return _Segmentation(labels=labels, options=options)
+
+    @staticmethod
+    def _select_component(
+        segmentation: _Segmentation,
+        previous_centroid: Optional[Tuple[float, float]],
+    ) -> Optional[Tuple[int, float]]:
+        """Pick the mouse blob: large, and near the previous centroid."""
+        scored = []
+        for label, area, area_ratio, centroid in segmentation.options:
             if previous_centroid is None:
                 proximity = 0.0
             else:
                 proximity = float(np.linalg.norm(
                     centroid - np.asarray(previous_centroid)
                 ))
-            score = area - (0.25 * proximity)
-            options.append((score, label, area_ratio))
+            scored.append((area - (0.25 * proximity), label, area_ratio))
+        if not scored:
+            return None
+        _, selected, area_ratio = max(scored)
+        return selected, float(area_ratio)
 
-        if not options:
-            return None, 0.0, "mouse_segmentation_failed"
-        _, selected, area_ratio = max(options)
-        mask = np.zeros_like(gray, dtype=np.uint8)
-        mask[labels == selected] = 255
-        return mask, float(area_ratio), ""
+    @staticmethod
+    def _component_mask(segmentation: _Segmentation, label: int) -> np.ndarray:
+        mask = np.zeros(segmentation.labels.shape, dtype=np.uint8)
+        mask[segmentation.labels == label] = 255
+        return mask
 
     @staticmethod
     def _centroid(mask: np.ndarray) -> Optional[Tuple[float, float]]:
@@ -381,20 +525,18 @@ class TSTMotionEngine:
             float(moments["m01"] / moments["m00"]),
         )
 
-    def _decompose(
+    def _fit_motion(
         self,
         flow: np.ndarray,
         source_gray: np.ndarray,
         target_gray: np.ndarray,
         previous_mask: np.ndarray,
         current_mask: np.ndarray,
-        history: _MouseHistory,
-        area_ratio: float,
-        camera_stabilized: bool,
-    ) -> TSTMotionObservation:
+    ) -> _MotionFit:
+        """Rigid fit and residual/shape features of one mask pair."""
         ys, xs = np.nonzero(previous_mask)
         if len(xs) < 25:
-            return self._uncertain(area_ratio, "insufficient_mouse_pixels")
+            return _MotionFit(failure="insufficient_mouse_pixels")
 
         stride = max(1, len(xs) // 800)
         sample_points = np.column_stack(
@@ -431,7 +573,7 @@ class TSTMotionEngine:
             ransacReprojThreshold=1.5,
         )
         if transform is None or inliers is None:
-            return self._uncertain(area_ratio, "rigid_fit_failed")
+            return _MotionFit(failure="rigid_fit_failed")
 
         inlier_ratio = float(np.mean(inliers))
         linear = transform[:, :2]
@@ -478,7 +620,33 @@ class TSTMotionEngine:
         deformation = (
             1.0 - intersection / union if union > 0 else 1.0
         ) * rate
+        return _MotionFit(
+            inlier_ratio=inlier_ratio,
+            rigid_vector=rigid_vector,
+            rotation_radians=rotation_radians,
+            rotation_motion=rotation_motion,
+            rigid_motion=rigid_motion,
+            residual_motion=residual_motion,
+            coherence=coherence,
+            deformation=float(deformation),
+            body_scale=body_scale,
+            current_centroid=self._centroid(current_mask),
+        )
 
+    def _finish_decomposition(
+        self,
+        fit: _MotionFit,
+        history: _MouseHistory,
+        area_ratio: float,
+        camera_stabilized: bool,
+    ) -> TSTMotionObservation:
+        """Apply the mouse history to a fit and classify the frame."""
+        if fit.failure:
+            return self._uncertain(area_ratio, fit.failure)
+        rate = self.rate_scale
+        rigid_vector = fit.rigid_vector
+        rotation_radians = fit.rotation_radians
+        body_scale = fit.body_scale
         if history.rigid_vector is None:
             injection = 0.0
         else:
@@ -494,31 +662,30 @@ class TSTMotionEngine:
             ) * 0.5 * self.injection_scale
         history.rigid_vector = rigid_vector
         history.angular_velocity = rotation_radians
-        current_centroid = self._centroid(current_mask)
-        history.centroid = current_centroid
+        history.centroid = fit.current_centroid
         pendulum_score, temporal_ready = self._update_pendulum_evidence(
             history,
-            current_centroid,
+            fit.current_centroid,
             rotation_radians,
-            coherence,
-            residual_motion,
-            float(deformation),
+            fit.coherence,
+            fit.residual_motion,
+            fit.deformation,
             body_scale,
         )
 
         return self._classify(
-            rigid_motion=rigid_motion,
-            rotation_motion=rotation_motion,
+            rigid_motion=fit.rigid_motion,
+            rotation_motion=fit.rotation_motion,
             rotation_radians=rotation_radians * rate,
-            residual_motion=residual_motion,
-            deformation=float(deformation),
-            coherence=coherence,
+            residual_motion=fit.residual_motion,
+            deformation=fit.deformation,
+            coherence=fit.coherence,
             injection=injection,
             angular_injection=angular_injection,
             pendulum_score=pendulum_score,
             temporal_ready=temporal_ready,
             area_ratio=area_ratio,
-            inlier_ratio=inlier_ratio,
+            inlier_ratio=fit.inlier_ratio,
             rigid_vector=rigid_vector * rate,
             camera_stabilized=camera_stabilized,
         )
@@ -853,20 +1020,8 @@ class TSTMotionEngine:
             qc_flag=reason,
         )
 
-    def calculate_observations(
-        self,
-        frame: np.ndarray,
-        previous_frame: np.ndarray,
-    ) -> Dict[str, TSTMotionObservation]:
-        if frame is None or previous_frame is None:
-            observations = {
-                name: self._uncertain(0.0, "missing_frame")
-                for name in self.rois
-            }
-            for history in self.histories.values():
-                history.reset_temporal()
-            self.last_observations = observations
-            return observations
+    def _ensure_geometry(self, frame: np.ndarray) -> None:
+        """Fix the geometry on the first frame; reject later size changes."""
         if not self._initialized:
             self._init_geometry(frame.shape)
         elif (frame.shape[1], frame.shape[0]) != self._source_size:
@@ -876,8 +1031,60 @@ class TSTMotionEngine:
                 f"{(frame.shape[1], frame.shape[0])}"
             )
 
-        current_gray = self._analysis_gray(frame)
-        previous_gray = self._analysis_gray(previous_frame)
+    def _missing_frame_observations(self) -> Dict[str, TSTMotionObservation]:
+        observations = {
+            name: self._uncertain(0.0, "missing_frame") for name in self.rois
+        }
+        for history in self.histories.values():
+            history.reset_temporal()
+        self._gray_cache = None
+        self.last_observations = observations
+        return observations
+
+    def _prepare_roi(
+        self,
+        name: str,
+        flow: np.ndarray,
+        aligned_previous: np.ndarray,
+        current_gray: np.ndarray,
+        centroid_hint: Optional[Tuple[float, float]],
+    ) -> _RoiPrepared:
+        geometry = self._geometry[name]
+        previous = self._segment_candidates(aligned_previous, geometry)
+        current = self._segment_candidates(current_gray, geometry)
+        prepared = _RoiPrepared(previous, current)
+        previous_pick = self._select_component(previous, centroid_hint)
+        current_pick = self._select_component(current, centroid_hint)
+        if previous_pick is not None and current_pick is not None:
+            prepared.selection = (previous_pick[0], current_pick[0])
+            prepared.current_mask = self._component_mask(
+                current, current_pick[0]
+            )
+            prepared.fit = self._fit_motion(
+                flow,
+                aligned_previous,
+                current_gray,
+                self._component_mask(previous, previous_pick[0]),
+                prepared.current_mask,
+            )
+        return prepared
+
+    def _prepare_pair(
+        self,
+        previous_gray: np.ndarray,
+        current_gray: np.ndarray,
+        centroid_hints: Optional[
+            Dict[str, Optional[Tuple[float, float]]]
+        ] = None,
+    ) -> _PreparedPair:
+        """Run everything about a frame pair that needs no mouse history.
+
+        This is a pure function of the two analysis images (and the fixed
+        geometry), so it may run on any thread and ahead of earlier frames.
+        The mouse blob is chosen with ``centroid_hints`` (none by default:
+        the largest component); the ordered stage re-checks that choice
+        against the real history and recomputes the fit if it differs.
+        """
         aligned_previous, camera_stabilized = self._stabilize_previous(
             previous_gray, current_gray, self._background_feature_mask
         )
@@ -893,39 +1100,89 @@ class TSTMotionEngine:
             poly_sigma=1.2,
             flags=0,
         )
+        hints = centroid_hints or {}
+        rois = {
+            name: self._prepare_roi(
+                name, flow, aligned_previous, current_gray, hints.get(name)
+            )
+            for name in self._geometry
+        }
+        return _PreparedPair(
+            current_gray=current_gray,
+            aligned_previous=aligned_previous,
+            flow=flow,
+            camera_stabilized=camera_stabilized,
+            rois=rois,
+        )
 
-        observations: Dict[str, TSTMotionObservation] = {}
-        for name, roi_mask in self.masks.items():
-            history = self.histories[name]
-            previous_mask, _, previous_error = self._segment_mouse(
-                aligned_previous, roi_mask, history.centroid
+    def _observe_roi(
+        self, name: str, pair: _PreparedPair, prepared: _RoiPrepared
+    ) -> TSTMotionObservation:
+        history = self.histories[name]
+        previous_pick = self._select_component(
+            prepared.previous, history.centroid
+        )
+        current_pick = self._select_component(
+            prepared.current, history.centroid
+        )
+        if previous_pick is None or current_pick is None:
+            self.last_mouse_masks[name] = None
+            observation = self._uncertain(
+                current_pick[1] if current_pick is not None else 0.0,
+                prepared.current.error or prepared.previous.error,
             )
-            current_mask, area_ratio, current_error = self._segment_mouse(
-                current_gray, roi_mask, history.centroid
+            history.reset_temporal()
+            return observation
+        if prepared.selection == (previous_pick[0], current_pick[0]):
+            current_mask, fit = prepared.current_mask, prepared.fit
+        else:
+            current_mask = self._component_mask(
+                prepared.current, current_pick[0]
             )
-            if previous_mask is None or current_mask is None:
-                self.last_mouse_masks[name] = None
-                observations[name] = self._uncertain(
-                    area_ratio, current_error or previous_error
-                )
-                history.reset_temporal()
-                continue
-            self.last_mouse_masks[name] = current_mask.copy()
-            observations[name] = self._decompose(
-                flow,
-                aligned_previous,
-                current_gray,
-                previous_mask,
+            fit = self._fit_motion(
+                pair.flow,
+                pair.aligned_previous,
+                pair.current_gray,
+                self._component_mask(prepared.previous, previous_pick[0]),
                 current_mask,
-                history,
-                area_ratio,
-                camera_stabilized,
             )
-            if observations[name].qc_flag in _GAP_QC_FLAGS:
-                history.reset_temporal()
+        self.last_mouse_masks[name] = current_mask
+        observation = self._finish_decomposition(
+            fit, history, current_pick[1], pair.camera_stabilized
+        )
+        if observation.qc_flag in _GAP_QC_FLAGS:
+            history.reset_temporal()
+        return observation
 
+    def _consume_pair(
+        self, pair: _PreparedPair
+    ) -> Dict[str, TSTMotionObservation]:
+        """The ordered stage: apply mouse history to a prepared pair."""
+        observations = {
+            name: self._observe_roi(name, pair, pair.rois[name])
+            for name in self._geometry
+        }
         self.last_observations = observations
         return observations
+
+    def calculate_observations(
+        self,
+        frame: np.ndarray,
+        previous_frame: np.ndarray,
+    ) -> Dict[str, TSTMotionObservation]:
+        if frame is None or previous_frame is None:
+            return self._missing_frame_observations()
+        self._ensure_geometry(frame)
+
+        current_gray = self._analysis_gray(frame)
+        previous_gray = self._previous_gray(previous_frame)
+        self._gray_cache = (weakref.ref(frame), current_gray)
+        pair = self._prepare_pair(
+            previous_gray,
+            current_gray,
+            {name: history.centroid for name, history in self.histories.items()},
+        )
+        return self._consume_pair(pair)
 
     def get_last_mask_contour(self, name: str) -> list[list[int]]:
         """Return a compact contour for the latest segmentation of ``name``.
@@ -1031,3 +1288,144 @@ class TSTMotionEngine:
                 float(value)
                 for value in raw.get("deformation_trace", [])
             ]
+
+
+class TSTFramePipeline:
+    """Opt-in ordered pipeline that overlaps the pure part of several frames.
+
+    The dense optical flow, stabilization warp and the history-independent
+    segmentation/rigid-fit work of frame pair ``i + 1 .. i + k`` run on a
+    thread pool (OpenCV releases the GIL) while the engine consumes pair ``i``.
+    Everything that depends on the per-mouse history - choosing the mouse
+    blob from the previous centroid, injections, the pendulum window, the
+    classification - runs strictly in submission order on the consuming
+    thread, inside :meth:`pop`. The observations are therefore identical to
+    calling ``engine.calculate_observations`` frame by frame.
+
+    Because histories only change inside :meth:`pop`, ``engine.export_state``
+    always describes exactly the frames that have been popped; frames that are
+    still in flight are simply recomputed after a resume.
+
+    Usage::
+
+        with TSTFramePipeline(engine) as pipeline:
+            ...
+            while not pipeline.has_capacity():
+                tag, observations = pipeline.pop()
+            pipeline.submit(tag, frame, previous_frame)
+            ...
+            while pipeline.pending:
+                tag, observations = pipeline.pop()
+
+    The engine must not be driven through ``calculate_observations`` while
+    frames are pending. Not thread-safe: one thread submits and pops.
+    """
+
+    _MISSING = object()
+
+    def __init__(
+        self,
+        engine: TSTMotionEngine,
+        max_workers: Optional[int] = None,
+        queue_depth: Optional[int] = None,
+    ):
+        if max_workers is None:
+            max_workers = min(4, os.cpu_count() or 1)
+        self.max_workers = max(1, int(max_workers))
+        self.queue_depth = (
+            2 * self.max_workers if queue_depth is None
+            else max(1, int(queue_depth))
+        )
+        self.engine = engine
+        self._executor = ThreadPoolExecutor(
+            max_workers=self.max_workers, thread_name_prefix="tst-flow"
+        )
+        self._pending: Deque[Tuple[Any, Any]] = deque()
+        # Gray image of the newest submitted frame, reused as the next
+        # pair's "previous" image (the caller passes consecutive frames).
+        self._last_frame: Optional[np.ndarray] = None
+        self._last_gray: Optional[Future] = None
+        self._closed = False
+
+    def __enter__(self) -> "TSTFramePipeline":
+        return self
+
+    def __exit__(self, *exc_info) -> None:
+        self.close()
+
+    @property
+    def pending(self) -> int:
+        """Number of submitted frames whose observations were not popped."""
+        return len(self._pending)
+
+    @property
+    def next_tag(self) -> Any:
+        """Tag of the frame the next :meth:`pop` will return, if any."""
+        return self._pending[0][0] if self._pending else None
+
+    def has_capacity(self) -> bool:
+        return len(self._pending) < self.queue_depth
+
+    def submit(
+        self,
+        tag: Any,
+        frame: Optional[np.ndarray],
+        previous_frame: Optional[np.ndarray],
+    ) -> None:
+        """Queue a frame pair; ``tag`` comes back from :meth:`pop`."""
+        if self._closed:
+            raise RuntimeError("TSTFramePipeline is closed")
+        if not self.has_capacity():
+            raise RuntimeError(
+                "TSTFramePipeline is full; pop() a result before submitting"
+            )
+        if frame is None or previous_frame is None:
+            self._last_frame = self._last_gray = None
+            self._pending.append((tag, self._MISSING))
+            return
+        try:
+            self.engine._ensure_geometry(frame)
+        except ValueError as exc:
+            failed: Future = Future()
+            failed.set_exception(exc)
+            self._pending.append((tag, failed))
+            return
+        engine = self.engine
+        current = self._executor.submit(engine._analysis_gray, frame)
+        if self._last_frame is previous_frame and self._last_gray is not None:
+            previous = self._last_gray
+        else:
+            previous = self._executor.submit(
+                engine._analysis_gray, previous_frame
+            )
+        self._last_frame, self._last_gray = frame, current
+        self._pending.append(
+            (tag, self._executor.submit(self._prepare, previous, current))
+        )
+
+    def _prepare(self, previous: Future, current: Future) -> _PreparedPair:
+        # The gray tasks were queued before this one, so by the time a worker
+        # dequeues it they are running or done: this wait cannot deadlock.
+        return self.engine._prepare_pair(previous.result(), current.result())
+
+    def pop(self) -> Tuple[Any, Dict[str, TSTMotionObservation]]:
+        """Wait for the oldest frame and apply the mouse history to it."""
+        if self._closed:
+            raise RuntimeError("TSTFramePipeline is closed")
+        if not self._pending:
+            raise IndexError("TSTFramePipeline has no pending frames")
+        tag, future = self._pending.popleft()
+        if future is self._MISSING:
+            return tag, self.engine.calculate_observations(None, None)
+        return tag, self.engine._consume_pair(future.result())
+
+    def close(self) -> None:
+        """Drop queued frames and stop the workers (idempotent, prompt).
+
+        Work that has not started is cancelled; at most the few
+        already-running frame pairs finish first.
+        """
+        self._closed = True
+        self._pending.clear()
+        self._last_frame = self._last_gray = None
+        self._executor.shutdown(wait=True, cancel_futures=True)

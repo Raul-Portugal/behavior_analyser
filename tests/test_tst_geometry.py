@@ -1,5 +1,6 @@
 import tempfile
 import unittest
+from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
 from unittest.mock import patch
 
@@ -181,33 +182,48 @@ class TSTScannerProductionAgreementTests(unittest.TestCase):
         capture.release()
         return states
 
+    def _scan(self, path, roi, target_fps):
+        scanner = EnergyScanner(
+            path, {"mouse_1": roi}, TSTMotionConfig(),
+            [(0, 250)], target_fps=target_fps,
+        )
+        completed = []
+        scanner.scan_complete.connect(lambda *args: completed.append(args))
+        scanner.run()
+        return scanner, completed
+
     def test_tuner_scan_agrees_with_production_path(self):
         width, height = FULL_SIZE[0] // 2, FULL_SIZE[1] // 2
         roi = _scaled_roi("mouse_1", width / 400.0, height / 300.0)
+        thresholds = ((30.0, 0.95), (12.0, 0.90))
         with tempfile.TemporaryDirectory() as directory:
             path = self._write_video(directory)
-            production = self._production_states(path, roi)
-            for target_fps, minimum in ((30.0, 0.95), (12.0, 0.90)):
-                scanner = EnergyScanner(
-                    path, {"mouse_1": roi}, TSTMotionConfig(),
-                    [(0, 250)], target_fps=target_fps,
+            # The production pass and both scans only read the video, so run
+            # them side by side (OpenCV releases the GIL).
+            with ThreadPoolExecutor(max_workers=3) as pool:
+                production_future = pool.submit(
+                    self._production_states, path, roi
                 )
-                completed = []
-                scanner.scan_complete.connect(
-                    lambda *args: completed.append(args)
-                )
-                scanner.run()
-                self.assertEqual(len(completed), 1)
-                evidence = scanner.evidence_data["mouse_1"]
-                self.assertGreater(len(evidence), 20)
-                matches = [
-                    item["state"] == production[item["source_frame"]]
-                    for item in evidence
-                    if item["source_frame"] in production
+                scan_futures = [
+                    pool.submit(self._scan, path, roi, target_fps)
+                    for target_fps, _ in thresholds
                 ]
-                self.assertGreaterEqual(
-                    np.mean(matches), minimum, f"{target_fps} fps scan"
-                )
+                production = production_future.result()
+                scans = [future.result() for future in scan_futures]
+        for (target_fps, minimum), (scanner, completed) in zip(
+            thresholds, scans
+        ):
+            self.assertEqual(len(completed), 1)
+            evidence = scanner.evidence_data["mouse_1"]
+            self.assertGreater(len(evidence), 20)
+            matches = [
+                item["state"] == production[item["source_frame"]]
+                for item in evidence
+                if item["source_frame"] in production
+            ]
+            self.assertGreaterEqual(
+                np.mean(matches), minimum, f"{target_fps} fps scan"
+            )
 
 
 if __name__ == "__main__":
