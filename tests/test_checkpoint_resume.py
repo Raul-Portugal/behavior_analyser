@@ -8,7 +8,6 @@ from unittest.mock import patch
 from checkpoint_manager import CheckpointManager
 
 try:
-    import cv2
     import numpy as np
 
     from core.video import ReferenceFrameGenerator

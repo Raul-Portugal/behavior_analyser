@@ -10,20 +10,18 @@ import numpy as np
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QElapsedTimer
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (
-    QCheckBox, QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
+    QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QProgressBar, QScrollArea, QSlider, QSpinBox, QVBoxLayout, QWidget,
+    QProgressBar, QScrollArea, QSlider, QVBoxLayout, QWidget,
 )
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
 from matplotlib.figure import Figure
-import matplotlib.pyplot as plt
 
 from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
 from core.tst_display import tst_display_style
 from core.tst_events import smooth_tst_immobility_states
 from gui.dialog_layout import fit_dialog_to_available_screen
-from roi_manager import ROI
 
 logger = logging.getLogger(__name__)
 
@@ -187,10 +185,7 @@ class OptimizedCanvas(FigureCanvasQTAgg):
     """
     def __init__(self, figure):
         super().__init__(figure)
-        self.background = None
-        self.cursor_background = None
-        self._bg_cache = {}  # Cache multiple backgrounds for different states
-        
+
 
 class TstTunerDialog(QDialog):
     """
@@ -238,7 +233,6 @@ class TstTunerDialog(QDialog):
         
         # Performance timer for accurate FPS
         self.elapsed_timer = QElapsedTimer()
-        self.frame_accumulator = 0.0
         
         # Matplotlib elements for blitting
         self.figure = None
@@ -252,7 +246,6 @@ class TstTunerDialog(QDialog):
         
         # Blitting backgrounds
         self.graph_background = None
-        self.cursor_bbox = None
         
         # Pre-computed data for performance
         self.timestamps = np.array([], dtype=np.float64)
@@ -857,9 +850,6 @@ class TstTunerDialog(QDialog):
         # This captures everything except the animated artists
         self.graph_background = self.canvas.copy_from_bbox(self.ax.bbox)
         
-        # Store cursor bbox for efficient updates
-        self.cursor_bbox = self.ax.bbox
-        
         # Initialize the cursor at position 0
         self.update_cursor_blit(0)
     
@@ -1239,7 +1229,6 @@ class TstTunerDialog(QDialog):
             
             # Start timer and elapsed timer
             self.elapsed_timer.start()
-            self.frame_accumulator = 0.0
             self.play_timer.start(max(1, interval))
         else:
             # Stop playback

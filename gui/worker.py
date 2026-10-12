@@ -16,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QObject, pyqtSignal, QThread
+from PyQt6.QtCore import QObject, pyqtSignal
 
 # --- CORE IMPORTS ---
 from core.models import AppConfig, BatchSettings
@@ -666,8 +666,7 @@ class AnalysisWorker(QObject):
                 tracking_progress = (frame_count / total_local_frames) * 50
                 overall_pct = to_batch_pct(20 + tracking_progress)
                 l_eta = local_est.get_eta_string(frame_count)
-                g_eta = global_est.get_eta_string(global_offset + frame_count)
-                speed = local_est.get_speed()
+                speed =local_est.get_speed()
                 self.emit_progress(overall_pct, f"Video: {base_name}", 
                                  f"Frame {frame_idx} | ETA: {l_eta} | Speed: {speed:.1f} fps")
             
@@ -763,7 +762,7 @@ class AnalysisWorker(QObject):
                         
                         writer.write(frame)
                     curr_idx += 1
-            self.log.emit(f"✓ Timelapse saved")
+            self.log.emit("✓ Timelapse saved")
         except InterruptedError:
             self._discard_partial_video(output_path)
             raise
@@ -961,7 +960,7 @@ class AnalysisWorker(QObject):
                         writer.write(frame)
                     curr_idx += 1
 
-            self.log.emit(f"✓ Validation video saved")
+            self.log.emit("✓ Validation video saved")
         except InterruptedError:
             self._discard_partial_video(output_path)
             raise

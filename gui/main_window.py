@@ -10,7 +10,7 @@ from typing import Dict, List, Optional, Tuple
 
 from PyQt6.QtCore import QObject, QThread, QTimer, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
-                             QListWidget, QMainWindow, QMenu, QMessageBox,
+                             QListWidget, QMainWindow, QMessageBox,
                              QProgressBar, QProgressDialog, QPushButton, QTextEdit, QVBoxLayout,
                              QWidget, QInputDialog)
 from PyQt6.QtGui import QAction
@@ -38,7 +38,7 @@ from gui.freestyle_config_dialog import FreestyleConfigDialog
 # --- UTILS ---
 from roi_manager import ROIManager
 from mazes import AVAILABLE_MAZES, create_maze
-from mazes.base_maze import BaseAnalysisResult, Maze
+from mazes.base_maze import Maze
 from mazes.epm import EPM
 from mazes.tst import TST
 from mazes.y_maze import YMaze
@@ -90,8 +90,6 @@ class MainWindow(QMainWindow):
         self.batch_plan_cache: Dict[str, BatchSettings] = {}
         self.batch_plan_path: Optional[Path] = None
         
-        self.checkpoint_mgr = None
-
         # Close-while-running handshake (see closeEvent)
         self._close_requested = False
         self._force_close = False

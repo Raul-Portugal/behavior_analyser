@@ -294,8 +294,6 @@ class FreestyleConfigDialog(QDialog):
 
     def quick_fill(self, pattern: str):
         """Quick fill zone names with a pattern."""
-        count = len(self.zone_name_inputs)
-        
         if pattern == 'letters':
             for i, input_field in enumerate(self.zone_name_inputs):
                 if i < 26:

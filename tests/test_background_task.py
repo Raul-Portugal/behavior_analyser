@@ -7,7 +7,6 @@ from pathlib import Path
 from unittest.mock import Mock, patch
 
 try:
-    import numpy as np
     from PyQt6.QtCore import QTimer
     from PyQt6.QtWidgets import QApplication, QProgressDialog, QPushButton
     from core.video import ReferenceFrameGenerator

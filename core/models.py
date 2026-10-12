@@ -30,9 +30,9 @@ class VideoConfig:
 
     def __post_init__(self):
         if self.downsample_width <= 0:
-            raise ValueError(f"downsample_width must be positive")
+            raise ValueError("downsample_width must be positive")
         if self.ref_frame_samples <= 0:
-            raise ValueError(f"ref_frame_samples must be positive")
+            raise ValueError("ref_frame_samples must be positive")
 
 @dataclass
 class DetectionConfig:

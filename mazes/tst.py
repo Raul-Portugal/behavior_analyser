@@ -507,7 +507,7 @@ class TST(Maze):
         if num_mice == 0: return
 
         fig = Figure(figsize=(12, 4 * num_mice))
-        canvas = FigureCanvasAgg(fig)
+        FigureCanvasAgg(fig)
         axs = fig.subplots(num_mice, 1, squeeze=False)
         
         timestamps = result.timestamps

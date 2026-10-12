@@ -3,7 +3,6 @@ ROI Preview Dialog - Phase 2 Enhancement
 Allows users to preview configured ROIs before starting analysis.
 """
 import cv2
-import numpy as np
 from pathlib import Path
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
