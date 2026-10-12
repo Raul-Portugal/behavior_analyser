@@ -340,6 +340,16 @@ class AnalysisWorker(QObject):
                         )
                         quality_warnings.append((video_path, quality_message))
                         self.log.emit(f"⚠ Tracking quality review: {quality_message}")
+                    missed_entries = getattr(result, 'entries_possibly_missed', 0)
+                    if missed_entries > 0:
+                        gap_message = (
+                            f"{missed_entries} arm entr"
+                            f"{'y' if missed_entries == 1 else 'ies'} may be "
+                            "missing because tracking was lost and resumed in a "
+                            "different arm; entry counts are conservative"
+                        )
+                        quality_warnings.append((video_path, gap_message))
+                        self.log.emit(f"⚠ {gap_message}")
 
                     self.emit_progress(to_batch_pct(78), f"Video: {base_name}", "Exporting Data...")
                     self._export_all_data(result, base_name, settings, data_dir)
