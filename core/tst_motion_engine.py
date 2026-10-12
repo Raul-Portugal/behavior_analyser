@@ -132,6 +132,32 @@ class _MouseHistory:
     residual_trace: list[float] = field(default_factory=list)
     deformation_trace: list[float] = field(default_factory=list)
 
+    def reset_temporal(self) -> None:
+        """Forget velocities and pendulum traces after an unscorable frame.
+
+        The centroid is kept only as a proximity hint for choosing the mouse
+        blob; it never feeds a motion feature.
+        """
+        self.rigid_vector = None
+        self.angular_velocity = None
+        self.centroid_trace.clear()
+        self.rotation_delta_trace.clear()
+        self.coherence_trace.clear()
+        self.residual_trace.clear()
+        self.deformation_trace.clear()
+
+
+# Observations whose motion estimate is missing or untrustworthy. The next
+# valid frame must not difference against, or window across, such a gap.
+_GAP_QC_FLAGS = frozenset({
+    "missing_frame",
+    "empty_roi",
+    "mouse_segmentation_failed",
+    "insufficient_mouse_pixels",
+    "rigid_fit_failed",
+    "weak_rigid_fit",
+})
+
 
 class TSTMotionEngine:
     """Extract per-mouse articulated and rigid-body motion evidence."""
@@ -837,6 +863,8 @@ class TSTMotionEngine:
                 name: self._uncertain(0.0, "missing_frame")
                 for name in self.rois
             }
+            for history in self.histories.values():
+                history.reset_temporal()
             self.last_observations = observations
             return observations
         if not self._initialized:
@@ -880,6 +908,7 @@ class TSTMotionEngine:
                 observations[name] = self._uncertain(
                     area_ratio, current_error or previous_error
                 )
+                history.reset_temporal()
                 continue
             self.last_mouse_masks[name] = current_mask.copy()
             observations[name] = self._decompose(
@@ -892,6 +921,8 @@ class TSTMotionEngine:
                 area_ratio,
                 camera_stabilized,
             )
+            if observations[name].qc_flag in _GAP_QC_FLAGS:
+                history.reset_temporal()
 
         self.last_observations = observations
         return observations
