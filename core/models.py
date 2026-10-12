@@ -212,16 +212,19 @@ class BatchSettings:
             )
         )
         if is_tst:
+            from core.tst_motion_engine import TSTMotionEngine
             engine_id = (
                 algorithm_parameters.get("engine_id")
                 if isinstance(algorithm_parameters, dict) else None
             )
-            if engine_id != "tst_motion_decomposition_v2":
+            if engine_id != TSTMotionEngine.ENGINE_ID:
                 raise ValueError(
                     "This TST configuration was created for a legacy motion "
-                    "engine and cannot be migrated safely. Re-open the source "
-                    "video, review the TST v2 evidence, and save a new "
-                    "configuration."
+                    f"engine ({engine_id or 'unversioned'}) and cannot be "
+                    "migrated safely: the current engine is "
+                    f"{TSTMotionEngine.ENGINE_ID}, which normalizes motion "
+                    "features by frame rate. Re-open the source video, "
+                    "re-tune the TST evidence and save a new configuration."
                 )
         # ROI Manager must be imported to deserialize
         from roi_manager import ROIManager

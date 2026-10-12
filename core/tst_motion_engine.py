@@ -116,7 +116,7 @@ class _MouseHistory:
 class TSTMotionEngine:
     """Extract per-mouse articulated and rigid-body motion evidence."""
 
-    ENGINE_ID = "tst_motion_decomposition_v2"
+    ENGINE_ID = "tst_motion_decomposition_v3"
 
     def __init__(
         self,
