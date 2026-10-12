@@ -7,7 +7,9 @@ from unittest.mock import Mock, patch
 try:
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QMessageBox
+    from gui import ux_helpers
     from gui.main_window import MainWindow
+    from tests.gui_support import temp_app_settings
     from gui.worker import BatchRunOutcome
     HAS_RUNTIME = True
 except ModuleNotFoundError:
@@ -56,7 +58,7 @@ class RunLifecycleTests(unittest.TestCase):
         cls.app = QApplication.instance() or QApplication([])
 
     def setUp(self):
-        self.window = MainWindow()
+        self.window = MainWindow(temp_app_settings(self))
         self.addCleanup(self.window.deleteLater)
         self.addCleanup(self.window._detach_log_handler)
         self.window.FORCE_QUIT_DELAY_MS = 60
@@ -100,7 +102,7 @@ class RunLifecycleTests(unittest.TestCase):
     def test_window_closes_when_the_worker_finishes(self):
         self._close_confirming()
         with patch.object(QMessageBox, "warning") as warning, \
-                patch.object(QMessageBox, "information") as information:
+                patch.object(ux_helpers, "ask_choice") as information:
             self.window.analysis_finished(
                 BatchRunOutcome(cancelled=True, output_dir=Path("."))
             )
@@ -193,15 +195,16 @@ class RealThreadLifecycleTests(unittest.TestCase):
     def test_worker_and_thread_are_released_after_finish(self):
         import tempfile
 
-        window = MainWindow()
+        window = MainWindow(temp_app_settings(self))
         self.addCleanup(window.deleteLater)
         self.addCleanup(window._detach_log_handler)
         from mazes import create_maze
         window.maze = create_maze("Elevated Plus Maze")
         with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
             window.output_dir = Path(tmp)
-            with patch.object(QMessageBox, "information") as information, \
-                    patch.object(QMessageBox, "warning"):
+            with patch.object(
+                ux_helpers, "ask_choice", return_value="ok"
+            ) as information, patch.object(QMessageBox, "warning"):
                 with patch.object(
                     window, "_validate_analysis_plan", return_value=True
                 ):

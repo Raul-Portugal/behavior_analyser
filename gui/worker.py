@@ -19,6 +19,7 @@ from typing import Dict, List, Optional, Tuple
 from PyQt6.QtCore import QObject, pyqtSignal
 
 # --- CORE IMPORTS ---
+from core.batch_plan_keys import build_plan_by_key
 from core.models import AppConfig, BatchSettings
 from core.video import (
     VideoHandler,
@@ -43,6 +44,9 @@ from output import DataExporter, Visualizer
 from checkpoint_manager import CheckpointManager, ProgressEstimator
 
 logger = logging.getLogger(__name__)
+
+# Written into every run folder so the run can be reloaded or resumed later.
+RUN_PLAN_FILENAME = "run_plan.json"
 
 
 @contextmanager
@@ -70,6 +74,8 @@ class AnalysisWorker(QObject):
     detailed_progress = pyqtSignal(int, str, str)
     log = pyqtSignal(str)
     finished = pyqtSignal(object)
+    # (video path, "running" | "done" | "warning" | "failed" | "queued", message)
+    video_status = pyqtSignal(str, str, str)
 
     def __init__(self, analysis_plan: Dict[Path, BatchSettings], output_dir: Path, maze: Maze):
         super().__init__()
@@ -129,6 +135,8 @@ class AnalysisWorker(QObject):
         videos_to_process = list(self.analysis_plan.items())
         total_videos = len(videos_to_process)
 
+        self._write_run_plan()
+
         # --- PRE-CALCULATION FOR ETA ---
         self.log.emit("Preparing batch analysis...")
         total_batch_frames = 0
@@ -159,6 +167,8 @@ class AnalysisWorker(QObject):
             plots_dir = video_output_dir / "plots"
             media_dir = video_output_dir / "media"
             self.log.emit(f"\n{'='*60}\nAnalyzing {self.maze.name} video {video_num}/{total_videos}: {video_path.name}\n{'='*60}")
+            self.video_status.emit(str(video_path), "running", "")
+            warnings_before = len(quality_warnings)
             
             to_batch_pct = lambda local_pct: int(
                 ((video_num - 1) + (local_pct / 100.0))
@@ -419,7 +429,7 @@ class AnalysisWorker(QObject):
                     
                     if settings.create_timelapse and timelapse_success:
                         self._raise_if_cancelled()
-                        self.emit_progress(to_batch_pct(95), f"Video: {base_name}", "Creating Timelapse...")
+                        self.emit_progress(to_batch_pct(95), f"Video: {base_name}", "Creating validation video...")
                         media_dir.mkdir(parents=True, exist_ok=True)
                         self._generate_tracking_validation_video(
                             result, video_path, settings, base_name, handler,
@@ -429,15 +439,28 @@ class AnalysisWorker(QObject):
 
                 self.log.emit(f"✓ Successfully processed: {video_path.name}")
                 all_results.append((video_path, result))
+                new_warnings = quality_warnings[warnings_before:]
+                if new_warnings:
+                    self.video_status.emit(
+                        str(video_path), "warning",
+                        "; ".join(message for _, message in new_warnings[:3]),
+                    )
+                else:
+                    self.video_status.emit(str(video_path), "done", "")
 
             except InterruptedError:
                 run_cancelled = True
                 self.log.emit(f"Analysis cancelled while processing {video_path.name}")
+                self.video_status.emit(
+                    str(video_path), "queued",
+                    "interrupted; resumes from its checkpoint",
+                )
                 break
             except Exception as e:
                 self.log.emit(f"✗ Error processing {video_path.name}: {str(e)}")
                 logger.error("Worker error", exc_info=True)
                 failures.append((video_path, str(e)))
+                self.video_status.emit(str(video_path), "failed", str(e))
             
             global_offset += frames_done
 
@@ -1021,6 +1044,22 @@ class AnalysisWorker(QObject):
         except Exception as e:
             logger.error(f"Error creating validation video: {e}")
             raise
+
+    def _write_run_plan(self):
+        """Save the exact per-video settings of this run as a batch plan.
+
+        Keys are relative to the run folder, so the plan can be reloaded with
+        File > Load Configuration or resumed after a restart. The paradigm
+        and algorithm parameters are part of every entry. A failure here is
+        logged but never stops the analysis.
+        """
+        plan_file = self.output_dir / RUN_PLAN_FILENAME
+        try:
+            BatchSettings.save_batch_plan(
+                build_plan_by_key(self.analysis_plan, plan_file), plan_file
+            )
+        except Exception:
+            logger.warning("Could not write %s", plan_file, exc_info=True)
 
     def _write_run_manifest(
         self, results, failures, quality_warnings, cancelled

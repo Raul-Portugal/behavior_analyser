@@ -14,6 +14,7 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox,
 from core.calibration import (LEGACY_REFERENCE_WARNING, NO_CALIBRATION_NOTE,
                               real_world_cm_from_scale, scale_factor_from_cm)
 from core.video import VideoHandler
+from gui import ux_helpers
 from gui.dialog_layout import fit_dialog_to_available_screen
 from gui.qt_image import bgr_to_qpixmap
 from mazes.tst import TST
@@ -49,8 +50,12 @@ class SettingsDialog(QDialog):
         
         self.mouse_time_widgets = {} # {name: (start_spin, end_spin)}
         
+        # Per-video verification has its own "what now?" prompt in the main
+        # window, so only the one-off review confirms before discarding.
+        self._confirm_discard = not is_verification
         self.init_ui(is_verification)
         self.update_preview(self.settings.start_time)
+        self._initial_state = self._current_state()
 
     def init_ui(self, is_verification: bool):
         main_layout = QVBoxLayout()
@@ -177,9 +182,12 @@ class SettingsDialog(QDialog):
                 self.scale_spin.setEnabled(False)
                 other_layout.addRow(self._note_label(NO_CALIBRATION_NOTE))
         
-        # --- IMPROVEMENT: TST doesn't need timelapse, it needs validation video ---
-        check_label = "Create Validation Video (Annotated)" if self.is_tst else "Create Timelapse Video"
-        self.timelapse_check = QCheckBox(check_label)
+        # One name everywhere: the annotated video is the "validation video".
+        self.timelapse_check = QCheckBox("Create validation video (annotated)")
+        self.timelapse_check.setToolTip(
+            "Writes an annotated video so the tracking can be checked by eye. "
+            "Slower, but recommended for new setups."
+        )
         self.timelapse_check.setChecked(self.settings.create_timelapse)
         other_layout.addRow(self.timelapse_check)
         
@@ -223,6 +231,30 @@ class SettingsDialog(QDialog):
         if warning:
             label.setStyleSheet("color: #b00020; font-weight: bold;")
         return label
+
+    def _current_state(self) -> tuple:
+        if self.is_tst:
+            times = tuple(
+                (name, start.value(), end.value())
+                for name, (start, end) in sorted(self.mouse_time_widgets.items())
+            )
+        else:
+            times = (self.start_spinbox.value(), self.end_spinbox.value())
+        return (times, self.get_real_world_cm(), self.timelapse_check.isChecked())
+
+    def has_unsaved_work(self) -> bool:
+        return ux_helpers.should_confirm_discard(
+            self._initial_state, self._current_state()
+        )
+
+    def reject(self):
+        if (
+            self._confirm_discard
+            and self.has_unsaved_work()
+            and not ux_helpers.confirm_discard(self, "the changes to these settings")
+        ):
+            return
+        super().reject()
 
     def get_real_world_cm(self) -> float:
         """Return the cm length typed for the reference line (0 if none)."""

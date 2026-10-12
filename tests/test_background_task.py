@@ -12,6 +12,7 @@ try:
     from core.video import ReferenceFrameGenerator
     from gui.background_task import TaskCancelled, run_with_progress
     from gui.main_window import MainWindow
+    from tests.gui_support import temp_app_settings
     from mazes import create_maze
     from tests import worker_support as support
     HAS_RUNTIME = True
@@ -112,7 +113,7 @@ class WizardReferenceFrameTests(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory(ignore_cleanup_errors=True)
         self.addCleanup(self._tmp.cleanup)
         self.root = Path(self._tmp.name)
-        self.window = MainWindow()
+        self.window = MainWindow(temp_app_settings(self))
         self.addCleanup(self.window.deleteLater)
         self.addCleanup(self.window._detach_log_handler)
         self.window.maze = create_maze("Y-Maze")

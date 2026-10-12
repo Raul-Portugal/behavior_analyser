@@ -1,5 +1,5 @@
 """
-High-Performance TST Tuner Dialog with Matplotlib Blitting.
+TST tuner dialog with Matplotlib blitting.
 Optimized for real-time video playback and graph synchronization.
 """
 import copy
@@ -8,6 +8,7 @@ import cv2
 import logging
 import numpy as np
 from PyQt6.QtCore import Qt, QTimer, QThread, pyqtSignal, QElapsedTimer
+from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox, QDialog, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
@@ -22,6 +23,7 @@ from core.tst_motion_engine import (
 )
 from core.tst_display import tst_display_style
 from core.tst_events import smooth_tst_immobility_states
+from gui import ux_helpers
 from gui.dialog_layout import fit_dialog_to_available_screen
 from gui.qt_image import bgr_to_qpixmap
 
@@ -209,7 +211,7 @@ class TstTunerDialog(QDialog):
     
     def __init__(self, video_path, roi_manager, tst_maze_instance, parent=None):
         super().__init__(parent)
-        self.setWindowTitle("TST Parameter Tuner - High Performance")
+        self.setWindowTitle("TST Tuner")
         
         self.video_path = video_path
         self.roi_manager = roi_manager
@@ -463,6 +465,11 @@ class TstTunerDialog(QDialog):
         
         playback_group.setLayout(playback_layout)
         controls_layout.addWidget(playback_group, 2)
+        self._install_playback_shortcuts()
+        self.play_button.setToolTip("Play / pause (Space)")
+        self.scrub_slider.setToolTip(
+            "Left / Right: step one frame; Ctrl+Left / Ctrl+Right: ten frames"
+        )
         
         # Parameter Controls
         param_group = QGroupBox("Detection Parameters")
@@ -1366,6 +1373,51 @@ class TstTunerDialog(QDialog):
         self.tst.motion_config = copy.deepcopy(self.preview_motion_config)
         self.tst.set_parameters(time_threshold)
         super().accept()
+
+    def _install_playback_shortcuts(self):
+        """Space plays/pauses and the arrow keys step through the review frames."""
+        bindings = [
+            (QKeySequence(Qt.Key.Key_Space), self.toggle_playback_from_key),
+            (QKeySequence(Qt.Key.Key_Left), lambda: self.step_frames(-1)),
+            (QKeySequence(Qt.Key.Key_Right), lambda: self.step_frames(1)),
+            (QKeySequence("Ctrl+Left"), lambda: self.step_frames(-10)),
+            (QKeySequence("Ctrl+Right"), lambda: self.step_frames(10)),
+        ]
+        self.playback_shortcuts = []
+        for sequence, handler in bindings:
+            shortcut = QShortcut(sequence, self)
+            shortcut.setContext(Qt.ShortcutContext.WidgetWithChildrenShortcut)
+            shortcut.activated.connect(handler)
+            self.playback_shortcuts.append(shortcut)
+
+    def toggle_playback_from_key(self):
+        """Space: same as clicking Play / Pause, once the scan has finished."""
+        if self.play_button.isEnabled():
+            self.play_button.click()
+
+    def step_frames(self, delta: int):
+        """Arrow keys: pause and move the review position by ``delta`` frames."""
+        if not self.scrub_slider.isEnabled():
+            return
+        if self.is_playing:
+            self.play_button.click()
+        self.scrub_slider.setValue(
+            max(self.scrub_slider.minimum(),
+                min(self.scrub_slider.maximum(), self.scrub_slider.value() + delta))
+        )
+
+    def has_unsaved_work(self) -> bool:
+        """The motion scan finished, so there is tuning worth keeping."""
+        return self.accept_button.isEnabled()
+
+    def reject(self):
+        """Esc, the window button and Cancel all end here: confirm first."""
+        if self.has_unsaved_work() and not ux_helpers.confirm_discard(
+            self, "the TST tuning",
+            "The motion scan and the parameters you tuned will be lost."
+        ):
+            return
+        super().reject()
 
     def done(self, result: int):
         """Release the video capture and worker on every way of closing."""

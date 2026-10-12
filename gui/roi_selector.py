@@ -2,17 +2,96 @@
 PyQt dialogs for interactively defining ROIs and a reference line for scaling.
 Updated to use the MIDDLE frame of the video to ensure animals are visible.
 """
+from dataclasses import dataclass
+from typing import Optional
+
 import cv2
 import numpy as np
 from PyQt6.QtCore import QPointF, Qt
-from PyQt6.QtGui import QColor, QPainter, QPen, QPolygonF
+from PyQt6.QtGui import QColor, QKeySequence, QPainter, QPen, QPolygonF
 from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
                              QPushButton, QScrollArea, QVBoxLayout)
 
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
+from gui import ux_helpers
 from gui.dialog_layout import fit_dialog_to_available_screen
 from gui.qt_image import bgr_to_qpixmap
+
+
+# Smallest polygon the pipeline accepts; ROIManager.validate_rois reports
+# anything below this as an issue that blocks the run, so refuse it here.
+MIN_ROI_AREA_PX = 100.0
+MIN_POLYGON_POINTS = 3
+
+
+@dataclass(frozen=True)
+class RoiRule:
+    """How many polygons one ROI category may hold."""
+    minimum: int = 1
+    maximum: Optional[int] = None
+
+
+@dataclass(frozen=True)
+class RoiStepState:
+    """What the ROI selector allows right now, and why."""
+    can_advance: bool
+    can_add_point: bool
+    hint: str
+
+
+def roi_rule_for_maze(maze) -> RoiRule:
+    """TST mice hold exactly one polygon each; every other category 1 or more."""
+    from mazes.tst import TST
+    if isinstance(maze, TST):
+        return RoiRule(1, 1)
+    return RoiRule(1, None)
+
+
+def evaluate_roi_step(rule: RoiRule, finished: int, pending_points: int,
+                      description: str) -> RoiStepState:
+    """Decide Next / point-adding and the hint for the category being drawn.
+
+    ``finished`` is the number of closed polygons in this category and
+    ``pending_points`` the points of the shape still being drawn (a pending
+    shape of three or more points is closed automatically by Next).
+    """
+    at_capacity = rule.maximum is not None and finished >= rule.maximum
+    exact = rule.maximum is not None and rule.maximum == rule.minimum
+    need = (
+        f"exactly {rule.minimum} polygon" + ("" if rule.minimum == 1 else "s")
+        if exact else f"at least {rule.minimum} polygon"
+        + ("" if rule.minimum == 1 else "s")
+    )
+
+    if 0 < pending_points < MIN_POLYGON_POINTS:
+        missing = MIN_POLYGON_POINTS - pending_points
+        return RoiStepState(
+            False, True,
+            f"Add {missing} more point{'s' if missing != 1 else ''}, or clear "
+            "the shape, to continue."
+        )
+    if pending_points >= MIN_POLYGON_POINTS and finished + 1 >= rule.minimum:
+        return RoiStepState(
+            True, True,
+            "Right-click to close the shape, or continue to the next step."
+        )
+    if finished < rule.minimum:
+        return RoiStepState(
+            False, True,
+            f"{description} needs {need}: click to add points, "
+            "right-click to close the shape."
+        )
+    if at_capacity:
+        return RoiStepState(
+            True, False,
+            f"{description} is done ({need}). Continue, or undo to redraw it."
+        )
+    return RoiStepState(
+        True, True,
+        f"{description} has {finished} polygon{'s' if finished != 1 else ''}. "
+        "Draw another, or continue."
+    )
 
 
 class ReferenceLineDialog(QDialog):
@@ -157,6 +236,7 @@ class RoiSelectorDialog(QDialog):
         self.roi_definitions = self.maze.get_roi_definitions()
         self.current_roi_index = 0
         self.current_polygon_points = []
+        self.roi_rule = roi_rule_for_maze(maze)
         self.init_ui()
         self.start_next_roi_selection()
 
@@ -201,6 +281,12 @@ class RoiSelectorDialog(QDialog):
         layout = QVBoxLayout()
         self.instruction_label = QLabel()
         self.instruction_label.setStyleSheet("font-weight: bold; font-size: 14px;")
+        self.hint_label = QLabel()
+        self.hint_label.setWordWrap(True)
+        self.hint_label.setStyleSheet(
+            "color: #7a4b00; background: #fff3cd; padding: 4px 8px; "
+            "border-radius: 3px;"
+        )
         
         self.image_label = QLabel()
         self.image_label.setPixmap(self.base_pixmap)
@@ -219,7 +305,15 @@ class RoiSelectorDialog(QDialog):
         button_layout.addWidget(self.clear_button)
         button_layout.addWidget(self.next_button)
         
+        # Enter goes to Next (see keyPressEvent), never to Undo.
+        self.undo_button.setAutoDefault(False)
+        self.clear_button.setAutoDefault(False)
+        self.next_button.setDefault(True)
+        self.undo_button.setToolTip("Undo Last Point (Backspace or Ctrl+Z)")
+        self.next_button.setToolTip("Next (Enter)")
+
         layout.addWidget(self.instruction_label)
+        layout.addWidget(self.hint_label)
         layout.addWidget(self.image_scroll, 1)
         layout.addLayout(button_layout)
         self.setLayout(layout)
@@ -231,7 +325,7 @@ class RoiSelectorDialog(QDialog):
             ),
             minimum_size=(480, 360),
         )
-        
+
         self.next_button.clicked.connect(self.next_roi)
         self.undo_button.clicked.connect(self.undo_point)
         self.clear_button.clicked.connect(self.clear_current_polygon)
@@ -249,7 +343,31 @@ class RoiSelectorDialog(QDialog):
         self.current_polygon_points = []
         if self.current_roi_index == len(self.roi_definitions) - 1:
             self.next_button.setText("Finish ROI Selection")
+        self._refresh_step_state()
         self.update()
+
+    def _current_category(self):
+        return self.roi_definitions[self.current_roi_index]
+
+    def _finished_count(self) -> int:
+        category, _ = self._current_category()
+        return len(self.roi_manager.rois.get(category, []))
+
+    def step_state(self) -> RoiStepState:
+        _, description = self._current_category()
+        return evaluate_roi_step(
+            self.roi_rule, self._finished_count(),
+            len(self.current_polygon_points), description
+        )
+
+    def _refresh_step_state(self):
+        """Enable Next and show the hint for what is still missing."""
+        if self.current_roi_index >= len(self.roi_definitions):
+            return
+        state = self.step_state()
+        self.next_button.setEnabled(state.can_advance)
+        self.hint_label.setText(state.hint)
+        self.hint_label.setVisible(bool(state.hint))
 
     def prompt_for_reference_line(self):
         needs_line = getattr(self.maze, "needs_reference_line", None)
@@ -273,52 +391,89 @@ class RoiSelectorDialog(QDialog):
         self.accept()
 
     def next_roi(self):
-        category, description = self.roi_definitions[self.current_roi_index]
-        if 0 < len(self.current_polygon_points) < 3:
+        category, description = self._current_category()
+        if 0 < len(self.current_polygon_points) < MIN_POLYGON_POINTS:
             QMessageBox.warning(
                 self,
                 "Incomplete ROI",
                 f"{description} needs at least three points."
             )
             return
-        if len(self.current_polygon_points) >= 3:
-            self.finalize_polygon()
-        if not self.roi_manager.rois.get(category):
-            QMessageBox.warning(
-                self,
-                "Missing ROI",
-                f"Draw at least one polygon for {description} before continuing."
-            )
+        if len(self.current_polygon_points) >= MIN_POLYGON_POINTS:
+            if not self.finalize_polygon():
+                return
+        if not self.step_state().can_advance:
             return
         self.current_roi_index += 1
         self.start_next_roi_selection()
 
     def add_point(self, event):
-        if event.button() == Qt.MouseButton.LeftButton: 
+        if event.button() == Qt.MouseButton.LeftButton:
+            if not self.step_state().can_add_point:
+                return
             self.current_polygon_points.append(QPointF(event.pos()))
+            self._refresh_step_state()
             self.update()
         elif event.button() == Qt.MouseButton.RightButton:
-            if len(self.current_polygon_points) >= 3: 
+            if len(self.current_polygon_points) >= MIN_POLYGON_POINTS:
                 self.finalize_polygon()
                 self.update()
-    
+
     def undo_point(self):
-        if self.current_polygon_points: 
+        """Remove the last point; with none pending, reopen the last closed shape."""
+        if self.current_polygon_points:
             self.current_polygon_points.pop()
-            self.update()
-            
-    def clear_current_polygon(self): 
-        self.current_polygon_points = []
+        else:
+            category, _ = self._current_category()
+            shapes = self.roi_manager.rois.get(category, [])
+            if shapes:
+                shapes.pop()
+                if not shapes:
+                    del self.roi_manager.rois[category]
+        self._refresh_step_state()
         self.update()
 
-    def finalize_polygon(self):
+    def clear_current_polygon(self):
+        self.current_polygon_points = []
+        self._refresh_step_state()
+        self.update()
+
+    def finalize_polygon(self) -> bool:
+        """Close the shape being drawn; False if it was refused."""
         points = np.array([
             (p.x() * self.display_to_source_x, p.y() * self.display_to_source_y)
             for p in self.current_polygon_points
         ], dtype=np.int32)
-        category, _ = self.roi_definitions[self.current_roi_index]
+        category, description = self._current_category()
+        state = self.step_state()
+        if not state.can_add_point:
+            self.hint_label.setText(state.hint)
+            return False
+        area = float(cv2.contourArea(points.astype(np.float32)))
+        if area < MIN_ROI_AREA_PX:
+            self.hint_label.setText(
+                f"That shape is too small ({area:.0f} px\u00b2; at least "
+                f"{MIN_ROI_AREA_PX:.0f} px\u00b2 is needed). Clear it and draw "
+                "it larger, or undo points."
+            )
+            self.hint_label.setVisible(True)
+            return False
         self.roi_manager.add_roi(category, points)
         self.current_polygon_points = []
+        self._refresh_step_state()
+        return True
+
+    def keyPressEvent(self, event):
+        key = event.key()
+        if key in (Qt.Key.Key_Return, Qt.Key.Key_Enter):
+            if self.next_button.isEnabled():
+                self.next_roi()
+            event.accept()
+        elif key == Qt.Key.Key_Backspace or event.matches(QKeySequence.StandardKey.Undo):
+            self.undo_point()
+            event.accept()
+        else:
+            super().keyPressEvent(event)
 
     def paintEvent(self, event):
         super().paintEvent(event)
@@ -368,3 +523,17 @@ class RoiSelectorDialog(QDialog):
 
     def get_roi_manager(self) -> ROIManager: 
         return self.roi_manager
+
+    def has_unsaved_work(self) -> bool:
+        return ux_helpers.has_drawn_work(
+            self.roi_manager, len(self.current_polygon_points)
+        )
+
+    def reject(self):
+        """Esc, the window button and Cancel all end here: confirm first."""
+        if self.has_unsaved_work() and not ux_helpers.confirm_discard(
+            self, "the regions you have drawn",
+            "Closing this window loses every polygon drawn so far."
+        ):
+            return
+        super().reject()
