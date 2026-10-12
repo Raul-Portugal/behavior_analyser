@@ -284,8 +284,8 @@ class ResumeActionTests(unittest.TestCase):
         self.window.check_for_resumable_analyses()
         captured = {}
 
-        def spy(plan, output_dir, maze):
-            worker = AnalysisWorker(plan, output_dir, maze)
+        def spy(plan, output_dir, maze, **kwargs):
+            worker = AnalysisWorker(plan, output_dir, maze, **kwargs)
             captured["plan"] = worker.analysis_plan
             raise RuntimeError("stop before starting a thread")
 

@@ -14,7 +14,7 @@ try:
     from core.models import AppConfig
     from core.tst_display import blend_polygon
     from core.video import position_capture_at_frame
-    from gui.worker import AnalysisWorker
+    from tests import worker_support as support
     from mazes.freestyle import Freestyle
     from mazes.tst import TST
     from roi_manager import ROIManager
@@ -106,7 +106,7 @@ class ValidationVideoReadingTests(unittest.TestCase):
         self.video = self.root / "indexed.avi"
         write_indexed_video(self.video)
         (self.root / "out").mkdir()
-        self.worker = AnalysisWorker({}, self.root / "out", Freestyle())
+        self.pipeline, _ = support.make_pipeline(self.root, Freestyle())
         manager = ROIManager(source_dimensions=SIZE)
         manager.add_roi(
             "arena", np.array([[0, 0], [159, 0], [159, 119], [0, 119]])
@@ -115,7 +115,7 @@ class ValidationVideoReadingTests(unittest.TestCase):
         self.handler = SimpleNamespace(fps=30.0, dimensions=SIZE)
 
     def _timelapse_indices(self, start_frame, count, capture_wrapper=None):
-        patches = [patch("gui.worker.SafeVideoWriter", RecordingWriter)]
+        patches = [patch("core.pipeline.SafeVideoWriter", RecordingWriter)]
         if capture_wrapper is not None:
             @contextlib.contextmanager
             def open_capture(path):
@@ -124,11 +124,11 @@ class ValidationVideoReadingTests(unittest.TestCase):
                     yield capture_wrapper(cap)
                 finally:
                     cap.release()
-            patches.append(patch("gui.worker._open_capture", open_capture))
+            patches.append(patch("core.pipeline._open_capture", open_capture))
         with contextlib.ExitStack() as stack:
             for item in patches:
                 stack.enter_context(item)
-            self.worker._generate_tracking_validation_video(
+            self.pipeline._generate_tracking_validation_video(
                 _tracking_result(start_frame, count), self.video,
                 self.settings, "clip", self.handler, self.root / "out",
             )
@@ -205,10 +205,10 @@ class ValidationVideoReadingTests(unittest.TestCase):
             "mouse_1", np.array([[100, 20], [150, 20], [150, 100], [100, 100]])
         )
         settings = SimpleNamespace(roi_manager=manager)
-        tst_worker = AnalysisWorker({}, self.root / "out", TST())
+        tst_pipeline, _ = support.make_pipeline(self.root, TST())
         patches = [
-            patch("gui.worker.SafeVideoWriter", RecordingWriter),
-            patch("gui.worker.VideoHandler",
+            patch("core.pipeline.SafeVideoWriter", RecordingWriter),
+            patch("core.pipeline.VideoHandler",
                   lambda _path: SimpleNamespace(fps=30.0, dimensions=SIZE)),
         ]
         if capture_wrapper is not None:
@@ -219,11 +219,11 @@ class ValidationVideoReadingTests(unittest.TestCase):
                     yield capture_wrapper(cap)
                 finally:
                     cap.release()
-            patches.append(patch("gui.worker._open_capture", open_capture))
+            patches.append(patch("core.pipeline._open_capture", open_capture))
         with contextlib.ExitStack() as stack:
             for item in patches:
                 stack.enter_context(item)
-            tst_worker._generate_tst_validation_video(
+            tst_pipeline._generate_tst_validation_video(
                 self._tst_result(start_frame, count, contour), self.video,
                 settings, "clip", self.root / "out",
             )
