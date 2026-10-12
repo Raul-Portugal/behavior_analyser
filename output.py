@@ -242,6 +242,26 @@ class DataExporter:
                             ])
                         writer.writerow(['Immobility Bouts', m, result.immobility_bouts.get(m, 0), 'count'])
                         writer.writerow([
+                            'Bouts Split by Uncertainty', m,
+                            getattr(result, 'bouts_split_by_uncertainty', {}).get(m, 0),
+                            'count'
+                        ])
+                        for label, windows in (
+                            ('Covered Window', getattr(result, 'window_coverage_s', {})),
+                            ('Requested Window', getattr(result, 'requested_window_s', {})),
+                        ):
+                            window = windows.get(m)
+                            writer.writerow([
+                                label, m,
+                                '' if not window else f"{window[0]:.2f}-{window[1]:.2f}",
+                                'seconds'
+                            ])
+                        writer.writerow([
+                            'Window Truncated', m,
+                            int(bool(result.quality_metrics.get(m, {}).get('window_truncated', False))),
+                            '0/1'
+                        ])
+                        writer.writerow([
                             'Latency to Immobile',
                             m,
                             '' if latency is None else f"{latency:.2f}",

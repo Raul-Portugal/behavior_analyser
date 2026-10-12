@@ -135,6 +135,10 @@ class TST(Maze):
         self.num_mice = count
         self._custom_rois = [(f"mouse_{i+1}", f"Mouse {i+1}") for i in range(count)]
 
+    def needs_reference_line(self) -> bool:
+        """TST reports no distances, so calibration is never offered."""
+        return False
+
     def get_roi_definitions(self) -> List[Tuple[str, str]]:
         if not self._custom_rois: return [("mouse_1", "Mouse 1")]
         return self._custom_rois
