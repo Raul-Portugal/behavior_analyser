@@ -141,6 +141,7 @@ class RoiAlignmentDialog(QDialog):
         template_name: str = "Template",
         target_name: str = "Video",
         parent=None,
+        initial_registration: Optional["ra.RegistrationResult"] = None,
     ):
         super().__init__(parent)
         self.setWindowTitle(f"Align template to {target_name}")
@@ -163,6 +164,10 @@ class RoiAlignmentDialog(QDialog):
             self._matrix, None, METHOD_SCALE,
             self._initial_note(),
         )
+        # An alignment already computed (e.g. by the batch check) is shown
+        # straight away instead of making the user ask for it again.
+        if initial_registration is not None and initial_registration.usable:
+            self.apply_registration(initial_registration)
 
     # ------------------------------------------------------------------ UI
 
@@ -478,6 +483,7 @@ def align_template_with_dialog(
     auto_align: Optional[AutoAlign] = None,
     template_name: str = "Template",
     target_name: str = "Video",
+    initial_registration: Optional["ra.RegistrationResult"] = None,
 ) -> Optional[AlignmentChoice]:
     """Run the dialog modally; the user's choice, or None if cancelled.
 
@@ -486,7 +492,7 @@ def align_template_with_dialog(
     """
     dialog = RoiAlignmentDialog(
         template_manager, template_frame, target_frame, auto_align,
-        template_name, target_name, parent,
+        template_name, target_name, parent, initial_registration,
     )
     try:
         if dialog.exec():

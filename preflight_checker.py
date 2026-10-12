@@ -392,7 +392,9 @@ class PreflightChecker:
             findings.issue(
                 f"ROI geometry is {source_dims[0]}x{source_dims[1]}, but the "
                 f"video is {probe.width}x{probe.height}. "
-                "Redraw ROIs for this video or use matching dimensions.",
+                "Align the template to this video (Tools > Align template to "
+                "videos... or 'Check alignment' while verifying), redraw the "
+                "ROIs, or use a video with matching dimensions.",
                 name,
             )
 
@@ -457,6 +459,13 @@ class PreflightChecker:
             findings.warning(
                 "Calibration came from an ROI bounding box, not a drawn "
                 "reference line - redraw the line before trusting cm values",
+                video,
+            )
+        elif getattr(settings.roi_manager, 'reference_is_approximate', False):
+            findings.warning(
+                "Calibration length was scaled when the template was aligned "
+                "(no line endpoints stored) - redraw the reference line "
+                "before trusting cm values",
                 video,
             )
 

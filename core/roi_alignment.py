@@ -15,6 +15,9 @@ Conventions
   (column vectors ``[x, y, 1]``), so ``M @ p_template ~ p_target``.
 * Residuals are RMS point errors in TARGET pixels.
 """
+import copy
+import hashlib
+import json
 import logging
 from dataclasses import dataclass
 from typing import Optional, Sequence, Tuple
@@ -512,3 +515,59 @@ def register_videos(
     frame_template = generate(template_video, num_samples, should_cancel)
     frame_target = generate(target_video, num_samples, should_cancel)
     return auto_register(frame_template, frame_target)
+
+
+def roi_displacement_px(manager: ROIManager, matrix: np.ndarray) -> float:
+    """RMS distance (px) the manager's polygon vertices would move.
+
+    Measures how far the ROIs are from where ``matrix`` says they belong,
+    i.e. how misplaced the template is if it is used as is. Zero for the
+    identity; 0.0 when the manager has no polygons.
+    """
+    chunks = [roi.points for rois in manager.rois.values() for roi in rois]
+    if manager.arena is not None:
+        chunks.append(manager.arena.points)
+    if not chunks:
+        return 0.0
+    points = np.vstack(chunks).astype(np.float64)
+    moved = transform_points(matrix, points)
+    return float(np.sqrt(np.mean(np.sum((moved - points) ** 2, axis=1))))
+
+
+def template_key(manager: ROIManager) -> str:
+    """Stable fingerprint of a template's geometry (for matching records)."""
+    payload = json.dumps(manager.to_dict(), sort_keys=True).encode("utf-8")
+    return hashlib.sha1(payload).hexdigest()
+
+
+def with_roi_manager(settings, manager: ROIManager):
+    """A copy of ``settings`` using ``manager`` for its ROIs.
+
+    ``scale_factor`` is rescaled so the real-world length of the reference
+    line is unchanged (see ``scale_factor_after_alignment``).
+    """
+    updated = settings.copy()
+    updated.roi_manager = copy.deepcopy(manager)
+    updated.scale_factor = scale_factor_after_alignment(
+        settings.scale_factor, settings.roi_manager, manager
+    )
+    return updated
+
+
+def apply_alignment(
+    settings,
+    matrix: np.ndarray,
+    target_dims: Tuple[int, int],
+    template_manager: Optional[ROIManager] = None,
+):
+    """Settings for one video with the template's ROIs moved by ``matrix``.
+
+    Returns a copy of ``settings`` (times, detection and paradigm parameters
+    are kept) whose ROI manager is ``template_manager`` (default: the
+    settings' own) transformed to ``target_dims``, with ``scale_factor``
+    following the change of scale.
+    """
+    source = template_manager if template_manager is not None else settings.roi_manager
+    return with_roi_manager(
+        settings, transform_roi_manager(source, matrix, target_dims)
+    )
