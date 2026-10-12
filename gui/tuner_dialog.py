@@ -3,9 +3,12 @@ gui/tuner_dialog.py
 Enhanced dialog for tuning detection with live quality feedback.
 Updated to fix parameter mismatch with Core modules.
 """
+import copy
+from typing import Callable, List, Optional, Tuple
+
 import cv2
 import numpy as np
-from PyQt6.QtCore import Qt, QTimer
+from PyQt6.QtCore import Qt, QThread, QTimer, pyqtSignal
 from PyQt6.QtGui import QImage, QPixmap
 from PyQt6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QSlider, QVBoxLayout,
@@ -17,6 +20,77 @@ from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.video import VideoHandler
 from gui.dialog_layout import fit_dialog_to_available_screen
 from roi_manager import ROIManager
+
+
+# (detected, confidence, source-space position) for one scanned frame.
+ScanSample = Tuple[bool, float, Optional[Tuple[float, float]]]
+
+
+def quick_scan_windows(total_frames: int) -> List[Tuple[int, int]]:
+    """Return (start, length) windows sampling the start, middle and end."""
+    window_length = min(15, total_frames)
+    starts = sorted({
+        0,
+        max(0, total_frames // 2 - window_length // 2),
+        max(0, total_frames - window_length)
+    })
+    return [
+        (start, min(window_length, total_frames - start)) for start in starts
+    ]
+
+
+class QuickScanWorker(QThread):
+    """Run the quick-scan detection windows off the GUI thread.
+
+    Opens its own capture and snapshots the config, so the dialog's capture
+    and sliders stay free while it runs.
+    """
+
+    scan_complete = pyqtSignal(object)
+    scan_failed = pyqtSignal(str)
+
+    def __init__(self, video_path: str, analysis_ref: np.ndarray,
+                 geometry: AnalysisGeometry, config: DetectionConfig,
+                 total_frames: int,
+                 capture_factory: Callable = cv2.VideoCapture, parent=None):
+        super().__init__(parent)
+        self.video_path = video_path
+        self.analysis_ref = analysis_ref
+        self.geometry = geometry
+        self.config = copy.copy(config)
+        self.total_frames = total_frames
+        self._capture_factory = capture_factory
+
+    def run(self):
+        cap = None
+        try:
+            cap = self._capture_factory(self.video_path)
+            samples: List[ScanSample] = []
+            # Deterministic sequential windows exercise temporal weighting
+            # while sampling the beginning, middle, and end of the recording.
+            for start, length in quick_scan_windows(self.total_frames):
+                engine = DetectionEngine(self.analysis_ref, self.config)
+                cap.set(cv2.CAP_PROP_POS_FRAMES, start)  # one seek per window
+                for _ in range(length):
+                    if self.isInterruptionRequested():
+                        return
+                    ret, frame = cap.read()
+                    if not ret:
+                        break
+                    detection = engine.detect(
+                        self.geometry.to_analysis(frame), use_last_pos=True
+                    )
+                    samples.append((
+                        detection.detected,
+                        detection.confidence,
+                        self.geometry.to_source(detection.position),
+                    ))
+            self.scan_complete.emit(samples)
+        except Exception as exc:
+            self.scan_failed.emit(str(exc))
+        finally:
+            if cap is not None:
+                cap.release()
 
 
 class TunerDialog(QDialog):
@@ -49,12 +123,20 @@ class TunerDialog(QDialog):
             )
         )
         
-        self.init_ui()
-        self.frame_slider.setValue(self.current_frame_idx)
-        
+        self.scan_worker: Optional[QuickScanWorker] = None
+
         # Auto-update stats
-        self.stats_timer = QTimer()
+        self.stats_timer = QTimer(self)
         self.stats_timer.timeout.connect(self.update_quality_stats)
+
+        self.init_ui()
+        # Force the first render: the slider's valueChanged is skipped by
+        # the equality guard if the index were already set.
+        initial_frame = self.current_frame_idx
+        self.current_frame_idx = -1
+        self.frame_slider.setValue(initial_frame)
+        if self.current_frame_idx != initial_frame:
+            self.on_frame_slider_change(initial_frame)
         self.stats_timer.start(500)
 
     def init_ui(self):
@@ -264,38 +346,36 @@ class TunerDialog(QDialog):
             self.recommendation_label.setVisible(False)
 
     def run_quick_scan(self):
+        if self.scan_worker is not None and self.scan_worker.isRunning():
+            return
         self.test_scan_button.setEnabled(False)
         self.test_scan_button.setText("Scanning...")
         self.quality_monitor.reset()
-        
-        total_frames = self.video_info.total_frames
-        window_length = min(15, total_frames)
-        starts = sorted({
-            0,
-            max(0, total_frames // 2 - window_length // 2),
-            max(0, total_frames - window_length)
-        })
 
-        # Deterministic sequential windows exercise temporal weighting while
-        # sampling the beginning, middle, and end of the recording.
-        for start in starts:
-            engine = DetectionEngine(self.analysis_ref, self.config)
-            for idx in range(start, min(total_frames, start + window_length)):
-                self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
-                ret, frame = self.cap.read()
-                if not ret:
-                    continue
+        self.scan_worker = QuickScanWorker(
+            self.video_path,
+            self.analysis_ref,
+            self.geometry,
+            self.config,
+            self.video_info.total_frames,
+            parent=self,
+        )
+        self.scan_worker.scan_complete.connect(self._on_quick_scan_complete)
+        self.scan_worker.scan_failed.connect(self._on_quick_scan_failed)
+        self.scan_worker.finished.connect(self._on_quick_scan_finished)
+        self.scan_worker.start()
 
-                detection = engine.detect(
-                    self.geometry.to_analysis(frame), use_last_pos=True
-                )
-                self.quality_monitor.update(
-                    detection.detected,
-                    detection.confidence,
-                    self.geometry.to_source(detection.position)
-                )
-        
+    def _on_quick_scan_complete(self, samples):
+        self.quality_monitor.reset()
+        for detected, confidence, position in samples:
+            self.quality_monitor.update(detected, confidence, position)
         self.update_quality_stats()
+
+    def _on_quick_scan_failed(self, message: str):
+        self.recommendation_label.setText(f"Quick scan failed: {message}")
+        self.recommendation_label.setVisible(True)
+
+    def _on_quick_scan_finished(self):
         self.test_scan_button.setEnabled(True)
         self.test_scan_button.setText("Quick Scan Test")
 
@@ -323,7 +403,20 @@ class TunerDialog(QDialog):
     def get_detection_config(self) -> DetectionConfig:
         return self.config
 
-    def closeEvent(self, event):
-        if self.cap is not None: self.cap.release()
+    def _release_resources(self):
+        """Stop background work and free the capture (safe to repeat)."""
         self.stats_timer.stop()
-        event.accept()
+        if self.scan_worker is not None and self.scan_worker.isRunning():
+            self.scan_worker.requestInterruption()
+            self.scan_worker.wait(5000)
+        if self.cap is not None:
+            self.cap.release()
+
+    def done(self, result: int):
+        # accept()/reject() end up here without going through closeEvent.
+        self._release_resources()
+        super().done(result)
+
+    def closeEvent(self, event):
+        self._release_resources()
+        super().closeEvent(event)

@@ -121,7 +121,6 @@ class TunerProductionParityTests(unittest.TestCase):
                     dialog.update_detection()
                     tuner = calls[-1]
                 finally:
-                    dialog.cap.release()
                     dialog.done(0)
         return production, tuner
 
