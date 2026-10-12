@@ -343,6 +343,7 @@ class DataExporter:
                     'behavior_states',
                     'state_confidences',
                     'instantaneous_speeds',
+                    'smoothed_speeds',
                 }
                 represented_specific_keys = set()
                 if 'tst_metrics' in data:

@@ -450,7 +450,7 @@ class MainWindow(QMainWindow):
                 elif maze_choice == "Freestyle / Open Field":
                     self.update_progress_detailed(5, "Configuration", "Configuring freestyle zones...")
                     QApplication.processEvents()
-                    freestyle_dialog = FreestyleConfigDialog(self)
+                    freestyle_dialog = FreestyleConfigDialog(self, maze=self.maze)
                     if not freestyle_dialog.exec(): return
                     
                     zone_definitions = freestyle_dialog.get_zone_definitions()
