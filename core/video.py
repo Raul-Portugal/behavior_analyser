@@ -61,45 +61,110 @@ class VideoHandler:
         return frame if ret else None
 
 
+class VideoReadError(IOError):
+    """Decoding stalled or failed before the end of the video."""
+
+
+# Queue sentinel marking a clean end of video (distinct from any frame item).
+_EOF = object()
+DEFAULT_STALL_TIMEOUT_S = 60.0
+
+
+class _ReaderFailure:
+    """Queue item carrying an exception raised on the reader thread."""
+
+    def __init__(self, error: BaseException):
+        self.error = error
+
+
 class BufferedVideoReader:
     """
     Thread-safe buffered video reader for sequential processing.
+
+    read() returns (False, None) only at a clean end of video. A decode
+    stall longer than ``stall_timeout_s`` raises VideoReadError, and an
+    exception on the reader thread is re-raised from read(), so a slow disk
+    or failing decoder can never look like a shorter video.
     """
-    def __init__(self, path: Path, start_frame: int = 0, buffer_size: int = 64):
+    def __init__(self, path: Path, start_frame: int = 0, buffer_size: int = 64,
+                 stall_timeout_s: float = DEFAULT_STALL_TIMEOUT_S,
+                 capture_factory=cv2.VideoCapture):
         self.path = path
         self.start_frame = start_frame
+        self.stall_timeout_s = float(stall_timeout_s)
+        self._capture_factory = capture_factory
         self.buffer = Queue(maxsize=buffer_size)
         self.stop_event = Event()
+        self._finished = False
+        self._failure: Optional[BaseException] = None
         self.reader_thread = Thread(target=self._worker, daemon=True)
         self.reader_thread.start()
 
-    def _worker(self):
-        cap = cv2.VideoCapture(str(self.path))
-        if self.start_frame > 0:
-            cap.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)
-            
+    def _put(self, item) -> bool:
+        """Queue an item, giving up promptly if release() was called."""
         while not self.stop_event.is_set():
-            ret, frame = cap.read()
-            if not ret:
-                self.buffer.put(None) # EOF signal
-                break
-                
-            # Retry put if full to allow check of stop_event
+            try:
+                self.buffer.put(item, timeout=0.1)
+                return True
+            except Full:
+                continue
+        return False
+
+    def _worker(self):
+        cap = None
+        try:
+            cap = self._capture_factory(str(self.path))
+            if not cap.isOpened():
+                raise VideoReadError(f"Cannot open video: {self.path}")
+            if self.start_frame > 0:
+                cap.set(cv2.CAP_PROP_POS_FRAMES, self.start_frame)
+
             while not self.stop_event.is_set():
-                try:
-                    self.buffer.put((ret, frame), timeout=0.1)
+                ret, frame = cap.read()
+                if not ret:
+                    self._put(_EOF)
                     break
-                except Full:
-                    continue
-        cap.release()
+                if not self._put((ret, frame)):
+                    break
+        except Exception as exc:
+            logger.error("Video reader thread failed", exc_info=True)
+            self._put(_ReaderFailure(exc))
+        finally:
+            if cap is not None:
+                cap.release()
 
     def read(self) -> Tuple[bool, Optional[np.ndarray]]:
-        try:
-            item = self.buffer.get(timeout=5.0)
-            if item is None: return False, None
-            return item
-        except Empty:
+        if self._failure is not None:
+            raise self._failure
+        if self._finished:
             return False, None
+
+        deadline = time.monotonic() + self.stall_timeout_s
+        while True:
+            remaining = deadline - time.monotonic()
+            try:
+                item = self.buffer.get(timeout=max(0.0, min(0.25, remaining)))
+                break
+            except Empty:
+                if not self.reader_thread.is_alive() and self.buffer.empty():
+                    self._failure = VideoReadError(
+                        f"Video reader stopped unexpectedly: {self.path}"
+                    )
+                    raise self._failure
+                if time.monotonic() >= deadline:
+                    self._failure = VideoReadError(
+                        f"Video decoding stalled for {self.stall_timeout_s:g}s "
+                        f"(slow disk or decoder?): {self.path}"
+                    )
+                    raise self._failure
+
+        if item is _EOF:
+            self._finished = True
+            return False, None
+        if isinstance(item, _ReaderFailure):
+            self._failure = item.error
+            raise self._failure
+        return item
 
     def release(self):
         self.stop_event.set()

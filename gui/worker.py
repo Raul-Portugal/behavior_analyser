@@ -309,6 +309,17 @@ class AnalysisWorker(QObject):
                         to_batch_pct, base_name, global_offset
                     )
 
+                    early_end = self._early_end_warning(
+                        analyzer.end_frame - resume_from_frame,
+                        frames_done,
+                        resume_from_frame,
+                        analyzer.end_frame,
+                    )
+                    if early_end:
+                        quality_warnings.append((video_path, early_end))
+                        self.log.emit(f"⚠ {early_end}")
+                        logger.warning("%s: %s", video_path.name, early_end)
+
                     result.fps = handler.fps
                     self.maze.resolve_tracking_labels(result)
                     analyzer.finalize_result(result)
@@ -530,6 +541,22 @@ class AnalysisWorker(QObject):
             if result.timestamps else start_frame
         )
         return result, frames_processed
+
+    @staticmethod
+    def _early_end_warning(
+        expected_frames: int,
+        frames_processed: int,
+        first_frame: int,
+        end_frame: int,
+    ) -> Optional[str]:
+        """Describe a short read, or None if within max(2, 1%) of expected."""
+        shortfall = expected_frames - frames_processed
+        if shortfall <= max(2, 0.01 * expected_frames):
+            return None
+        return (
+            f"analysis ended early at frame {first_frame + frames_processed} "
+            f"of {end_frame} ({shortfall} frames missing)"
+        )
 
     def _run_tracked_analysis(self, analyzer, result_container, settings, video_path,
                              handler, local_est, global_est, quality_monitor,
