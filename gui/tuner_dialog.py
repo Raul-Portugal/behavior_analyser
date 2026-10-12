@@ -11,7 +11,8 @@ from PyQt6.QtWidgets import (QDialog, QGridLayout, QHBoxLayout, QLabel,
                              QPushButton, QSizePolicy, QSlider, QVBoxLayout,
                              QGroupBox, QScrollArea, QWidget)
 
-from core.models import DetectionConfig
+from core.analysis_geometry import AnalysisGeometry
+from core.models import AppConfig, DetectionConfig
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.video import VideoHandler
 from gui.dialog_layout import fit_dialog_to_available_screen
@@ -29,6 +30,14 @@ class TunerDialog(QDialog):
         self.roi_manager = roi_manager
         self.config = DetectionConfig()
         self.video_info = VideoHandler(video_path)
+        # Run detection at exactly the resolution the production Analyzer
+        # uses, so pixel-valued parameters mean the same thing in both.
+        self.geometry = AnalysisGeometry(
+            self.video_info.width,
+            self.video_info.height,
+            AppConfig().video.analysis_width,
+        )
+        self.analysis_ref = self.geometry.reference_to_analysis(ref_frame)
         self.cap = cv2.VideoCapture(video_path)
         self.current_frame_idx = self.video_info.total_frames // 2
         
@@ -173,9 +182,13 @@ class TunerDialog(QDialog):
         if not ret: return
 
         # Run the same segmentation and component scoring as production.
-        engine = DetectionEngine(self.ref_frame, self.config)
-        detection = engine.detect(frame, use_last_pos=False)
-        position = detection.position
+        engine = DetectionEngine(self.analysis_ref, self.config)
+        detection = engine.detect(
+            self.geometry.to_analysis(frame), use_last_pos=False
+        )
+        # Detector output is in analysis space; overlays and the quality
+        # monitor use source-frame coordinates, as in production.
+        position = self.geometry.to_source(detection.position)
         debug_images = engine.get_intermediate_images()
         detected = detection.detected
         self.quality_monitor.update(
@@ -185,8 +198,9 @@ class TunerDialog(QDialog):
         # Drawing
         display_frame = frame.copy()
         if position:
-            cv2.circle(display_frame, position, 15, (0, 255, 0), 3)
-            cv2.circle(display_frame, position, 3, (0, 0, 255), -1)
+            center = (int(round(position[0])), int(round(position[1])))
+            cv2.circle(display_frame, center, 15, (0, 255, 0), 3)
+            cv2.circle(display_frame, center, 3, (0, 0, 255), -1)
             status_text = f"Confidence: {detection.confidence:.2f}"
             status_color = (0, 255, 0)
         else:
@@ -265,18 +279,20 @@ class TunerDialog(QDialog):
         # Deterministic sequential windows exercise temporal weighting while
         # sampling the beginning, middle, and end of the recording.
         for start in starts:
-            engine = DetectionEngine(self.ref_frame, self.config)
+            engine = DetectionEngine(self.analysis_ref, self.config)
             for idx in range(start, min(total_frames, start + window_length)):
                 self.cap.set(cv2.CAP_PROP_POS_FRAMES, idx)
                 ret, frame = self.cap.read()
                 if not ret:
                     continue
 
-                detection = engine.detect(frame, use_last_pos=True)
+                detection = engine.detect(
+                    self.geometry.to_analysis(frame), use_last_pos=True
+                )
                 self.quality_monitor.update(
                     detection.detected,
                     detection.confidence,
-                    detection.position
+                    self.geometry.to_source(detection.position)
                 )
         
         self.update_quality_stats()

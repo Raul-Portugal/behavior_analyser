@@ -10,6 +10,7 @@ import numpy as np
 from pathlib import Path
 from typing import Optional, Tuple, Generator, List
 
+from core.analysis_geometry import AnalysisGeometry
 from core.video import BufferedVideoReader, VideoHandler
 from core.detection import DetectionEngine
 from core.models import AppConfig
@@ -51,21 +52,21 @@ class Analyzer:
         )
         self.end_frame = min(end_frame or total_frames, total_frames)
         
-        # Optimization: Downscaling
-        self.analysis_width = self.config.video.analysis_width
-        self.scale_ratio = 1.0
-        self.analysis_dims = None
-        
-        if 0 < self.analysis_width < self.orig_w:
-            self.scale_ratio = self.orig_w / self.analysis_width
-            target_h = int(self.orig_h / self.scale_ratio)
-            self.analysis_dims = (self.analysis_width, target_h)
-            
-            # Resize detection engine ref frame if needed
-            if self.engine.ref_frame.shape[1] != self.analysis_width:
-                self.engine.ref_frame = cv2.resize(self.engine.ref_frame, self.analysis_dims)
-                self.engine.w = self.analysis_width
-                self.engine.h = target_h
+        # Optimization: Downscaling (shared with the tuner dialog)
+        self.geometry = AnalysisGeometry(
+            self.orig_w, self.orig_h, self.config.video.analysis_width
+        )
+        self.analysis_width = self.geometry.analysis_width
+        self.scale_ratio = self.geometry.scale_ratio
+        self.analysis_dims = (
+            self.geometry.analysis_dims if self.geometry.is_scaled else None
+        )
+
+        # Resize detection engine ref frame if needed
+        self.engine.ref_frame = self.geometry.reference_to_analysis(
+            self.engine.ref_frame
+        )
+        self.engine.h, self.engine.w = self.engine.ref_frame.shape[:2]
 
         # State for timelapse
         self.current_frame_img = None
@@ -87,9 +88,7 @@ class Analyzer:
                 self.current_frame_img = frame # Reference for timelapse
                 
                 # 1. Downscale
-                detect_frame = frame
-                if self.analysis_dims:
-                    detect_frame = cv2.resize(frame, self.analysis_dims, interpolation=cv2.INTER_LINEAR)
+                detect_frame = self.geometry.to_analysis(frame)
                 
                 # 2. Detect
                 raw_pos = self.engine.detect_position(detect_frame)
