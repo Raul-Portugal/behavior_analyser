@@ -13,6 +13,13 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 > **3.1 compatibility note:** TST configurations saved by earlier releases are
 > deliberately rejected. TST 3.1 uses a new temporal rigid-motion engine, so
 > each setup must be reviewed in the tuner and saved again.
+>
+> **3.2 compatibility note:** TST 3.2 uses engine
+> `tst_motion_decomposition_v3`, which normalizes motion features by frame
+> rate and analyses frames at a canonical 480 px width. TST configurations and
+> tuner profiles saved by 3.1 (engine v2) are rejected with a re-tune message:
+> open the video in the TST tuner, review the evidence and save a new
+> configuration. Checkpoints from v2 runs cannot be resumed.
 
 ## Key Features
 
@@ -126,9 +133,10 @@ The detector tuner displays the actual production segmentation mask. The
 selected component is green, and Quick Scan uses deterministic sequential
 windows from the beginning, middle, and end of the recording.
 
-The TST tuner reviews up to the first five minutes without retaining decoded
-video frames in memory. Production analysis still processes the complete
-selected interval. Purple means passive swing, red static immobility, green
+The TST tuner reviews short start, middle and end sections without retaining
+decoded video frames in memory. It uses the same engine, analysis geometry and
+rate normalization as the production run, so thresholds tuned there carry over.
+Production analysis still processes the complete selected interval. Purple means passive swing, red static immobility, green
 active escape, and orange/yellow evidence is unscored and must be reviewed.
 
 On Windows, `build_release.ps1` creates an isolated build environment, runs the
