@@ -8,10 +8,10 @@ import logging
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QObject, QThread, pyqtSignal
+from PyQt6.QtCore import QObject, QThread, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
                              QListWidget, QMainWindow, QMenu, QMessageBox,
-                             QProgressBar, QPushButton, QTextEdit, QVBoxLayout,
+                             QProgressBar, QProgressDialog, QPushButton, QTextEdit, QVBoxLayout,
                              QWidget, QInputDialog)
 from PyQt6.QtGui import QAction
 
@@ -841,27 +841,44 @@ class MainWindow(QMainWindow):
         
         self.analysis_thread.start()
 
+    def _run_preflight(
+        self,
+        analysis_plan: Dict[Path, BatchSettings]
+    ) -> Tuple[List[str], List[str]]:
+        """Run the batch pre-flight checks behind a small progress dialog."""
+        dialog = QProgressDialog(
+            "Checking videos...", "", 0, max(len(analysis_plan), 1), self
+        )
+        dialog.setWindowTitle("Pre-flight Checks")
+        dialog.setCancelButton(None)
+        dialog.setWindowModality(Qt.WindowModality.WindowModal)
+        dialog.setMinimumDuration(400)
+
+        def on_progress(done: int, total: int, name: str) -> None:
+            dialog.setValue(done)
+            dialog.setLabelText(f"Checking {name}..." if name else "Finishing checks...")
+            QApplication.processEvents()
+
+        try:
+            return PreflightChecker().validate_batch(
+                analysis_plan,
+                self.output_dir,
+                paradigm_name=self.maze.name,
+                progress=on_progress,
+            )
+        finally:
+            dialog.close()
+
     def _validate_analysis_plan(
         self,
         analysis_plan: Dict[Path, BatchSettings]
     ) -> bool:
         """Validate every per-video configuration, including loaded plans."""
-        all_issues = []
-        all_warnings = []
+        # Video, settings, disk and system checks run once for the batch.
+        all_issues, all_warnings = self._run_preflight(analysis_plan)
         expected_parameters = None
 
         for video_path, settings in analysis_plan.items():
-            checker = PreflightChecker()
-            issues, warnings = checker.validate_all(
-                [video_path], settings, self.output_dir
-            )
-            all_issues.extend(
-                f"{video_path.name}: {issue}" for issue in issues
-            )
-            all_warnings.extend(
-                f"{video_path.name}: {warning}" for warning in warnings
-            )
-
             required_categories = [
                 internal_name
                 for internal_name, _ in self.maze.get_roi_definitions()
