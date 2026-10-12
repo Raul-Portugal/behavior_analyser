@@ -126,6 +126,44 @@ The Freestyle batch summary adds, after the speed and immobility columns,
 length of the smoothed trajectory; `total_distance` remains the unsmoothed
 path).
 
+#### Open field arena (center / periphery, thigmotaxis)
+
+When **Open field arena** is enabled in the Freestyle configuration, an arena
+polygon (the floor boundary) is drawn first, separately from any user zones.
+Nothing changes for runs without an arena: the same columns, values and files
+are written as before.
+
+The center is the arena shrunk by a distance from the walls. It is defined
+either by a distance in cm (default 10 cm, used when the video is calibrated)
+or by a fraction of the arena's area (default 0.25, used when chosen or when
+the video is not calibrated; the run notes say which rule applied).
+Each frame is labelled `center`, `periphery`, `outside` (beyond the wall) or
+`undetected`, then debounced with the same minimum zone dwell as user zones.
+
+The batch summary and analysis summary then end with these columns (the
+JSON summary repeats them under `freestyle_metrics.arena`, together with the
+center rule actually used and its threshold in px and cm):
+
+| Column | Meaning |
+|---|---|
+| `center_time_s`, `periphery_time_s` | Time in each region (debounced labels) |
+| `center_entries` | Transitions into the center. Starting in the center is not an entry, and a tracking gap is never bridged, so this count is conservative |
+| `latency_to_center_s` | Time from the start of the analyzed window to the first center frame; `N/A` if the center was never entered |
+| `thigmotaxis_time_pct` | `periphery_time_s / (center_time_s + periphery_time_s)` as a percentage |
+| `thigmotaxis_distance_pct` | Periphery path length divided by in-arena (center + periphery) path length, as a percentage. Steps follow the same valid-step and excluded-jump rule as `total_distance`; a step belongs to the region where it ends |
+| `mean_wall_distance` | Mean distance to the nearest wall over in-arena frames (cm when calibrated, pixels otherwise) |
+| `center_speed_mean`, `periphery_speed_mean` | Mean smoothed speed in each region (cm/s when calibrated, px/s otherwise); `N/A` when the region was never occupied |
+
+`*_arena_zones.csv` (arena runs only) lists, per frame, the debounced
+`arena_zone` and the signed wall distance (`wall_distance_<unit>`, positive
+inside the arena, negative outside, blank when undetected).
+
+When an arena is drawn, detection is restricted to it: background-difference
+pixels outside the arena are ignored, and the detection threshold percentile
+is computed from the arena pixels only (so an empty floor outside the arena
+does not dilute it). Without an arena the whole frame is used, exactly as
+before.
+
 ### Y-maze and EPM
 
 `*_arm_entries.csv` (Y-maze and EPM) lists the debounced, center-mediated arm

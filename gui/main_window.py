@@ -724,6 +724,7 @@ class MainWindow(QMainWindow):
             self._infer_maze_from_settings(settings_to_use)
 
         try:
+            self._refresh_center_overlay(settings_to_use)
             preview_dialog = ROIPreviewDialog(first_vid, settings_to_use.roi_manager, self.maze, self)
             preview_dialog.exec()
         except Exception as e:
@@ -1333,7 +1334,8 @@ class MainWindow(QMainWindow):
             if not progress.has(STEP_ROI):
                 self._show_setup_status("Configuration", "Defining regions of interest...")
                 roi_manager = ROIManager()
-                if not progress.zone_free_mode:
+                # Zone-free runs still need the selector for an open-field arena.
+                if not progress.zone_free_mode or self.maze.arena_enabled:
                     with _disposed(RoiSelectorDialog(video, self.maze, self)) as roi_dialog:
                         if not roi_dialog.exec():
                             return self._setup_cancelled(progress)
@@ -1612,6 +1614,13 @@ class MainWindow(QMainWindow):
         )
         return redrawn
 
+    def _refresh_center_overlay(self, settings: BatchSettings) -> None:
+        """Cache the open-field center outline so previews and the validation
+        video can draw it (no-op for paradigms without an arena)."""
+        update = getattr(self.maze, 'update_roi_overlay', None)
+        if callable(update):
+            update(settings.roi_manager, settings.scale_factor)
+
     def run_worker(self, analysis_plan: Dict[Path, BatchSettings],
                    confirm_start: bool = True):
         first_settings = next(iter(analysis_plan.values()), None)
@@ -1635,6 +1644,7 @@ class MainWindow(QMainWindow):
             settings.algorithm_parameters = copy.deepcopy(
                 effective_parameters
             )
+            self._refresh_center_overlay(settings)
 
         self._run_started = time.monotonic()
         self._worker_eta = None
@@ -1729,6 +1739,14 @@ class MainWindow(QMainWindow):
         expected_parameters = None
 
         for video_path, settings in analysis_plan.items():
+            if (
+                getattr(self.maze, 'arena_enabled', False)
+                and settings.roi_manager.arena is None
+            ):
+                all_issues.append(
+                    f"{video_path.name}: the open-field arena is enabled but "
+                    "no arena was drawn. Redraw the regions for this video."
+                )
             required_categories = [
                 internal_name
                 for internal_name, _ in self.maze.get_roi_definitions()

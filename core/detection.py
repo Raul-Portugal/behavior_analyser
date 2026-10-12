@@ -26,24 +26,40 @@ _MAX_EXACT_HISTOGRAM_COUNT = 1 << 24
 _WEIGHT_TABLE_CACHE: Dict[int, np.ndarray] = {}
 
 
-def percentile_uint8(image: np.ndarray, q: float) -> float:
+def percentile_uint8(
+    image: np.ndarray, q: float, mask: Optional[np.ndarray] = None
+) -> float:
     """Return ``np.percentile(image, q)`` for a uint8 array, exactly.
 
     Uses a 256-bin histogram and its cumulative sum instead of a partial
     sort, and reproduces NumPy's default ``linear`` interpolation operation
     for operation so the float64 result is bit-identical.
+
+    With ``mask`` (uint8, non-zero = included) the percentile is taken over
+    the masked pixels only, as ``np.percentile(image[mask > 0], q)``.
     """
     q = float(q)
-    if (
-        image.dtype != np.uint8
-        or image.size == 0
-        or image.size > _MAX_EXACT_HISTOGRAM_COUNT
-        or not 0.0 <= q <= 100.0
-    ):
-        return float(np.percentile(image, q))
-
-    count = image.size
-    histogram = cv2.calcHist([image], [0], None, [256], [0, 256])
+    if mask is not None:
+        count = int(cv2.countNonZero(mask))
+        if count == 0:
+            return 0.0
+        if (
+            image.dtype != np.uint8
+            or count > _MAX_EXACT_HISTOGRAM_COUNT
+            or not 0.0 <= q <= 100.0
+        ):
+            return float(np.percentile(image[mask > 0], q))
+        histogram = cv2.calcHist([image], [0], mask, [256], [0, 256])
+    else:
+        if (
+            image.dtype != np.uint8
+            or image.size == 0
+            or image.size > _MAX_EXACT_HISTOGRAM_COUNT
+            or not 0.0 <= q <= 100.0
+        ):
+            return float(np.percentile(image, q))
+        count = image.size
+        histogram = cv2.calcHist([image], [0], None, [256], [0, 256])
     cumulative = np.cumsum(histogram.ravel().astype(np.int64))
     virtual_index = (count - 1) * (q / 100.0)
     if virtual_index >= count - 1:
@@ -152,6 +168,35 @@ class DetectionEngine:
         self._last_debug_images: Dict[str, np.ndarray] = {}
         self._last_labels: Optional[np.ndarray] = None
         self._last_selected_label: Optional[int] = None
+        self._analysis_mask: Optional[np.ndarray] = None
+
+    def set_analysis_mask(self, mask: Optional[np.ndarray]) -> None:
+        """Restrict detection to a region (e.g. the open-field arena).
+
+        ``mask`` is a uint8 image at the detector's analysis resolution
+        (non-zero = analyse). Background-difference pixels outside it are
+        zeroed before thresholding, and the threshold percentile is computed
+        over the masked pixels only, so a quiet or noisy floor outside the
+        region neither creates candidates nor shifts the threshold. ``None``
+        restores whole-frame detection, which is exactly the behavior of an
+        engine that was never given a mask.
+        """
+        if mask is None:
+            self._analysis_mask = None
+            return
+        mask = np.asarray(mask)
+        if mask.shape != self.ref_frame.shape:
+            raise ValueError(
+                f"Analysis mask shape {mask.shape} does not match the "
+                f"reference frame {self.ref_frame.shape}"
+            )
+        if not np.any(mask):
+            raise ValueError("Analysis mask is empty")
+        self._analysis_mask = (mask > 0).astype(np.uint8) * 255
+
+    @property
+    def analysis_mask(self) -> Optional[np.ndarray]:
+        return self._analysis_mask
 
     @staticmethod
     def _weight_lookup_table(outside_weight: int) -> np.ndarray:
@@ -179,6 +224,9 @@ class DetectionEngine:
             gray = cv2.resize(gray, (self.w, self.h))
 
         raw_diff = cv2.absdiff(gray, self.ref_frame)
+        mask = self._analysis_mask
+        if mask is not None:
+            raw_diff = cv2.bitwise_and(raw_diff, mask)
         weighted_diff = raw_diff
         weighting_active = (
             self.config.use_weighting
@@ -207,9 +255,14 @@ class DetectionEngine:
             5.0,
             percentile_uint8(
                 weighted_diff,
-                self.config.threshold_percentile
+                self.config.threshold_percentile,
+                mask
             )
         )
+        if self.config.min_absolute_contrast > 0:
+            threshold_value = max(
+                threshold_value, float(self.config.min_absolute_contrast)
+            )
         _, binary = cv2.threshold(
             weighted_diff, threshold_value, 255, cv2.THRESH_BINARY
         )
@@ -223,6 +276,9 @@ class DetectionEngine:
             )
             binary = cv2.morphologyEx(binary, cv2.MORPH_OPEN, kernel)
             binary = cv2.morphologyEx(binary, cv2.MORPH_CLOSE, kernel)
+
+        if mask is not None:
+            binary = cv2.bitwise_and(binary, mask)
 
         return raw_diff, weighted_diff, binary
 
