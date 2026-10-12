@@ -14,9 +14,11 @@ import numpy as np
 
 from mazes.base_maze import BaseAnalysisResult, Maze
 from core.kinematics import (
-    calculate_immobility_time,
+    calculate_immobility_bouts,
     calculate_instantaneous_speeds,
     calculate_movement_efficiency,
+    calculate_smoothed_path_length,
+    calculate_smoothed_speeds,
     calculate_zone_first_entries,
 )
 from core.zone_events import (
@@ -27,6 +29,9 @@ from core.zone_events import (
 )
 
 logger = logging.getLogger(__name__)
+
+UNCALIBRATED_IMMOBILITY_UNIT = "N/A (uncalibrated)"
+NOT_AVAILABLE = "N/A"
 
 
 def build_transition_matrix(transitions: List[Tuple[str, str, int]], 
@@ -51,15 +56,25 @@ def build_transition_matrix(transitions: List[Tuple[str, str, int]],
 @dataclass
 class FreestyleAnalysisResult(BaseAnalysisResult):
     """Extended result container for Freestyle/Open Field analysis."""
-    # Movement metrics
+    # Movement metrics. Per-frame traces below are exported to
+    # _speed_data.csv, not to the JSON summary.
     instantaneous_speeds: List[Optional[float]] = field(default_factory=list)
+    smoothed_speeds: List[Optional[float]] = field(default_factory=list)
+    immobile_states: List[Optional[bool]] = field(default_factory=list)
     average_speed: float = 0.0
     peak_speed: float = 0.0
-    immobility_time: float = 0.0
-    immobility_percentage: float = 0.0
-    immobility_threshold: float = 0.0
+    # Immobility fields are None when uncalibrated: a cm/s threshold cannot
+    # be applied to pixel speeds, so immobility is reported as unavailable.
+    immobility_time: Optional[float] = 0.0
+    immobility_percentage: Optional[float] = 0.0
+    immobility_bouts: Optional[int] = 0
+    immobility_threshold: Optional[float] = 0.0
     immobility_threshold_unit: str = "pixels/s"
+    speed_window_seconds: float = 0.2
+    min_immobility_seconds: float = 1.0
+    smoothed_total_distance: float = 0.0
     movement_efficiency: float = 0.0
+    notes: List[str] = field(default_factory=list)
     
     # Zone exploration metrics
     zone_transitions: List[Tuple[str, str, int]] = field(default_factory=list)
@@ -81,7 +96,12 @@ class FreestyleAnalysisResult(BaseAnalysisResult):
                 'immobility_percentage': self.immobility_percentage,
                 'immobility_threshold': self.immobility_threshold,
                 'immobility_threshold_unit': self.immobility_threshold_unit,
-                'movement_efficiency': self.movement_efficiency
+                'immobility_bouts': self.immobility_bouts,
+                'min_immobility_seconds': self.min_immobility_seconds,
+                'speed_window_seconds': self.speed_window_seconds,
+                'smoothed_total_distance': self.smoothed_total_distance,
+                'movement_efficiency': self.movement_efficiency,
+                'notes': self.notes
             },
             'exploration': {
                 'total_transitions': self.total_transitions,
@@ -90,9 +110,6 @@ class FreestyleAnalysisResult(BaseAnalysisResult):
             },
             'custom': self.custom_metrics
         }
-        
-        if len(self.instantaneous_speeds) < 10000:
-            base_dict['freestyle_metrics']['instantaneous_speeds'] = self.instantaneous_speeds
         
         return base_dict
 
@@ -107,8 +124,12 @@ class Freestyle(Maze):
     def __init__(self):
         self.user_defined_zones: List[Tuple[str, str]] = []
         self._zones_configured = False
-        self._immobility_threshold_px_per_s = 2.0
+        self.immobility_threshold_cm_per_s = 2.0
+        self.speed_window_seconds = 0.2
+        self.min_immobility_seconds = 1.0
         self.min_dwell_seconds = 0.10
+        # Pre-3.2 configs stored a px/s threshold; kept only for reporting.
+        self._legacy_threshold_px_per_s: Optional[float] = None
     
     @property
     def name(self) -> str:
@@ -151,39 +172,73 @@ class Freestyle(Maze):
         logger.info("Calculating Freestyle metrics...")
         
         # Movement metrics
-        pixel_speeds = calculate_instantaneous_speeds(
-            result.positions,
-            result.fps,
-            1.0
+        calibrated = result.scale_factor > 0
+        speed_scale = result.scale_factor if calibrated else 1.0
+        result.notes = []
+        result.speed_window_seconds = self.speed_window_seconds
+        result.min_immobility_seconds = self.min_immobility_seconds
+
+        result.instantaneous_speeds = calculate_instantaneous_speeds(
+            result.positions, result.fps, speed_scale
         )
-        speed_scale = (
-            result.scale_factor if result.scale_factor > 0 else 1.0
+        result.smoothed_speeds = calculate_smoothed_speeds(
+            result.positions, result.fps, speed_scale,
+            self.speed_window_seconds
         )
-        result.instantaneous_speeds = [
-            None if speed is None else speed * speed_scale
-            for speed in pixel_speeds
-        ]
-        result.immobility_threshold = (
-            self._immobility_threshold_px_per_s * speed_scale
+        valid_speeds = [s for s in result.smoothed_speeds if s is not None]
+        result.average_speed = float(np.mean(valid_speeds)) if valid_speeds else 0.0
+        result.peak_speed = float(np.max(valid_speeds)) if valid_speeds else 0.0
+
+        # Smoothed path length removes the distance centroid jitter adds to
+        # the raw sum; total_distance stays the raw metric.
+        result.smoothed_total_distance = calculate_smoothed_path_length(
+            result.positions, result.fps, speed_scale,
+            self.speed_window_seconds
         )
-        result.immobility_threshold_unit = (
-            f"{result.distance_unit}/s"
-        )
-        
-        valid_speeds = [s for s in result.instantaneous_speeds if s is not None]
-        result.average_speed = np.mean(valid_speeds) if valid_speeds else 0.0
-        result.peak_speed = np.max(valid_speeds) if valid_speeds else 0.0
-        
-        result.immobility_time, result.immobility_percentage = calculate_immobility_time(
-            pixel_speeds,
-            result.fps,
-            self._immobility_threshold_px_per_s
-        )
-        
+
+        if calibrated:
+            result.immobility_threshold = self.immobility_threshold_cm_per_s
+            result.immobility_threshold_unit = "cm/s"
+            (
+                result.immobility_time,
+                result.immobility_percentage,
+                result.immobility_bouts,
+                result.immobile_states,
+            ) = calculate_immobility_bouts(
+                result.smoothed_speeds,
+                result.fps,
+                self.immobility_threshold_cm_per_s,
+                self.min_immobility_seconds,
+            )
+            if self._legacy_threshold_px_per_s is not None:
+                result.notes.append(
+                    "Legacy immobility threshold "
+                    f"{self._legacy_threshold_px_per_s:g} px/s "
+                    f"(= {self._legacy_threshold_px_per_s * speed_scale:g} "
+                    f"cm/s at this calibration) was not applied; "
+                    f"immobility used "
+                    f"{self.immobility_threshold_cm_per_s:g} cm/s."
+                )
+        else:
+            result.immobility_threshold = None
+            result.immobility_threshold_unit = UNCALIBRATED_IMMOBILITY_UNIT
+            result.immobility_time = None
+            result.immobility_percentage = None
+            result.immobility_bouts = None
+            result.immobile_states = []
+            result.notes.append(
+                "Immobility is not reported: no spatial calibration, so a "
+                "cm/s threshold cannot be applied. Speeds are in pixels/s. "
+                "Draw a reference line to calibrate."
+            )
+
+        # Efficiency compares net displacement per tracked segment with the
+        # smoothed path, so jitter does not deflate it. Segment endpoints are
+        # raw positions in both, keeping the ratio consistent (capped at 1).
         result.movement_efficiency = calculate_movement_efficiency(
             result.positions,
-            result.total_distance,
-            result.scale_factor if result.scale_factor > 0 else 1.0
+            result.smoothed_total_distance,
+            speed_scale
         )
         
         # Exploration metrics
@@ -213,8 +268,8 @@ class Freestyle(Maze):
         headers = [
             'average_speed', 'peak_speed', 'speed_unit',
             'immobility_threshold', 'immobility_threshold_unit',
-            'immobility_time_s', 'immobility_pct',
-            'movement_efficiency'
+            'immobility_time_s', 'immobility_pct', 'immobility_bouts',
+            'smoothed_total_distance', 'movement_efficiency'
         ]
         
         if self.user_defined_zones:
@@ -232,17 +287,23 @@ class Freestyle(Maze):
             n_cols = len(self.get_batch_summary_headers())
             return ['N/A'] * n_cols
         
+        def fmt(value, spec):
+            return NOT_AVAILABLE if value is None else format(value, spec)
+
         row = [
             f"{result.average_speed:.2f}",
             f"{result.peak_speed:.2f}",
             f"{result.distance_unit}/s",
-            f"{result.immobility_threshold:.2f}",
+            fmt(result.immobility_threshold, ".2f"),
             result.immobility_threshold_unit,
-            f"{result.immobility_time:.2f}",
-            f"{result.immobility_percentage:.2f}",
+            fmt(result.immobility_time, ".2f"),
+            fmt(result.immobility_percentage, ".2f"),
+            NOT_AVAILABLE if result.immobility_bouts is None
+            else result.immobility_bouts,
+            f"{result.smoothed_total_distance:.2f}",
             f"{result.movement_efficiency:.4f}"
         ]
-        
+
         if self.user_defined_zones:
             row.extend([
                 result.total_transitions,
@@ -268,45 +329,58 @@ class Freestyle(Maze):
     
     def _generate_speed_plot(self, result: FreestyleAnalysisResult, output_path: Path) -> None:
         try:
-            if not result.instantaneous_speeds or not result.timestamps: return
-            
+            if not result.smoothed_speeds or not result.timestamps: return
+
             # Thread-safe plotting
             fig = Figure(figsize=(14, 6))
             canvas = FigureCanvasAgg(fig)
             ax = fig.add_subplot(111)
-            
+
+            unit = f"{result.distance_unit}/s"
             plot_speeds = [
                 np.nan if speed is None else speed
-                for speed in result.instantaneous_speeds
+                for speed in result.smoothed_speeds
             ]
             ax.plot(result.timestamps, plot_speeds,
-                   'b-', alpha=0.6, linewidth=0.5, label='Instantaneous Speed')
-            
-            ax.axhline(y=result.average_speed, color='g', linestyle='--', 
-                      linewidth=2, label=(
-                          f'Average: {result.average_speed:.1f} '
-                          f'{result.distance_unit}/s'
-                      ))
-            
-            ax.axhline(y=result.immobility_threshold, color='r', linestyle='--',
-                      linewidth=1, alpha=0.5, label=(
-                          f'Immobility: {result.immobility_threshold:.2f} '
-                          f'{result.distance_unit}/s'
-                      ))
-            
+                   'b-', alpha=0.7, linewidth=0.8, label=(
+                       f'Smoothed speed ({result.speed_window_seconds:g} s window)'
+                   ))
+
+            ax.axhline(y=result.average_speed, color='g', linestyle='--',
+                      linewidth=2, label=f'Average: {result.average_speed:.1f} {unit}')
+
+            if result.immobility_threshold is not None:
+                ax.axhline(y=result.immobility_threshold, color='r', linestyle='--',
+                          linewidth=1, alpha=0.5, label=(
+                              f'Immobility threshold: '
+                              f'{result.immobility_threshold:.2f} {unit}'
+                          ))
+                if result.immobile_states:
+                    ax.fill_between(
+                        result.timestamps[:len(result.immobile_states)],
+                        0, 1,
+                        where=[state is True for state in result.immobile_states],
+                        color='red', alpha=0.12, step='mid',
+                        transform=ax.get_xaxis_transform(),
+                        label=(
+                            f'Immobile (>= {result.min_immobility_seconds:g} s)'
+                        ))
+            else:
+                ax.plot([], [], ' ', label='Immobility: N/A (uncalibrated)')
+
             ax.set_xlabel('Time (seconds)')
             ax.set_ylabel(f'Speed ({result.distance_unit}/second)')
             ax.set_title('Movement Speed Over Time')
             ax.legend()
             ax.grid(True, alpha=0.3)
-            
+
             fig.tight_layout()
             fig.savefig(output_path, dpi=150)
-            
+
         except Exception as e:
             logger.error(f"Error generating speed plot: {e}")
             raise
-    
+
     def _generate_transition_matrix_plot(self, result: FreestyleAnalysisResult, output_path: Path) -> None:
         try:
             zone_names = [name for name, _ in self.user_defined_zones]
@@ -383,28 +457,36 @@ class Freestyle(Maze):
     def _export_speed_csv(self, result: FreestyleAnalysisResult, output_path: Path) -> None:
         try:
             import csv
-            if not result.instantaneous_speeds or not result.timestamps: return
-            
+            if not result.smoothed_speeds or not result.timestamps: return
+
             with open(
                 output_path, 'w', newline='', encoding='utf-8'
             ) as f:
                 writer = csv.writer(f)
-                speed_unit = f"speed_{result.distance_unit}_per_s"
-                writer.writerow(['frame', 'timestamp_s', speed_unit, 'is_immobile', 'distance_unit'])
-                
-                for i, (timestamp, speed) in enumerate(zip(result.timestamps, result.instantaneous_speeds)):
-                    is_immobile = (
-                        '' if speed is None
-                        else (
-                            1 if speed < result.immobility_threshold else 0
-                        )
-                    )
+                unit = result.distance_unit
+                writer.writerow([
+                    'frame', 'timestamp_s',
+                    f"speed_{unit}_per_s",
+                    f"smoothed_speed_{unit}_per_s",
+                    'is_immobile', 'distance_unit'
+                ])
+
+                states = result.immobile_states
+                for i, (timestamp, raw, smooth) in enumerate(zip(
+                    result.timestamps,
+                    result.instantaneous_speeds,
+                    result.smoothed_speeds,
+                )):
+                    # Blank when immobility is unavailable (uncalibrated) or
+                    # the frame has no valid smoothed speed.
+                    state = states[i] if i < len(states) else None
                     writer.writerow([
                         int(round(timestamp * result.fps)),
                         f"{timestamp:.3f}",
-                        '' if speed is None else f"{speed:.2f}",
-                        is_immobile,
-                        result.distance_unit
+                        '' if raw is None else f"{raw:.2f}",
+                        '' if smooth is None else f"{smooth:.2f}",
+                        '' if state is None else int(state),
+                        unit
                     ])
         except Exception as e:
             logger.error(f"Error exporting speed CSV: {e}")
@@ -422,16 +504,17 @@ class Freestyle(Maze):
             )
     
     def set_immobility_threshold(self, threshold: float) -> None:
+        """Set the immobility speed threshold in cm/s (calibrated runs only)."""
         if threshold < 0: raise ValueError("Threshold must be non-negative")
-        self._immobility_threshold_px_per_s = threshold
+        self.immobility_threshold_cm_per_s = float(threshold)
 
     def get_algorithm_parameters(self) -> Dict[str, any]:
         return {
             'zones': [list(zone) for zone in self.user_defined_zones],
             'zones_configured': self._zones_configured,
-            'immobility_threshold_px_per_s': (
-                self._immobility_threshold_px_per_s
-            ),
+            'immobility_threshold_cm_per_s': self.immobility_threshold_cm_per_s,
+            'speed_window_seconds': self.speed_window_seconds,
+            'min_immobility_seconds': self.min_immobility_seconds,
             'min_dwell_seconds': self.min_dwell_seconds
         }
 
@@ -441,12 +524,26 @@ class Freestyle(Maze):
         zones = [tuple(zone) for zone in parameters.get('zones', [])]
         if parameters.get('zones_configured', bool(zones)):
             self.configure_zones(zones)
-        self.set_immobility_threshold(float(parameters.get(
-            'immobility_threshold_px_per_s',
-            parameters.get(
-                'immobility_threshold',
-                self._immobility_threshold_px_per_s
+        if 'immobility_threshold_cm_per_s' in parameters:
+            self.set_immobility_threshold(
+                float(parameters['immobility_threshold_cm_per_s'])
             )
+            self._legacy_threshold_px_per_s = None
+        else:
+            # Legacy px/s thresholds were applied to raw jittery speeds and
+            # are not comparable; keep the value for reporting only.
+            legacy = parameters.get(
+                'immobility_threshold_px_per_s',
+                parameters.get('immobility_threshold')
+            )
+            self._legacy_threshold_px_per_s = (
+                None if legacy is None else float(legacy)
+            )
+        self.speed_window_seconds = max(0.0, float(parameters.get(
+            'speed_window_seconds', self.speed_window_seconds
+        )))
+        self.min_immobility_seconds = max(0.0, float(parameters.get(
+            'min_immobility_seconds', self.min_immobility_seconds
         )))
         self.min_dwell_seconds = max(
             0.0,
