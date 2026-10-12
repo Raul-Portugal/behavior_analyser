@@ -10,6 +10,7 @@ from pathlib import Path
 from typing import Optional, Tuple, Generator, List
 
 from core.analysis_geometry import AnalysisGeometry
+from core.arena_zones import analysis_mask
 from core.video import BufferedVideoReader, VideoHandler
 from core.detection import DetectionEngine
 from core.models import AppConfig
@@ -66,6 +67,14 @@ class Analyzer:
             self.engine.ref_frame
         )
         self.engine.h, self.engine.w = self.engine.ref_frame.shape[:2]
+
+        # With an open-field arena, detection only looks inside it. Without
+        # one the engine is left untouched (no mask, whole-frame detection).
+        arena = getattr(self.roi_manager, 'arena', None)
+        if arena is not None:
+            self.engine.set_analysis_mask(
+                analysis_mask(arena.points, self.geometry)
+            )
 
         # State for timelapse
         self.current_frame_img = None

@@ -46,6 +46,11 @@ class DetectionConfig:
     morphology_kernel_size: int = 3
     min_detection_confidence: float = 0.15
     max_expected_jump_ratio: float = 0.20
+    # Floor for the segmentation threshold, in gray levels (0-255). The
+    # percentile threshold always adapts to the frame, so on a frame without
+    # the animal it can fall to noise level; this keeps a minimum contrast.
+    # 0 disables it (the default) and leaves detection unchanged.
+    min_absolute_contrast: float = 0.0
 
     def __post_init__(self):
         self.validate()
@@ -60,6 +65,7 @@ class DetectionConfig:
             'morphology_kernel_size': self.morphology_kernel_size,
             'min_detection_confidence': self.min_detection_confidence,
             'max_expected_jump_ratio': self.max_expected_jump_ratio,
+            'min_absolute_contrast': self.min_absolute_contrast,
         }
         for name, value in numeric_values.items():
             if not isfinite(float(value)):
@@ -80,9 +86,16 @@ class DetectionConfig:
             raise ValueError("min_detection_confidence must be 0-1")
         if not 0.0 < self.max_expected_jump_ratio <= 1.0:
             raise ValueError("max_expected_jump_ratio must be in (0, 1]")
+        if not 0.0 <= self.min_absolute_contrast <= 255.0:
+            raise ValueError("min_absolute_contrast must be 0-255")
 
     def to_dict(self) -> Dict:
-        return {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
+        data = {k: v for k, v in self.__dict__.items() if not k.startswith('_')}
+        # Omitted while disabled so existing configurations serialize (and
+        # hash for checkpoints) exactly as they did before it existed.
+        if not data.get('min_absolute_contrast'):
+            data.pop('min_absolute_contrast', None)
+        return data
 
     @classmethod
     def from_dict(cls, data: Dict) -> 'DetectionConfig':
