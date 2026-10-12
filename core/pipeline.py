@@ -764,6 +764,14 @@ class VideoPipeline:
         self, result, video_path, settings, base_name, handler, output_dir
     ):
         """Generate tracking validation video with ROIs and Text directly to disk."""
+        # The open-field center outline is a cached overlay that only the
+        # GUI refreshed before a run. Refresh it here so every entry point
+        # (GUI, CLI, a child process of a parallel batch) draws it.
+        update_overlay = getattr(self.maze, "update_roi_overlay", None)
+        if callable(update_overlay):
+            update_overlay(
+                settings.roi_manager, getattr(settings, "scale_factor", 0.0)
+            )
         try:
             output_path = output_dir / f"{base_name}_timelapse.mp4"
             config = AppConfig()
