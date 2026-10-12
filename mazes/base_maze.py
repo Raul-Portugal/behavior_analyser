@@ -118,6 +118,10 @@ class Maze(ABC):
         if parameters:
             raise ValueError(f"{self.name} does not accept algorithm parameters")
 
+    def needs_reference_line(self) -> bool:
+        """Whether the setup flow should offer distance calibration."""
+        return True
+
     def resolve_tracking_labels(self, result: BaseAnalysisResult) -> None:
         """Resolve raw frame labels before occupancy and metric calculation."""
         source = result.raw_roi_labels or result.roi_labels

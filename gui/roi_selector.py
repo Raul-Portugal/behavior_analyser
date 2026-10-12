@@ -251,6 +251,11 @@ class RoiSelectorDialog(QDialog):
         self.update()
 
     def prompt_for_reference_line(self):
+        needs_line = getattr(self.maze, "needs_reference_line", None)
+        if callable(needs_line) and not needs_line():
+            # Paradigms without distance metrics (e.g. TST) skip calibration.
+            self.accept()
+            return
         reply = QMessageBox.question(self, 'Calibration', REFERENCE_LINE_PROMPT,
                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                        QMessageBox.StandardButton.Yes)
