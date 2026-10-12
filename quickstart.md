@@ -2,6 +2,9 @@
 
 This guide will walk you through a complete analysis workflow, from loading your first video to reviewing the generated heatmaps and data.
 
+**What's new in 3.3:** faster analysis (results identical to 3.2.0), remembered
+settings, resume after a restart and keyboard shortcuts. See `CHANGELOG.md`.
+
 ## 1. Launch the Application
 - **If using the executable (.exe):** Double-click the downloaded file.
 - **If using Python:** Open your terminal, activate your virtual environment, and run `python gui_main.py`.
@@ -55,11 +58,19 @@ The final review dialog allows you to:
 - Check the box to generate a **Validation/Timelapse Video** (highly recommended for verifying results).
 
 ## 4. Run the Batch Analysis
-- If you have multiple videos loaded, the software will ask if you want to **Verify Each** or **Run All Now**.
-  - **Verify Each:** Allows you to adjust start/end times or redraw ROIs slightly if the camera moved between recordings.
-  - **Run All Now:** Applies the exact same ROIs and settings to every video in the list.
-- Click **Yes** to begin. The progress bar will show the estimated time remaining.
-- *Note: If you need to stop, click **Cancel Analysis**. The software will save a checkpoint, and you can resume from the exact same frame later!*
+- If you have multiple videos loaded, the software will ask if you want to **Review each video** or **Run all now**.
+  - **Review each video:** Allows you to adjust start/end times or redraw ROIs slightly if the camera moved between recordings.
+  - **Run all now:** Applies the exact same ROIs and settings to every video in the list.
+- A single summary box lists the settings and any pre-flight warnings. Click **Start analysis** to begin. The progress bar shows the estimated time remaining for the batch.
+- *Note: If you need to stop, click **Cancel Analysis** (or press Esc) and confirm. The software will save a checkpoint, and you can resume from the exact same frame later!*
+
+### Resume after a restart
+Every run folder contains a `run_plan.json` with the exact settings of the
+run. If a run was interrupted, even by closing the application, reopen the
+application (or add the same videos again): a **Resume interrupted
+run** banner (also **File > Resume interrupted run...**) reloads the matching
+plan and continues from the saved frame. **File > Load settings from previous
+run...** reuses the settings of an earlier run for new videos.
 
 When reusing a saved configuration, the target videos must have the same frame
 dimensions as the video used to draw the ROIs. The preflight check will stop
@@ -92,11 +103,38 @@ the source video, review every mouse with the temporal evidence tuner, and
 save a new configuration.
 
 Results from 3.2.0 are not directly comparable with 3.1.x; see
-`CHANGELOG.md`. Criterion validation of the automated scores against blinded
+`CHANGELOG.md`. Results from 3.3.0 are identical to 3.2.0 and can be pooled
+with them. Criterion validation of the automated scores against blinded
 manual scoring is still pending, so review the validation video before
 interpreting results.
 
-## 6. Developer Checks
+## 6. Keyboard Shortcuts and Saved Settings
+
+| Where | Keys | Action |
+|---|---|---|
+| Main window | Ctrl+O | Add videos |
+| Main window | Ctrl+Shift+O | Add a folder of videos |
+| Main window | Ctrl+S | Save template |
+| Main window | Ctrl+L | Load configuration or batch plan |
+| Main window | F5 | Configure and start analysis |
+| Main window | Esc | Cancel the running analysis (asks for confirmation) |
+| Video list | Del or Backspace | Remove the selected videos |
+| Video list | Alt+Up, Alt+Down | Move the selected videos up or down |
+| ROI selector | Enter | Next |
+| ROI selector | Backspace or Ctrl+Z | Undo the last point (reopens a closed shape) |
+| TST tuner | Space | Play or pause |
+| TST tuner | Left, Right | Step one frame |
+| TST tuner | Ctrl+Left, Ctrl+Right | Step ten frames |
+| Detection tuner | N, P | Next or previous frame |
+| Detection tuner | + (or =), - | Forward or back 100 frames |
+
+The application remembers folders, window layout, the last paradigm, recent
+files and the output folder. They are stored in your user profile with Qt's
+QSettings (the registry on Windows), not next to the executable. Set the
+`BEHAVIORAL_MAZE_ANALYZER_SETTINGS_FILE` environment variable to the path of
+an ini file to store them there instead.
+
+## 7. Developer Checks
 If you are running from source, check an installation or a change with:
 
 ```bash

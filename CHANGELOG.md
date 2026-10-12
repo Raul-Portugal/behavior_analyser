@@ -1,5 +1,100 @@
 # Changelog
 
+## 3.3.0
+
+Performance and usability release. **Analysis results are identical to
+3.2.0.** Every optimization was verified to be exact against a copy of the
+3.2.0 algorithms, so 3.2.0 and 3.3.0 results can be pooled in one statistical
+comparison.
+
+> **Scientific caveat:** criterion validation of the automated scores against
+> blinded manual scoring is still pending. Always review the validation video
+> and tracking coverage before interpreting results.
+
+### Performance
+
+- **TST frame pipeline.** Resize, grayscale, stabilization warp, optical flow
+  and the history-independent segmentation of upcoming frames run on a thread
+  pool, while the temporal state is still applied strictly in order. On a
+  1080p benchmark this is about 4x faster with 3 mice (34 to 8.6 ms/frame)
+  and about 2.6x faster with 1 mouse.
+- **TST memory.** Mask contours are stored only for the frames the validation
+  video draws, and only when a validation video was requested.
+- **Faster detection.** An exact histogram percentile and a lookup-table
+  weighting replace the slower equivalents.
+- **Reference frame.** About 1.6x faster with lower peak memory.
+- **Smaller read buffer.** The video reader queue holds 16 frames, which saves
+  up to about 380 MB.
+- **Validation videos.** Frames are read about 2x faster, the TST overlay blend
+  is about 20x faster, and overlays are frame-accurate because the seek
+  position is now verified.
+- **TST plots.** The ethogram and trajectory plots are 2-3x faster.
+
+### Usability
+
+- **Remembered settings.** Folders, window layout, last paradigm, recent files
+  and the output folder are remembered between sessions.
+- **Resume after a restart.** Every run folder now contains `run_plan.json`.
+  The **Resume interrupted run** banner and menu action find a checkpoint
+  after a restart, reload the matching plan and continue.
+- **Load settings from previous run...** reloads the exact per-video settings
+  of an earlier run folder.
+- **No accidental loss of work.** Cancelling the ROI selector, detection tuner,
+  TST tuner, Freestyle configuration or settings review asks before
+  discarding edits. Clear List asks first and keeps the loaded configuration
+  unless told otherwise.
+- **Resume setup.** After a cancelled wizard, the ROIs, rules and tuning
+  collected so far are kept and offered again on the next Start.
+- **Cancelling per-video verification** after accepting some videos offers to
+  run the verified videos, save a partial plan, or discard.
+- **Open results from the app.** **Open output folder** and **Open batch
+  summary** buttons on the completion box, an Open button next to the output
+  folder, and File menu entries for the output and last run folders.
+- **Video list.** Drag and drop files and folders, recursive folder add (result
+  folders are skipped), remove and reorder, and per-video status icons.
+- **Earlier validation.**
+  - The ROI selector enforces the TST one-polygon-per-mouse rule while
+    drawing.
+  - Choosing a template or plan immediately lists videos whose frame size does
+    not match the ROIs.
+  - The Start Analysis question and the pre-flight checks are one combined
+    dialog.
+- **Clearer wording.** Prompts use real buttons (Review each video, Run all
+  now, Reuse previous configuration, Resume setup). Tuner sliders show real
+  values and units.
+- **Keyboard shortcuts.**
+  - Main window: Ctrl+O add videos, Ctrl+Shift+O add folder, Ctrl+S save
+    template, Ctrl+L load configuration or plan, F5 configure and start
+    analysis, Esc cancel analysis (with confirmation).
+  - Video list: Del or Backspace remove selected, Alt+Up and Alt+Down reorder.
+  - ROI selector: Enter for Next, Backspace or Ctrl+Z to undo.
+  - TST tuner: Space play/pause, Left and Right step one frame, Ctrl+Left and
+    Ctrl+Right step ten frames.
+- **Batch ETA.** The estimated time remaining is shown prominently, and setup
+  shows a busy bar instead of made-up percentages.
+- **Log.** A log level filter and **Save log...**.
+
+### Added
+
+- EPM now writes `<base>_arm_entries.csv` (`entry_number`, `arm`,
+  `timestamp_s`), like the Y-maze.
+- TST motion evidence rows record `source_frame`, the absolute video frame.
+  It is kept in memory only; it is not written to the exported files (see
+  `OUTPUTS.md`).
+
+### Fixed
+
+- TST validation now aligns annotations with the correct frames when the
+  analysis starts after frame 0.
+- `build_release.ps1` now fails on errors instead of reporting success, and it
+  refuses to overwrite a running executable.
+
+### Engineering
+
+- A tag-triggered GitHub Actions release build attaches the executable and its
+  SHA-256 checksum to the GitHub Release.
+- The TST test modules run faster without relaxing any assertion.
+
 ## 3.2.0
 
 Scientific correctness, robustness and workflow release. Several outputs
