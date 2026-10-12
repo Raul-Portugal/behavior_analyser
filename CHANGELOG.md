@@ -22,9 +22,9 @@ re-analysing the older videos.
 - **Sub-pixel centroids.** Tracked positions are kept as sub-pixel floats
   end to end instead of being rounded to whole pixels. Total distance and
   speed change slightly.
-- **Excluded-jump distance is in cm when calibrated.** The implausible-jump
-  limit is scaled with the other distances, so a calibrated run now applies
-  and reports it in cm, not pixels.
+- **Excluded-jump distance is in cm when calibrated.** The distance of
+  excluded implausible jumps was previously exported in pixels while labelled
+  with the calibrated unit; it is now converted with the other distances.
 - **Freestyle immobility.** Immobility now uses smoothed speed, a cm/s
   threshold and a minimum bout length. It is reported as N/A when the video is
   not calibrated. It previously compared raw px/s against the threshold and
