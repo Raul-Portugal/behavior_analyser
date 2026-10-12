@@ -25,12 +25,18 @@ from core.video import VideoHandler, ReferenceFrameGenerator
 from core.version import APP_NAME, APP_VERSION
 
 # --- DIALOGS ---
+from gui import ux_helpers
 from gui.app_settings import AppSettings
 from gui.roi_selector import (REFERENCE_LINE_PROMPT, RoiSelectorDialog,
                               offer_reference_line)
 from gui.arm_entry_dialog import ArmEntryParametersDialog
 from gui.settings_dialog import SettingsDialog
+from gui.setup_progress import (KIND_ARMS, KIND_FREESTYLE, KIND_STANDARD,
+                                KIND_TST, STEP_ARM_RULES, STEP_DETECTION,
+                                STEP_MICE, STEP_ROI, STEP_TST_TUNER,
+                                STEP_ZONES, SetupProgress)
 from gui.tuner_dialog import TunerDialog
+from gui.ux_helpers import Choice
 from gui.tst_tuner import TstTunerDialog
 from gui.background_task import TaskCancelled, run_with_progress
 from gui.run_resume import (RUN_PLAN_FILENAME, ResumableRun, ResumeScan,
@@ -49,6 +55,9 @@ from mazes.y_maze import YMaze
 from preflight_checker import PreflightChecker, ValidationDialog
 
 logger = logging.getLogger(__name__)
+
+# Returned by _offer_resume_setup when the user backs out of starting at all.
+_CANCEL = object()
 
 
 @contextmanager
@@ -112,6 +121,10 @@ class MainWindow(QMainWindow):
         self.batch_plan_cache: Dict[str, BatchSettings] = {}
         self.batch_plan_path: Optional[Path] = None
         
+        # What the setup wizard collected before it was cancelled; offered
+        # again the next time Start is pressed (see setup_progress).
+        self._pending_setup: Optional[SetupProgress] = None
+
         # Interrupted runs found in the output folder (see run_resume).
         self._resume_scan = ResumeScan()
 
@@ -670,11 +683,29 @@ class MainWindow(QMainWindow):
         plan_match = self._match_plan(self.video_paths)
 
         try:
-            if plan_match.matched:
-                reply = QMessageBox.question(self, "Batch Plan Detected", "Use loaded Batch Plan settings?",
-                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
-                if reply == QMessageBox.StandardButton.Yes:
+            resumed_setup = self._offer_resume_setup(ref_video_path, maze_choice)
+            if resumed_setup is _CANCEL:
+                return
+
+            if resumed_setup is not None:
+                pass  # the wizard continues where it stopped
+            elif plan_match.matched:
+                answer = ux_helpers.ask_choice(
+                    self, "Batch Plan Detected",
+                    f"A batch plan is loaded and covers {len(plan_match.matched)} "
+                    f"of the {len(self.video_paths)} videos.",
+                    [
+                        Choice("use", "Use the batch plan"),
+                        Choice("scratch", "Set up from scratch",
+                               QMessageBox.ButtonRole.ActionRole),
+                        Choice("cancel", "Cancel", QMessageBox.ButtonRole.RejectRole),
+                    ],
+                    default_key="use",
+                )
+                if answer == "use":
                     self._start_from_batch_plan(plan_match, maze_choice)
+                    return
+                if answer != "scratch":
                     return
             elif plan_loaded:
                 QMessageBox.information(
@@ -684,15 +715,30 @@ class MainWindow(QMainWindow):
                     "You will be asked to configure them from scratch."
                 )
             elif self.current_settings:
-                reply = QMessageBox.question(self, "Master Template Loaded", "Use Master Template for all videos?",
-                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.Yes)
-                if reply == QMessageBox.StandardButton.Yes: use_loaded_config = True
+                answer = ux_helpers.ask_choice(
+                    self, "Reuse previous configuration?",
+                    "A configuration from an earlier setup or a loaded "
+                    "template is available.",
+                    [
+                        Choice("reuse", "Reuse it for all videos"),
+                        Choice("again", "Set up again",
+                               QMessageBox.ButtonRole.ActionRole),
+                        Choice("cancel", "Cancel", QMessageBox.ButtonRole.RejectRole),
+                    ],
+                    default_key="reuse",
+                )
+                if answer == "reuse":
+                    use_loaded_config = True
+                elif answer != "again":
+                    return
 
             if use_loaded_config:
                 base_settings = self.current_settings
                 self._configure_maze_from_settings(base_settings, maze_choice)
             else:
-                base_settings = self._run_setup_wizard(ref_video_path, maze_choice)
+                base_settings = self._run_setup_wizard(
+                    ref_video_path, maze_choice, resumed_setup
+                )
             if base_settings is None:
                 return
 
@@ -701,21 +747,101 @@ class MainWindow(QMainWindow):
                 return
 
             # --- EXECUTION ---
-            self.update_progress_detailed(0, "Configuration complete", "")
+            self._clear_setup_status("Configuration complete")
             if len(self.video_paths) > 1:
-                reply = QMessageBox.question(self, "Batch Processing", "Process multiple videos?\nYes: Verify each\nNo: Run all now",
-                                           QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No, QMessageBox.StandardButton.No)
-                if reply == QMessageBox.StandardButton.Yes:
+                answer = ux_helpers.ask_choice(
+                    self, "Batch Processing",
+                    f"Process {len(self.video_paths)} videos.",
+                    [
+                        Choice("review", "Review each video…"),
+                        Choice("run", "Run all now",
+                               QMessageBox.ButtonRole.ActionRole),
+                        Choice("cancel", "Cancel", QMessageBox.ButtonRole.RejectRole),
+                    ],
+                    default_key="run",
+                    informative=(
+                        "Review each video lets you check the ROIs and times "
+                        "per video before anything runs. Run all now applies "
+                        "this configuration to every video."
+                    ),
+                )
+                if answer == "review":
                     self.run_batch_with_verification(base_settings)
-                else:
+                elif answer == "run":
                     self.run_batch_analysis(base_settings)
+                else:
+                    self._clear_setup_status("Ready")
             else:
                 self.run_batch_analysis(base_settings)
 
         except Exception as e:
             logger.error(f"Error in analysis workflow: {e}", exc_info=True)
             QMessageBox.critical(self, "Error", f"An error occurred:\n{e}")
-            self.update_progress_detailed(0, "Error", "")
+            self._clear_setup_status("Error")
+
+    def _offer_resume_setup(self, ref_video_path: Path, maze_choice: str):
+        """Offer to continue an unfinished setup.
+
+        Returns the SetupProgress to continue, None to start from scratch, or
+        _CANCEL if the user backs out.
+        """
+        pending = self._pending_setup
+        if pending is None or not pending.is_resumable:
+            return None
+        try:
+            dimensions = VideoHandler(ref_video_path).dimensions
+        except Exception:
+            dimensions = None
+        if not pending.applies_to(maze_choice, dimensions):
+            return None
+
+        answer = ux_helpers.ask_choice(
+            self, "Resume setup?",
+            f"An unfinished {maze_choice} setup is still in memory.\n\n"
+            f"{pending.describe()}",
+            [
+                Choice("resume", "Resume setup"),
+                Choice("restart", "Start over",
+                       QMessageBox.ButtonRole.DestructiveRole),
+                Choice("cancel", "Cancel", QMessageBox.ButtonRole.RejectRole),
+            ],
+            default_key="resume",
+        )
+        if answer == "resume":
+            try:
+                if pending.algorithm_parameters:
+                    self.maze.configure_algorithm_parameters(
+                        copy.deepcopy(pending.algorithm_parameters)
+                    )
+            except (TypeError, ValueError) as exc:
+                logger.warning("Could not restore setup parameters: %s", exc)
+                self._pending_setup = None
+                return None
+            return pending
+        if answer == "restart":
+            self._pending_setup = None
+            return None
+        return _CANCEL
+
+    def _wizard_kind(self, maze_choice: str) -> str:
+        if isinstance(self.maze, TST):
+            return KIND_TST
+        if maze_choice == "Freestyle / Open Field":
+            return KIND_FREESTYLE
+        if isinstance(self.maze, (YMaze, EPM)):
+            return KIND_ARMS
+        return KIND_STANDARD
+
+    def _setup_cancelled(self, progress: SetupProgress) -> None:
+        """Keep what was collected if it is worth resuming; always returns None."""
+        self._pending_setup = progress if progress.is_resumable else None
+        self._clear_setup_status("Ready")
+        if self._pending_setup is not None:
+            logger.info(
+                "Setup cancelled; progress kept (%s)",
+                ", ".join(progress.completed),
+            )
+        return None
 
     def _start_from_batch_plan(self, plan_match: PlanMatch, maze_choice: str):
         """Run a loaded Batch Plan; unmatched videos are never given another video's ROIs."""
@@ -814,103 +940,145 @@ class MainWindow(QMainWindow):
             title="Reference Frame",
         )
 
-    def _run_setup_wizard(self, ref_video_path: Path, maze_choice: str) -> Optional[BatchSettings]:
-        """Interactive ROI / reference-line / detection setup; None if cancelled."""
-        # --- WIZARD SETUP ---
+    def _run_setup_wizard(
+        self, ref_video_path: Path, maze_choice: str,
+        progress: Optional[SetupProgress] = None,
+    ) -> Optional[BatchSettings]:
+        """Interactive ROI / reference-line / detection setup; None if cancelled.
+
+        Every finished step is recorded in a SetupProgress. If the wizard is
+        cancelled after the ROI step the progress is kept, and passing it back
+        in skips the steps that are already done.
+        """
         logger.info(f"Using '{ref_video_path.name}' as reference for configuration.")
-        
-        # 1. TST CONFIGURATION
-        if isinstance(self.maze, TST):
-            num, ok = QInputDialog.getInt(self, "TST Setup", "How many mice are in this video?", 1, 1, 6)
-            if not ok: return
-            self.maze.configure_mice(num)
-            
-            with _disposed(RoiSelectorDialog(str(ref_video_path), self.maze, self)) as roi_dialog:
-                if not roi_dialog.exec(): return
-                roi_manager = roi_dialog.get_roi_manager()
+        kind = self._wizard_kind(maze_choice)
+        if progress is None:
+            progress = SetupProgress(maze_choice, ref_video_path, kind)
+            self._pending_setup = None
+        elif progress.base_settings is not None:
+            return progress.base_settings
+        video = str(ref_video_path)
 
-            with _disposed(TstTunerDialog(str(ref_video_path), roi_manager, self.maze, self)) as tst_tuner:
-                if not tst_tuner.exec(): return
-            
-            # Core: Create default settings
-            base_settings = BatchSettings(roi_manager, AppConfig().detection, 0.0)
-            
-        # 2. FREESTYLE CONFIGURATION
-        elif maze_choice == "Freestyle / Open Field":
-            self.update_progress_detailed(5, "Configuration", "Configuring freestyle zones...")
-            QApplication.processEvents()
-            with _disposed(FreestyleConfigDialog(self, maze=self.maze)) as freestyle_dialog:
-                if not freestyle_dialog.exec(): return
-                zone_definitions = freestyle_dialog.get_zone_definitions()
-                is_zone_free_mode = freestyle_dialog.is_zone_free_mode()
-            self.maze.configure_zones(zone_definitions)
-            
-            self.update_progress_detailed(10, "Configuration", "Defining regions of interest...")
-            roi_manager = ROIManager()
-            
-            if not is_zone_free_mode:
-                with _disposed(RoiSelectorDialog(str(ref_video_path), self.maze, self)) as roi_dialog:
-                    if not roi_dialog.exec(): return
-                    roi_manager = roi_dialog.get_roi_manager()
-            else:
-                if self.maze.needs_reference_line():
-                    reply = QMessageBox.question(
-                        self, 'Calibration',
-                        REFERENCE_LINE_PROMPT,
-                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
-                        QMessageBox.StandardButton.Yes
-                    )
-                    if reply == QMessageBox.StandardButton.Yes:
-                        offer_reference_line(
-                            self, ref_video_path, roi_manager
+        def params():
+            return copy.deepcopy(self.maze.get_algorithm_parameters())
+
+        # --- TST: number of mice -> ROIs -> motion tuning ---
+        if kind == KIND_TST:
+            if not progress.has(STEP_MICE):
+                num, ok = QInputDialog.getInt(self, "TST Setup", "How many mice are in this video?", 1, 1, 6)
+                if not ok:
+                    return self._setup_cancelled(progress)
+                self.maze.configure_mice(num)
+                progress.mark(STEP_MICE, params())
+
+            if not progress.has(STEP_ROI):
+                with _disposed(RoiSelectorDialog(video, self.maze, self)) as roi_dialog:
+                    if not roi_dialog.exec():
+                        return self._setup_cancelled(progress)
+                    progress.roi_manager = roi_dialog.get_roi_manager()
+                progress.mark(STEP_ROI)
+
+            if not progress.has(STEP_TST_TUNER):
+                with _disposed(TstTunerDialog(video, progress.roi_manager, self.maze, self)) as tst_tuner:
+                    if not tst_tuner.exec():
+                        return self._setup_cancelled(progress)
+                progress.mark(STEP_TST_TUNER, params())
+            progress.detection_config = AppConfig().detection
+
+        # --- Freestyle: zones -> ROIs (or reference line) -> detection ---
+        elif kind == KIND_FREESTYLE:
+            if not progress.has(STEP_ZONES):
+                self._show_setup_status("Configuration", "Configuring freestyle zones...")
+                with _disposed(FreestyleConfigDialog(self, maze=self.maze)) as freestyle_dialog:
+                    if not freestyle_dialog.exec():
+                        return self._setup_cancelled(progress)
+                    zone_definitions = freestyle_dialog.get_zone_definitions()
+                    progress.zone_free_mode = freestyle_dialog.is_zone_free_mode()
+                self.maze.configure_zones(zone_definitions)
+                progress.mark(STEP_ZONES, params())
+
+            if not progress.has(STEP_ROI):
+                self._show_setup_status("Configuration", "Defining regions of interest...")
+                roi_manager = ROIManager()
+                if not progress.zone_free_mode:
+                    with _disposed(RoiSelectorDialog(video, self.maze, self)) as roi_dialog:
+                        if not roi_dialog.exec():
+                            return self._setup_cancelled(progress)
+                        roi_manager = roi_dialog.get_roi_manager()
+                else:
+                    if self.maze.needs_reference_line():
+                        reply = QMessageBox.question(
+                            self, 'Calibration',
+                            REFERENCE_LINE_PROMPT,
+                            QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                            QMessageBox.StandardButton.Yes
                         )
-                if not roi_manager.source_dimensions:
-                    roi_manager.set_source_dimensions(
-                        VideoHandler(ref_video_path).dimensions
-                    )
-            
-            try:
-                ref_frame = self._generate_reference_frame(ref_video_path)
-            except TaskCancelled:
-                self.update_progress_detailed(0, "Ready", "")
-                return
-            with _disposed(TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)) as tuner_dialog:
-                if not tuner_dialog.exec(): return
-                detection_config = tuner_dialog.get_detection_config()
-            base_settings = BatchSettings(roi_manager, detection_config, 0.0)
+                        if reply == QMessageBox.StandardButton.Yes:
+                            offer_reference_line(
+                                self, ref_video_path, roi_manager
+                            )
+                    if not roi_manager.source_dimensions:
+                        roi_manager.set_source_dimensions(
+                            VideoHandler(ref_video_path).dimensions
+                        )
+                progress.roi_manager = roi_manager
+                progress.mark(STEP_ROI)
 
-        # 3. STANDARD CONFIGURATION
+            if not self._tune_detection(progress, ref_video_path):
+                return self._setup_cancelled(progress)
+
+        # --- Y-maze / EPM / other: ROIs -> (arm rules) -> detection ---
         else:
-            self.update_progress_detailed(10, "Configuration", "Defining regions of interest...")
-            with _disposed(RoiSelectorDialog(str(ref_video_path), self.maze, self)) as roi_dialog:
-                if not roi_dialog.exec(): return
-                roi_manager = roi_dialog.get_roi_manager()
+            if not progress.has(STEP_ROI):
+                self._show_setup_status("Configuration", "Defining regions of interest...")
+                with _disposed(RoiSelectorDialog(video, self.maze, self)) as roi_dialog:
+                    if not roi_dialog.exec():
+                        return self._setup_cancelled(progress)
+                    progress.roi_manager = roi_dialog.get_roi_manager()
+                progress.mark(STEP_ROI)
 
-            if isinstance(self.maze, (YMaze, EPM)):
+            if kind == KIND_ARMS and not progress.has(STEP_ARM_RULES):
                 with _disposed(ArmEntryParametersDialog(self.maze, self)) as arm_dialog:
-                    if not arm_dialog.exec(): return
+                    if not arm_dialog.exec():
+                        return self._setup_cancelled(progress)
                     self.maze.configure_algorithm_parameters(arm_dialog.get_parameters())
+                progress.mark(STEP_ARM_RULES, params())
 
-            self.update_progress_detailed(20, "Configuration", "Generating reference frame...")
-            try:
-                ref_frame = self._generate_reference_frame(ref_video_path)
-            except TaskCancelled:
-                self.update_progress_detailed(0, "Ready", "")
-                return
+            if not self._tune_detection(progress, ref_video_path):
+                return self._setup_cancelled(progress)
 
-            self.update_progress_detailed(35, "Configuration", "Tuning detection parameters...")
-            with _disposed(TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)) as tuner_dialog:
-                if not tuner_dialog.exec(): return
-                detection_config = tuner_dialog.get_detection_config()
-
-            base_settings = BatchSettings(roi_manager, detection_config, 0.0)
-
+        base_settings = BatchSettings(
+            progress.roi_manager, progress.detection_config, 0.0
+        )
+        # Only the final review is left; keep everything until it is accepted.
+        progress.base_settings = base_settings
+        self._pending_setup = progress
         return base_settings
 
+    def _tune_detection(self, progress: SetupProgress, ref_video_path: Path) -> bool:
+        """Reference frame + detection tuner; False if the user backed out."""
+        if progress.has(STEP_DETECTION):
+            return True
+        self._show_setup_status("Configuration", "Generating reference frame...")
+        try:
+            ref_frame = self._generate_reference_frame(ref_video_path)
+        except TaskCancelled:
+            return False
+        self._show_setup_status("Configuration", "Tuning detection parameters...")
+        with _disposed(TunerDialog(str(ref_video_path), ref_frame, progress.roi_manager, self)) as tuner_dialog:
+            if not tuner_dialog.exec():
+                return False
+            progress.detection_config = tuner_dialog.get_detection_config()
+        progress.mark(STEP_DETECTION)
+        return True
+
     def _review_settings(self, ref_video_path: Path, base_settings: BatchSettings) -> Optional[BatchSettings]:
-        """Final review of times and calibration; None if cancelled."""
-        self.update_progress_detailed(50, "Configuration", "Reviewing analysis parameters...")
-        QApplication.processEvents()
+        """Final review of times and calibration; None if cancelled.
+
+        Cancelling keeps the pending setup, so the next Start can resume
+        straight at this review.
+        """
+        self._show_setup_status("Configuration", "Reviewing analysis parameters...")
 
         settings_dialog = SettingsDialog(
             str(ref_video_path), base_settings, is_verification=False,
@@ -920,7 +1088,7 @@ class MainWindow(QMainWindow):
         if not settings_dialog.exec():
             settings_dialog.deleteLater()
             logger.info("Settings cancelled.")
-            self.update_progress_detailed(0, "Ready", "")
+            self._clear_setup_status("Ready")
             return None
 
         base_settings = settings_dialog.get_settings()
@@ -928,6 +1096,7 @@ class MainWindow(QMainWindow):
         base_settings.paradigm_id = self.maze.name
         base_settings.algorithm_parameters = self.maze.get_algorithm_parameters()
         self.current_settings = base_settings
+        self._pending_setup = None
         self.update_button_states()
         return base_settings
 
@@ -948,13 +1117,16 @@ class MainWindow(QMainWindow):
             return analysis_plan
 
         logger.info("Starting Verification Phase...")
-        self.update_progress_detailed(0, "Verification Phase", "")
+        self._show_setup_status("Verification", "Reviewing each video...")
         QApplication.processEvents()
-        
+
         current_settings = base_settings
         redraw_cm = None  # cm length to pre-fill right after a Redraw
         for i, video_path in enumerate(self.video_paths):
             logger.info(f"Verifying video {i+1}/{len(self.video_paths)}: {video_path.name}")
+            self._show_setup_status(
+                "Verification", f"Video {i + 1} of {len(self.video_paths)}: {video_path.name}"
+            )
             try:
                 while True:
                     dialog = SettingsDialog(
@@ -967,7 +1139,12 @@ class MainWindow(QMainWindow):
                     dialog.setWindowTitle(f"Verify: {video_path.name}")
                     if not dialog.exec():
                         dialog.deleteLater()
-                        return {}
+                        outcome = self._ask_partial_verification(
+                            analysis_plan, len(self.video_paths)
+                        )
+                        if outcome.keep_verifying:
+                            continue
+                        return outcome.run_plan
 
                     action = dialog.result_action
                     if action == "accept":
@@ -1003,25 +1180,74 @@ class MainWindow(QMainWindow):
                     "Verification continues with the next video."
                 )
                 continue
-        
+
         if not analysis_plan:
             QMessageBox.warning(self, "No Videos", "All videos were skipped.")
+            self._clear_setup_status("Ready")
             return {}
-        
-        reply = QMessageBox.question(self, 'Verification Complete', "Save this verification plan?", QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
-        if reply == QMessageBox.StandardButton.Yes:
-            filename, _ = QFileDialog.getSaveFileName(self, "Save Batch Plan", str(self.output_dir / "batch_plan.json") if self.output_dir else "batch_plan.json", "JSON Files (*.json)")
-            if filename:
-                try:
-                    BatchSettings.save_batch_plan(
-                        build_plan_by_key(analysis_plan, Path(filename)),
-                        Path(filename)
-                    )
-                except Exception as e:
-                    logger.error(f"Failed to save batch plan: {e}", exc_info=True)
-                    QMessageBox.critical(self, "Save Failed", f"Failed to save the Batch Plan:\n{e}")
-        
+
+        answer = ux_helpers.ask_choice(
+            self, "Verification Complete",
+            f"{len(analysis_plan)} of {len(self.video_paths)} video(s) verified.",
+            [
+                Choice("run", "Run now"),
+                Choice("save", "Save plan, then run…",
+                       QMessageBox.ButtonRole.ActionRole),
+                Choice("cancel", "Cancel", QMessageBox.ButtonRole.RejectRole),
+            ],
+            default_key="run",
+            informative="A saved batch plan can be reloaded later with File > Load Configuration.",
+        )
+        if answer == "cancel":
+            self._clear_setup_status("Ready")
+            return {}
+        if answer == "save":
+            self._save_batch_plan_as(analysis_plan)
         return analysis_plan
+
+    def _ask_partial_verification(self, analysis_plan, total: int):
+        """Per-video verification was cancelled: keep, run or save what was accepted."""
+        choices = ux_helpers.verification_cancel_choices(len(analysis_plan))
+        if not choices:
+            self._clear_setup_status("Ready")
+            return ux_helpers.partial_verification_outcome(None, analysis_plan)
+        choice = ux_helpers.ask_choice(
+            self, "Verification Cancelled",
+            f"{len(analysis_plan)} of {total} video(s) are already verified.",
+            choices,
+            default_key=ux_helpers.VERIFY_CONTINUE,
+            informative="What should happen to the videos you already accepted?",
+        )
+        outcome = ux_helpers.partial_verification_outcome(choice, analysis_plan)
+        if outcome.save_plan:
+            self._save_batch_plan_as(analysis_plan)
+        if not outcome.keep_verifying and not outcome.run_plan:
+            self._clear_setup_status("Ready")
+        return outcome
+
+    def _save_batch_plan_as(self, analysis_plan: Dict[Path, BatchSettings]) -> Optional[Path]:
+        """Ask where to save a batch plan; returns the file or None."""
+        filename, _ = QFileDialog.getSaveFileName(
+            self, "Save Batch Plan",
+            str(Path(self.app_settings.dialog_dir("config", self.output_dir)) / "batch_plan.json"),
+            "JSON Files (*.json)"
+        )
+        if not filename:
+            return None
+        try:
+            BatchSettings.save_batch_plan(
+                build_plan_by_key(analysis_plan, Path(filename)),
+                Path(filename)
+            )
+        except Exception as e:
+            logger.error(f"Failed to save batch plan: {e}", exc_info=True)
+            QMessageBox.critical(self, "Save Failed", f"Failed to save the Batch Plan:\n{e}")
+            return None
+        self.app_settings.set_last_config_dir(Path(filename).parent)
+        self.app_settings.add_recent_file(filename)
+        self._rebuild_recent_menu()
+        logger.info(f"Batch plan saved to: {filename}")
+        return Path(filename)
 
     @staticmethod
     def settings_after_redraw(
@@ -1212,11 +1438,29 @@ class MainWindow(QMainWindow):
             self.cancel_button.setEnabled(False)
             self.update_progress_detailed(self.progress_bar.value(), "Cancelling...", "Please wait...")
 
+    def _show_setup_status(self, main_text: str, sub_text: str = ""):
+        """Busy indicator for interactive setup; setup has no real percentage."""
+        self.progress_bar.setRange(0, 0)
+        self.status_label.setText(main_text)
+        self.subtask_label.setText(sub_text)
+
+    def _clear_setup_status(self, text: str = "Ready"):
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.status_label.setText(text)
+        self.subtask_label.setText("")
+
+    def _ensure_determinate_progress(self):
+        if self.progress_bar.maximum() == 0:
+            self.progress_bar.setRange(0, 100)
+
     def update_progress(self, value: int, text: str):
+        self._ensure_determinate_progress()
         self.progress_bar.setValue(value)
         self.status_label.setText(text)
 
     def update_progress_detailed(self, value: int, main_text: str, sub_text: str):
+        self._ensure_determinate_progress()
         self.progress_bar.setValue(value)
         self.status_label.setText(main_text)
         self.subtask_label.setText(sub_text)

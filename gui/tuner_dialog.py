@@ -17,6 +17,7 @@ from core.analysis_geometry import AnalysisGeometry
 from core.models import AppConfig, DetectionConfig
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.video import VideoHandler
+from gui import ux_helpers
 from gui.dialog_layout import fit_dialog_to_available_screen
 from gui.qt_image import bgr_to_qpixmap
 from roi_manager import ROIManager
@@ -130,6 +131,7 @@ class TunerDialog(QDialog):
         self.stats_timer.timeout.connect(self.update_quality_stats)
 
         self.init_ui()
+        self._initial_slider_state = self._slider_state()
         # Force the first render: the slider's valueChanged is skipped by
         # the equality guard if the index were already set.
         initial_frame = self.current_frame_idx
@@ -203,9 +205,15 @@ class TunerDialog(QDialog):
         self.test_scan_button.clicked.connect(self.run_quick_scan)
         button_layout.addWidget(self.test_scan_button)
         
-        self.accept_button = QPushButton("Accept Parameters")
+        button_layout.addStretch()
+        self.accept_button = QPushButton("OK")
+        self.accept_button.setDefault(True)
         self.accept_button.clicked.connect(self.accept)
         button_layout.addWidget(self.accept_button)
+
+        self.cancel_button = QPushButton("Cancel")
+        self.cancel_button.clicked.connect(self.reject)
+        button_layout.addWidget(self.cancel_button)
         
         right_panel = QWidget()
         right_panel.setLayout(right_layout)
@@ -398,6 +406,23 @@ class TunerDialog(QDialog):
 
     def get_detection_config(self) -> DetectionConfig:
         return self.config
+
+    def _slider_state(self):
+        return tuple(slider.value() for slider in self.sliders.values())
+
+    def has_unsaved_work(self) -> bool:
+        """True once a detection parameter was moved away from its default."""
+        return ux_helpers.should_confirm_discard(
+            self._initial_slider_state, self._slider_state()
+        )
+
+    def reject(self):
+        if self.has_unsaved_work() and not ux_helpers.confirm_discard(
+            self, "the detection tuning",
+            "The detection parameters you adjusted will be lost."
+        ):
+            return
+        super().reject()
 
     def _release_resources(self):
         """Stop background work and free the capture (safe to repeat)."""

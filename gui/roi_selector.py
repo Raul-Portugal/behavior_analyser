@@ -11,6 +11,7 @@ from PyQt6.QtWidgets import (QDialog, QHBoxLayout, QLabel, QMessageBox,
 
 from roi_manager import ROIManager
 from mazes.base_maze import Maze
+from gui import ux_helpers
 from gui.dialog_layout import fit_dialog_to_available_screen
 from gui.qt_image import bgr_to_qpixmap
 
@@ -368,3 +369,17 @@ class RoiSelectorDialog(QDialog):
 
     def get_roi_manager(self) -> ROIManager: 
         return self.roi_manager
+
+    def has_unsaved_work(self) -> bool:
+        return ux_helpers.has_drawn_work(
+            self.roi_manager, len(self.current_polygon_points)
+        )
+
+    def reject(self):
+        """Esc, the window button and Cancel all end here: confirm first."""
+        if self.has_unsaved_work() and not ux_helpers.confirm_discard(
+            self, "the regions you have drawn",
+            "Closing this window loses every polygon drawn so far."
+        ):
+            return
+        super().reject()

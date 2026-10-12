@@ -20,6 +20,7 @@ from matplotlib.figure import Figure
 from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
 from core.tst_display import tst_display_style
 from core.tst_events import smooth_tst_immobility_states
+from gui import ux_helpers
 from gui.dialog_layout import fit_dialog_to_available_screen
 from gui.qt_image import bgr_to_qpixmap
 
@@ -1352,6 +1353,19 @@ class TstTunerDialog(QDialog):
         self.tst.motion_config = copy.deepcopy(self.preview_motion_config)
         self.tst.set_parameters(time_threshold)
         super().accept()
+
+    def has_unsaved_work(self) -> bool:
+        """The motion scan finished, so there is tuning worth keeping."""
+        return self.accept_button.isEnabled()
+
+    def reject(self):
+        """Esc, the window button and Cancel all end here: confirm first."""
+        if self.has_unsaved_work() and not ux_helpers.confirm_discard(
+            self, "the TST tuning",
+            "The motion scan and the parameters you tuned will be lost."
+        ):
+            return
+        super().reject()
 
     def done(self, result: int):
         """Release the video capture and worker on every way of closing."""
