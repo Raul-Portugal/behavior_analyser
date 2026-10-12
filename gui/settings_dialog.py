@@ -2,6 +2,8 @@
 PyQt dialog for setting final analysis parameters.
 Updated to ensure all TST spinboxes trigger video preview updates.
 """
+from typing import Optional
+
 import cv2
 from PyQt6.QtCore import Qt
 from PyQt6.QtGui import QImage, QPixmap
@@ -10,6 +12,8 @@ from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox,
                              QSlider, QVBoxLayout, QGroupBox, QWidget, QScrollArea,
                              QMessageBox)
 
+from core.calibration import (LEGACY_REFERENCE_WARNING, NO_CALIBRATION_NOTE,
+                              real_world_cm_from_scale, scale_factor_from_cm)
 from core.video import VideoHandler
 from gui.dialog_layout import fit_dialog_to_available_screen
 from mazes.tst import TST
@@ -17,9 +21,13 @@ from mazes.tst import TST
 class SettingsDialog(QDialog):
     """A comprehensive dialog for setting analysis parameters."""
     
-    def __init__(self, video_path: str, settings, is_verification=False, parent=None):
+    def __init__(self, video_path: str, settings, is_verification=False, parent=None,
+                 real_world_cm: Optional[float] = None):
         super().__init__(parent)
         self.setWindowTitle("Analysis Settings")
+        # Optional explicit cm length for the reference line; otherwise it is
+        # derived from settings.scale_factor * reference length.
+        self.real_world_cm = real_world_cm
         
         self.video_info = VideoHandler(video_path)
         self.cap = cv2.VideoCapture(str(video_path))
@@ -128,16 +136,34 @@ class SettingsDialog(QDialog):
         other_layout = QFormLayout()
         
         if not self.is_tst:
-            ref_len = self.settings.roi_manager.reference_length_pixels
-            ref_name = self.settings.roi_manager.reference_name
-            ref_label = QLabel(f"{ref_name} ({ref_len:.2f} px)")
-            
+            roi_manager = self.settings.roi_manager
+            ref_len = roi_manager.reference_length_pixels
             self.scale_spin = QDoubleSpinBox(decimals=4, suffix=" cm", minimum=0, maximum=1000)
-            if self.settings.scale_factor > 0 and ref_len > 0:
-                self.scale_spin.setValue(self.settings.scale_factor * ref_len)
-            
-            other_layout.addRow("Reference:", ref_label)
-            other_layout.addRow("Real-world length:", self.scale_spin)
+
+            if ref_len > 0:
+                if roi_manager.is_legacy_bbox_reference:
+                    ref_text = (
+                        f"Legacy ROI bounding-box width ({ref_len:.2f} px)"
+                    )
+                else:
+                    ref_text = f"User-drawn reference line ({ref_len:.2f} px)"
+                ref_label = QLabel(ref_text)
+                prefill = self.real_world_cm
+                if prefill is None:
+                    prefill = real_world_cm_from_scale(
+                        self.settings.scale_factor, ref_len
+                    )
+                if prefill:
+                    self.scale_spin.setValue(prefill)
+                other_layout.addRow("Reference:", ref_label)
+                other_layout.addRow("Real-world length:", self.scale_spin)
+                if roi_manager.is_legacy_bbox_reference:
+                    other_layout.addRow(self._note_label(
+                        LEGACY_REFERENCE_WARNING, warning=True
+                    ))
+            else:
+                self.scale_spin.setEnabled(False)
+                other_layout.addRow(self._note_label(NO_CALIBRATION_NOTE))
         
         # --- IMPROVEMENT: TST doesn't need timelapse, it needs validation video ---
         check_label = "Create Validation Video (Annotated)" if self.is_tst else "Create Timelapse Video"
@@ -177,6 +203,20 @@ class SettingsDialog(QDialog):
         if hasattr(self, 'redraw_btn'):
             self.redraw_btn.clicked.connect(self.on_redraw)
             self.skip_btn.clicked.connect(self.on_skip)
+
+    @staticmethod
+    def _note_label(text: str, warning: bool = False) -> QLabel:
+        label = QLabel(text)
+        label.setWordWrap(True)
+        if warning:
+            label.setStyleSheet("color: #b00020; font-weight: bold;")
+        return label
+
+    def get_real_world_cm(self) -> float:
+        """Return the cm length typed for the reference line (0 if none)."""
+        if self.is_tst or not hasattr(self, 'scale_spin'):
+            return 0.0
+        return float(self.scale_spin.value())
 
     def on_slider_change(self):
         self._sync_widgets(source='slider')
@@ -260,10 +300,10 @@ class SettingsDialog(QDialog):
             self.settings.start_time = self.start_spinbox.value()
             self.settings.end_time = end_time
             
-            scale_val = self.scale_spin.value()
-            ref_len = self.settings.roi_manager.reference_length_pixels
-            scale_factor = (scale_val / ref_len) if scale_val > 0 and ref_len > 0 else 0.0
-            self.settings.scale_factor = scale_factor
+            self.settings.scale_factor = scale_factor_from_cm(
+                self.scale_spin.value(),
+                self.settings.roi_manager.reference_length_pixels,
+            )
 
         self.settings.create_timelapse = self.timelapse_check.isChecked()
         return self.settings

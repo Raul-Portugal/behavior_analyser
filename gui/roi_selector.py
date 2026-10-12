@@ -100,6 +100,52 @@ class ReferenceLineDialog(QDialog):
         return self.line_length
 
 
+REFERENCE_LINE_NAME = "User-drawn reference line"
+REFERENCE_LINE_PROMPT = (
+    "Would you like to draw a reference line for distance calibration?\n\n"
+    "Draw it over something of known length (e.g. an arm length). "
+    "If you skip this, distances will be reported in pixels."
+)
+
+
+def offer_reference_line(parent, video_path, roi_manager: ROIManager) -> bool:
+    """Ask for a reference line on a middle frame of the video.
+
+    Sets the ROI manager's reference length (in source pixels) and returns
+    True only if the user drew a valid line.
+    """
+    cap = cv2.VideoCapture(str(video_path))
+    try:
+        total_frames = int(cap.get(cv2.CAP_PROP_FRAME_COUNT))
+        if total_frames > 10:
+            cap.set(cv2.CAP_PROP_POS_FRAMES, total_frames // 2)
+        ret, frame = cap.read()
+    finally:
+        cap.release()
+    if not ret:
+        return False
+
+    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
+    source_h, source_w = rgb.shape[:2]
+    roi_manager.set_source_dimensions((source_w, source_h))
+    if source_w > 1280:
+        scale = 1280 / source_w
+        rgb = cv2.resize(rgb, (int(source_w * scale), int(source_h * scale)))
+    h, w, ch = rgb.shape
+    pixmap = QPixmap.fromImage(
+        QImage(rgb.data, w, h, ch * w, QImage.Format.Format_RGB888).copy()
+    )
+    dialog = ReferenceLineDialog(
+        pixmap, source_scale=(source_w / w, source_h / h), parent=parent
+    )
+    if dialog.exec() and dialog.get_line_length() > 0:
+        roi_manager.set_reference_length(
+            dialog.get_line_length(), REFERENCE_LINE_NAME
+        )
+        return True
+    return False
+
+
 class RoiSelectorDialog(QDialog):
     """A dialog for interactively drawing polygonal ROIs on a video frame."""
     def __init__(self, video_path: str, maze: Maze, parent=None):
@@ -205,7 +251,7 @@ class RoiSelectorDialog(QDialog):
         self.update()
 
     def prompt_for_reference_line(self):
-        reply = QMessageBox.question(self, 'Calibration', 'Would you like to draw a reference line for distance calibration?',
+        reply = QMessageBox.question(self, 'Calibration', REFERENCE_LINE_PROMPT,
                                        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                                        QMessageBox.StandardButton.Yes)
         if reply == QMessageBox.StandardButton.Yes:
@@ -217,7 +263,7 @@ class RoiSelectorDialog(QDialog):
             if ref_dialog.exec():
                 length = ref_dialog.get_line_length()
                 if length > 0:
-                    self.roi_manager.set_reference_length(length, "User-drawn reference line")
+                    self.roi_manager.set_reference_length(length, REFERENCE_LINE_NAME)
         self.accept()
 
     def next_roi(self):

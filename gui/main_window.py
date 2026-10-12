@@ -5,7 +5,6 @@ Updated to use unified Core modules (VideoHandler, Models).
 """
 import copy
 import logging
-import cv2
 from pathlib import Path
 from typing import Dict, List, Optional, Tuple
 
@@ -14,7 +13,7 @@ from PyQt6.QtWidgets import (QApplication, QFileDialog, QHBoxLayout, QLabel,
                              QListWidget, QMainWindow, QMenu, QMessageBox,
                              QProgressBar, QPushButton, QTextEdit, QVBoxLayout,
                              QWidget, QInputDialog)
-from PyQt6.QtGui import QAction, QImage, QPixmap
+from PyQt6.QtGui import QAction
 
 # --- CORE IMPORTS ---
 from core.models import AppConfig, BatchSettings
@@ -22,7 +21,8 @@ from core.video import VideoHandler, ReferenceFrameGenerator
 from core.version import APP_NAME, APP_VERSION
 
 # --- DIALOGS ---
-from gui.roi_selector import RoiSelectorDialog, ReferenceLineDialog
+from gui.roi_selector import (REFERENCE_LINE_PROMPT, RoiSelectorDialog,
+                              offer_reference_line)
 from gui.settings_dialog import SettingsDialog
 from gui.tuner_dialog import TunerDialog
 from gui.tst_tuner import TstTunerDialog
@@ -466,25 +466,20 @@ class MainWindow(QMainWindow):
                         roi_manager = roi_dialog.get_roi_manager()
                     else:
                         if self.maze.needs_reference_line():
-                            reply = QMessageBox.question(self, 'Calibration', 'Draw reference line?', QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No)
+                            reply = QMessageBox.question(
+                                self, 'Calibration',
+                                REFERENCE_LINE_PROMPT,
+                                QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+                                QMessageBox.StandardButton.Yes
+                            )
                             if reply == QMessageBox.StandardButton.Yes:
-                                # Core: Use VideoHandler
-                                handler = VideoHandler(ref_video_path)
-                                roi_manager.set_source_dimensions(
-                                    handler.dimensions
+                                offer_reference_line(
+                                    self, ref_video_path, roi_manager
                                 )
-                                # For line dialog, we need a pixmap. Get a frame from handler.
-                                frame = handler.get_frame(0)
-                                if frame is not None:
-                                    rgb = cv2.cvtColor(frame, cv2.COLOR_BGR2RGB)
-                                    h, w, c = rgb.shape
-                                    q_img = QImage(rgb.data, w, h, c*w, QImage.Format.Format_RGB888)
-                                    ref_dialog = ReferenceLineDialog(
-                                        QPixmap.fromImage(q_img),
-                                        parent=self
-                                    )
-                                    if ref_dialog.exec() and ref_dialog.get_line_length() > 0:
-                                        roi_manager.set_reference_length(ref_dialog.get_line_length(), "User Reference")
+                        if not roi_manager.source_dimensions:
+                            roi_manager.set_source_dimensions(
+                                VideoHandler(ref_video_path).dimensions
+                            )
                     
                     config = AppConfig()
                     # Core: Reference generation
@@ -494,7 +489,6 @@ class MainWindow(QMainWindow):
                     tuner_dialog = TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)
                     if not tuner_dialog.exec(): return
                     detection_config = tuner_dialog.get_detection_config()
-                    if not is_zone_free_mode: roi_manager.calculate_reference_length()
                     base_settings = BatchSettings(roi_manager, detection_config, 0.0)
 
                 # 3. STANDARD CONFIGURATION
@@ -517,8 +511,7 @@ class MainWindow(QMainWindow):
                     tuner_dialog = TunerDialog(str(ref_video_path), ref_frame, roi_manager, self)
                     if not tuner_dialog.exec(): return
                     detection_config = tuner_dialog.get_detection_config()
-                    
-                    roi_manager.calculate_reference_length()
+
                     base_settings = BatchSettings(roi_manager, detection_config, 0.0)
 
             # --- FINAL REVIEW ---

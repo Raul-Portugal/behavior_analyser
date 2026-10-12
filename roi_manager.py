@@ -10,6 +10,9 @@ import numpy as np
 
 logger = logging.getLogger(__name__)
 
+# Pre-3.2 configs may carry a reference named like "Width of first Arm A ROI".
+LEGACY_BBOX_REFERENCE_PREFIX = "Width of first"
+
 
 class ROI:
     """
@@ -305,28 +308,12 @@ class ROIManager:
 
     def calculate_reference_length(self) -> float:
         """
-        Calculates a default reference length from the first available ROI's width
-        if no reference line was user-drawn. This is a generic fallback.
-        
-        Returns:
-            Reference length in pixels
+        Return the user-drawn reference length in pixels, or 0.0 if none.
+
+        There is deliberately no fallback to an ROI bounding box: such a
+        length is not the real-world quantity the user will type later.
         """
-        if self._reference_length_pixels > 0:
-            return self._reference_length_pixels
-
-        # Sort keys for deterministic behavior
-        for category in sorted(self.rois.keys()):
-            if self.rois[category]:
-                self._reference_length_pixels = self.rois[category][0].width
-                self._reference_name = f"Width of first {category.replace('_', ' ').title()} ROI"
-                logger.info(f"Using reference length: {self._reference_length_pixels:.2f} px "
-                          f"({self._reference_name})")
-                return self._reference_length_pixels
-
-        logger.warning("No ROIs available to calculate reference length")
-        self._reference_length_pixels = 0.0
-        self._reference_name = "N/A"
-        return 0.0
+        return self._reference_length_pixels
 
     def set_reference_length(self, length_pixels: float, name: str = "User-defined") -> None:
         """
@@ -355,6 +342,19 @@ class ROIManager:
     def reference_name(self) -> str:
         """Returns the descriptive name of the reference."""
         return self._reference_name
+
+    @property
+    def has_reference(self) -> bool:
+        """True when a calibration length is available (user-drawn or legacy)."""
+        return self._reference_length_pixels > 0
+
+    @property
+    def is_legacy_bbox_reference(self) -> bool:
+        """True for old configs whose reference was an ROI bounding-box width."""
+        return (
+            self._reference_length_pixels > 0
+            and self._reference_name.startswith(LEGACY_BBOX_REFERENCE_PREFIX)
+        )
 
     def draw_on_frame(self, frame: np.ndarray, colors: Optional[Dict[str, Tuple]] = None, 
                      thickness: int = 2) -> np.ndarray:
