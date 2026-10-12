@@ -26,6 +26,7 @@ from core.version import APP_NAME, APP_VERSION
 # --- DIALOGS ---
 from gui.roi_selector import (REFERENCE_LINE_PROMPT, RoiSelectorDialog,
                               offer_reference_line)
+from gui.arm_entry_dialog import ArmEntryParametersDialog
 from gui.settings_dialog import SettingsDialog
 from gui.tuner_dialog import TunerDialog
 from gui.tst_tuner import TstTunerDialog
@@ -37,7 +38,9 @@ from gui.freestyle_config_dialog import FreestyleConfigDialog
 from roi_manager import ROIManager
 from mazes import AVAILABLE_MAZES, create_maze
 from mazes.base_maze import BaseAnalysisResult, Maze
+from mazes.epm import EPM
 from mazes.tst import TST
+from mazes.y_maze import YMaze
 from preflight_checker import PreflightChecker, ValidationDialog
 from checkpoint_manager import CheckpointManager, ResourceManager
 
@@ -637,6 +640,11 @@ class MainWindow(QMainWindow):
             roi_dialog = RoiSelectorDialog(str(ref_video_path), self.maze, self)
             if not roi_dialog.exec(): return
             roi_manager = roi_dialog.get_roi_manager()
+
+            if isinstance(self.maze, (YMaze, EPM)):
+                arm_dialog = ArmEntryParametersDialog(self.maze, self)
+                if not arm_dialog.exec(): return
+                self.maze.configure_algorithm_parameters(arm_dialog.get_parameters())
             
             config = AppConfig()
             self.update_progress_detailed(20, "Configuration", "Generating reference frame...")

@@ -9,7 +9,7 @@ from mazes.base_maze import BaseAnalysisResult, Maze
 from core.zone_events import (
     debounce_zone_labels,
     dwell_frames,
-    extract_center_mediated_entries,
+    analyze_center_mediated_entries,
     overlapping_zones_to_candidates,
 )
 
@@ -31,6 +31,8 @@ class EPMAnalysisResult(BaseAnalysisResult):
     entries_to_open_arms: int = 0
     entries_to_closed_arms: int = 0
     total_arm_entries: int = 0
+    # Arm entries a tracking gap may have hidden (not included in the counts).
+    entries_possibly_missed: int = 0
     
     # Percentages
     percent_time_in_open: float = 0.0
@@ -84,12 +86,14 @@ class EPM(Maze):
             'open_arm_1', 'open_arm_2',
             'closed_arm_1', 'closed_arm_2'
         }
-        result.arm_entries = extract_center_mediated_entries(
+        counted = analyze_center_mediated_entries(
             result.roi_labels,
             result.timestamps,
             arm_labels=arm_labels,
             count_initial_arm=self.count_initial_arm
         )
+        result.arm_entries = counted.entries
+        result.entries_possibly_missed = counted.possibly_missed
 
         # Summarize entries
         result.entries_to_open_arms = sum(1 for arm, ts in result.arm_entries if 'open' in arm)
@@ -132,12 +136,13 @@ class EPM(Maze):
             'entries_to_closed_arms',
             'total_arm_entries',
             'percent_open_of_arm_time',
-            'percent_open_of_arm_entries'
+            'percent_open_of_arm_entries',
+            'entries_possibly_missed'
         ]
 
     def get_batch_summary_row(self, result: BaseAnalysisResult) -> List[any]:
         """Return data row for batch summary CSV."""
-        if not isinstance(result, EPMAnalysisResult): return ['N/A'] * 11
+        if not isinstance(result, EPMAnalysisResult): return ['N/A'] * 12
         return [
             f"{result.time_in_open_arms_s:.2f}",
             f"{result.time_in_closed_arms_s:.2f}",
@@ -149,7 +154,8 @@ class EPM(Maze):
             result.entries_to_closed_arms,
             result.total_arm_entries,
             f"{result.percent_time_in_open:.2f}",
-            f"{result.percent_entries_to_open:.2f}"
+            f"{result.percent_entries_to_open:.2f}",
+            result.entries_possibly_missed
         ]
 
     def generate_specific_plots(self, result: BaseAnalysisResult, output_dir: Path, base_name: str) -> None:
