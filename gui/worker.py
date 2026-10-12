@@ -20,10 +20,16 @@ from PyQt6.QtCore import QObject, pyqtSignal
 
 # --- CORE IMPORTS ---
 from core.models import AppConfig, BatchSettings
-from core.video import VideoHandler, ReferenceFrameGenerator, SafeVideoWriter, BufferedVideoReader
+from core.video import (
+    VideoHandler,
+    ReferenceFrameGenerator,
+    SafeVideoWriter,
+    BufferedVideoReader,
+    position_capture_at_frame,
+)
 from core.detection import DetectionEngine, DetectionQualityMonitor
 from core.analysis_engine import Analyzer
-from core.tst_display import tst_display_style
+from core.tst_display import blend_polygon, tst_display_style
 from core.tst_motion_engine import TSTMotionEngine
 from core.version import APP_NAME, APP_VERSION
 
@@ -706,16 +712,26 @@ class AnalysisWorker(QObject):
                     int(round(result.timestamps[0] * handler.fps))
                     if result.timestamps else result.start_frame
                 )
-                cap.set(cv2.CAP_PROP_POS_FRAMES, first_result_frame)
-                
+                position_capture_at_frame(
+                    cap, first_result_frame,
+                    should_cancel=lambda: self.is_cancelled,
+                )
+                self._raise_if_cancelled()
+
                 curr_idx = 0
                 total_frames = len(result.timestamps)
-                
+
                 while curr_idx < total_frames:
                     self._raise_if_cancelled()
+                    if curr_idx % interval != 0:
+                        # Skipped frames are only decoded, never converted.
+                        if not cap.grab():
+                            break
+                        curr_idx += 1
+                        continue
                     ret, frame = cap.read()
                     if not ret: break
-                    
+
                     if curr_idx % interval == 0:
                         # 1. Draw ROIs
                         frame = settings.roi_manager.draw_on_frame(frame, thickness=2)
@@ -867,6 +883,8 @@ class AnalysisWorker(QObject):
             vh = VideoHandler(video_path)
             
             # Subsample for validation video speed
+            # TODO: use TST_VALIDATION_FRAME_STEP once the TST motion engine
+            # defines it, so the stored contours and this writer agree.
             step = 3
             out_fps = vh.fps / step
             
@@ -878,17 +896,27 @@ class AnalysisWorker(QObject):
                     int(round(result.timestamps[0] * vh.fps))
                     if result.timestamps else result.start_frame
                 )
-                cap.set(cv2.CAP_PROP_POS_FRAMES, first_result_frame)
-                
+                position_capture_at_frame(
+                    cap, first_result_frame,
+                    should_cancel=lambda: self.is_cancelled,
+                )
+                self._raise_if_cancelled()
+
                 roi_dict = {cat: rois[0] for cat, rois in settings.roi_manager.rois.items() if rois}
                 curr_idx = 0
                 total_frames = len(result.timestamps)
-                
+
                 while curr_idx < total_frames:
                     self._raise_if_cancelled()
+                    if curr_idx % step != 0:
+                        # Skipped frames are only decoded, never converted.
+                        if not cap.grab():
+                            break
+                        curr_idx += 1
+                        continue
                     ret, frame = cap.read()
                     if not ret: break
-                    
+
                     if curr_idx % step == 0:
                         time_sec = result.timestamps[curr_idx]
                         
@@ -901,9 +929,9 @@ class AnalysisWorker(QObject):
                             
                             if time_sec < valid_start or time_sec >= valid_end:
                                 # Grey out excluded time
-                                overlay = frame.copy()
-                                cv2.fillPoly(overlay, [pts], (50, 50, 50))
-                                cv2.addWeighted(overlay, 0.5, frame, 0.5, 0, frame)
+                                blend_polygon(
+                                    frame, pts, (50, 50, 50), 0.5, 0.5
+                                )
                                 cv2.putText(frame, "EXCLUDED", (pts[0][0], pts[0][1]-5), cv2.FONT_HERSHEY_SIMPLEX, 0.5, (200,200,200), 2)
                             else:
                                 # Show active status (Mobile/Immobile)
@@ -933,15 +961,9 @@ class AnalysisWorker(QObject):
                                         contour_points = np.asarray(
                                             contour, dtype=np.int32
                                         ).reshape(-1, 1, 2)
-                                        mask_overlay = frame.copy()
-                                        cv2.fillPoly(
-                                            mask_overlay,
-                                            [contour_points],
-                                            color,
-                                        )
-                                        cv2.addWeighted(
-                                            mask_overlay, 0.35, frame, 0.65,
-                                            0, frame,
+                                        blend_polygon(
+                                            frame, contour_points, color,
+                                            0.35, 0.65,
                                         )
                                         cv2.polylines(
                                             frame, [contour_points], True,

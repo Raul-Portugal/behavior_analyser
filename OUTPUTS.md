@@ -38,7 +38,7 @@ metric must not be interpreted as zero.
 | `*_tst_motion_evidence.csv` | no | yes | Per-frame active-motion evidence, rigid/angular/residual motion, pendulum evidence, behavioral state, confidence, and QC for each mouse |
 | `*_analysis_summary.csv` | yes | yes | Human-readable key results |
 | `*_summary.json` | yes | yes | Complete machine-readable result and configuration |
-| `*_arm_entries.csv` | Y-maze | no | Debounced, center-mediated arm-entry events |
+| `*_arm_entries.csv` | Y-maze, EPM | no | Debounced, center-mediated arm-entry events |
 | `*_speed_data.csv` | Freestyle | no | Per-frame raw and smoothed speed and the `is_immobile` flag (see below) |
 
 Raw and cleaned zone labels are both retained in positional tracking CSVs.

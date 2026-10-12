@@ -1,6 +1,7 @@
 """
 Contains the maze-specific logic for the Elevated Plus Maze (EPM) task.
 """
+import csv
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple, Type
@@ -161,3 +162,19 @@ class EPM(Maze):
     def generate_specific_plots(self, result: BaseAnalysisResult, output_dir: Path, base_name: str) -> None:
         # EPM doesn't have highly specific plots like the Y-Maze sequence required here.
         pass
+
+    def export_specific_data(
+        self,
+        result: BaseAnalysisResult,
+        output_dir: Path,
+        base_name: str
+    ) -> None:
+        """Write the ordered, debounced arm-entry events (as the Y-maze does)."""
+        if not isinstance(result, EPMAnalysisResult):
+            return
+        output_path = output_dir / f"{base_name}_arm_entries.csv"
+        with open(output_path, 'w', newline='', encoding='utf-8') as file:
+            writer = csv.writer(file)
+            writer.writerow(['entry_number', 'arm', 'timestamp_s'])
+            for index, (arm, timestamp) in enumerate(result.arm_entries, 1):
+                writer.writerow([index, arm, f"{timestamp:.3f}"])

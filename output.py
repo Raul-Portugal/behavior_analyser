@@ -451,10 +451,17 @@ class Visualizer:
                 max(1, len(unique_labels))
             )
             color_map = {label: cmap(i) for i, label in enumerate(unique_labels)}
-            point_colors = [color_map.get(label, (0.5, 0.5, 0.5, 1.0)) for label in labels]
 
             if len(valid_pos) > 0:
-                ax.scatter(valid_pos[:, 0], valid_pos[:, 1], c=point_colors, s=1, alpha=0.5)
+                # One scatter call per label: a single colour per collection
+                # is far cheaper than per-point RGBA for hour-long recordings.
+                label_array = np.asarray(labels, dtype=object)
+                for label in unique_labels:
+                    selected = valid_pos[label_array == label]
+                    ax.scatter(
+                        selected[:, 0], selected[:, 1],
+                        color=[color_map[label]], s=1, alpha=0.5
+                    )
                 ax.plot(valid_pos[0, 0], valid_pos[0, 1], 'o', color='lime', markersize=10, label='Start')
                 ax.plot(valid_pos[-1, 0], valid_pos[-1, 1], 'X', color='magenta', markersize=12, label='End')
             

@@ -146,6 +146,7 @@ class OutputLayoutTests(unittest.TestCase):
                     "video_tracking_data.csv",
                     "video_analysis_summary.csv",
                     "video_summary.json",
+                    "video_arm_entries.csv",
                 },
                 "plots": {
                     "video_heatmap.png",
