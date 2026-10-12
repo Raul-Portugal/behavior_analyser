@@ -8,15 +8,15 @@ rendered at any frame rate or resolution from the same physical description.
 import cv2
 import numpy as np
 
-# (name, start_s, end_s) of each physical phase of the default clip.
-PHASES = (
-    ("static", 0.0, 1.5),
-    ("swing", 1.5, 4.5),
-    ("hold", 4.5, 5.5),
-    ("wiggle", 5.5, 7.0),
-    ("rest", 7.0, 8.0),
-)
-DURATION_S = 8.0
+# Frequencies are deliberately not commensurate with common frame rates so
+# no frame rate samples the swing turnarounds in phase.
+STATIC_END_S = 1.2
+SWING_HZ = 0.85
+SWING_END_S = STATIC_END_S + 3 / SWING_HZ  # three full cycles
+WIGGLE_START_S = SWING_END_S + 1.0
+WIGGLE_HZ = 1.9
+WIGGLE_END_S = WIGGLE_START_S + 3 / WIGGLE_HZ
+DURATION_S = WIGGLE_END_S + 1.0
 BASE_SIZE = (400, 300)  # width, height of the reference rendering
 
 
@@ -40,16 +40,16 @@ def _background(size, seed=7):
 
 
 def swing_angle_deg(t: float) -> float:
-    """Pendulum angle: 4.5 degrees at 1 Hz between 1.5 s and 4.5 s."""
-    if 1.5 <= t < 4.5:
-        return 4.5 * np.sin(2.0 * np.pi * (t - 1.5))
+    """Pendulum angle: 4.5 degrees between the static period and the hold."""
+    if STATIC_END_S <= t < SWING_END_S:
+        return 4.5 * np.sin(2.0 * np.pi * SWING_HZ * (t - STATIC_END_S))
     return 0.0
 
 
 def limb_angle_deg(t: float) -> float:
-    """Non-rigid limb angle: 2 Hz wiggle between 5.5 s and 7 s."""
-    if 5.5 <= t < 7.0:
-        return 45.0 * np.sin(2.0 * np.pi * 2.0 * (t - 5.5))
+    """Non-rigid limb angle: a 45 degree wiggle of the limb."""
+    if WIGGLE_START_S <= t < WIGGLE_END_S:
+        return 45.0 * np.sin(2.0 * np.pi * WIGGLE_HZ * (t - WIGGLE_START_S))
     return 0.0
 
 

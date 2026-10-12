@@ -5,7 +5,7 @@ Whole-body translation/rotation is modelled separately from residual,
 non-rigid motion so pendulum-like movement can be treated as passive.
 """
 
-from dataclasses import asdict, dataclass, field
+from dataclasses import asdict, dataclass, field, replace
 from math import ceil, isfinite
 from typing import Dict, Optional, Tuple
 
@@ -17,6 +17,13 @@ from roi_manager import ROI
 # Per-frame motion features are expressed relative to this frame rate so the
 # thresholds in TSTMotionConfig keep one meaning regardless of the video fps.
 REFERENCE_FPS = 30.0
+# Frames are analysed at one canonical width (never upscaled) so features and
+# their thresholds do not depend on the source resolution.
+DEFAULT_ANALYSIS_WIDTH = 480
+MIN_ANALYSIS_WIDTH = 160
+# Processing is confined to the union bounding box of the ROIs plus this
+# fraction of its size on every side (clamped to the frame).
+ROI_MARGIN_FRACTION = 0.15
 
 
 @dataclass
@@ -37,6 +44,7 @@ class TSTMotionConfig:
     temporal_window_seconds: float = 2.5
     passive_min_observation_seconds: float = 0.75
     passive_min_reversals: int = 1
+    analysis_width: int = DEFAULT_ANALYSIS_WIDTH
 
     def validate(self) -> None:
         for name, value in self.__dict__.items():
@@ -77,6 +85,14 @@ class TSTMotionConfig:
             raise ValueError("passive_min_reversals must be at least 1")
         if not isinstance(self.passive_min_reversals, int):
             raise ValueError("passive_min_reversals must be an integer")
+        if (
+            not isinstance(self.analysis_width, int)
+            or self.analysis_width < MIN_ANALYSIS_WIDTH
+        ):
+            raise ValueError(
+                "analysis_width must be an integer of at least "
+                f"{MIN_ANALYSIS_WIDTH}"
+            )
 
 
 @dataclass
@@ -127,10 +143,14 @@ class TSTMotionEngine:
         rois: Dict[str, ROI],
         config: Optional[TSTMotionConfig] = None,
         fps: float = 30.0,
+        analysis_width: Optional[int] = None,
     ):
         self.rois = rois
         self.config = config or TSTMotionConfig()
+        if analysis_width is not None:
+            self.config = replace(self.config, analysis_width=analysis_width)
         self.config.validate()
+        self.analysis_width = int(self.config.analysis_width)
         if not isfinite(float(fps)) or fps <= 0:
             raise ValueError("fps must be a positive finite value")
         self.fps = float(fps)
@@ -140,7 +160,15 @@ class TSTMotionEngine:
         # accelerations), so they scale with its square.
         self.rate_scale = self.fps / REFERENCE_FPS
         self.injection_scale = self.rate_scale ** 2
+        # Geometry is fixed on the first frame. ROI masks and every image
+        # operation live in the cropped analysis space; contours are mapped
+        # back to source pixels.
         self.masks: Dict[str, np.ndarray] = {}
+        self._source_size: Tuple[int, int] = (0, 0)
+        self._analysis_size: Tuple[int, int] = (0, 0)
+        self._scale: Tuple[float, float] = (1.0, 1.0)
+        self._crop: Tuple[int, int, int, int] = (0, 0, 0, 0)
+        self._background_feature_mask: Optional[np.ndarray] = None
         # Current segmented mouse masks are retained only for visual quality
         # control. They are deliberately not used as persistent model state.
         self.last_mouse_masks: Dict[str, Optional[np.ndarray]] = {
@@ -150,13 +178,57 @@ class TSTMotionEngine:
         self.last_observations: Dict[str, TSTMotionObservation] = {}
         self._initialized = False
 
-    def _init_masks(self, shape: Tuple[int, int]) -> None:
+    def _init_geometry(self, shape: Tuple[int, ...]) -> None:
+        """Fix the analysis scale, ROI crop box and cropped ROI masks."""
         height, width = shape[:2]
+        ratio = min(1.0, self.analysis_width / max(1, width))
+        analysis_width = max(1, int(round(width * ratio)))
+        analysis_height = max(1, int(round(height * ratio)))
+        self._source_size = (width, height)
+        self._analysis_size = (analysis_width, analysis_height)
+        self._scale = (analysis_width / width, analysis_height / height)
+
+        scaled: Dict[str, np.ndarray] = {}
         for name, roi in self.rois.items():
-            mask = np.zeros((height, width), dtype=np.uint8)
-            cv2.fillPoly(mask, [roi.points.astype(np.int32)], 255)
+            points = roi.points.astype(np.float64) * np.asarray(self._scale)
+            scaled[name] = np.rint(points).astype(np.int32)
+        if scaled:
+            stacked = np.vstack(list(scaled.values()))
+            x_min = max(0, int(stacked[:, 0].min()))
+            y_min = max(0, int(stacked[:, 1].min()))
+            x_max = min(analysis_width, int(stacked[:, 0].max()) + 1)
+            y_max = min(analysis_height, int(stacked[:, 1].max()) + 1)
+        else:
+            x_min, y_min = 0, 0
+            x_max, y_max = analysis_width, analysis_height
+        margin_x = int(ceil(ROI_MARGIN_FRACTION * max(0, x_max - x_min)))
+        margin_y = int(ceil(ROI_MARGIN_FRACTION * max(0, y_max - y_min)))
+        x0 = max(0, x_min - margin_x)
+        y0 = max(0, y_min - margin_y)
+        x1 = min(analysis_width, max(x_max + margin_x, x0 + 1))
+        y1 = min(analysis_height, max(y_max + margin_y, y0 + 1))
+        self._crop = (x0, y0, x1, y1)
+
+        crop_shape = (y1 - y0, x1 - x0)
+        combined = np.zeros(crop_shape, dtype=np.uint8)
+        for name, points in scaled.items():
+            mask = np.zeros(crop_shape, dtype=np.uint8)
+            cv2.fillPoly(mask, [points - np.asarray([x0, y0], np.int32)], 255)
             self.masks[name] = mask
+            combined = cv2.bitwise_or(combined, mask)
+        # Camera-motion features come from background inside the crop box
+        # but outside every ROI.
+        self._background_feature_mask = cv2.bitwise_not(combined)
         self._initialized = True
+
+    def _analysis_gray(self, frame: np.ndarray) -> np.ndarray:
+        """Resize to the analysis width, crop to the ROI box, blur to gray."""
+        if (frame.shape[1], frame.shape[0]) != self._analysis_size:
+            frame = cv2.resize(
+                frame, self._analysis_size, interpolation=cv2.INTER_AREA
+            )
+        x0, y0, x1, y1 = self._crop
+        return self._gray(frame[y0:y1, x0:x1])
 
     @staticmethod
     def _gray(frame: np.ndarray) -> np.ndarray:
@@ -768,16 +840,18 @@ class TSTMotionEngine:
             self.last_observations = observations
             return observations
         if not self._initialized:
-            self._init_masks(frame.shape)
+            self._init_geometry(frame.shape)
+        elif (frame.shape[1], frame.shape[0]) != self._source_size:
+            raise ValueError(
+                "TST frame size changed during analysis: expected "
+                f"{self._source_size}, got "
+                f"{(frame.shape[1], frame.shape[0])}"
+            )
 
-        current_gray = self._gray(frame)
-        previous_gray = self._gray(previous_frame)
-        combined_roi = np.zeros_like(current_gray, dtype=np.uint8)
-        for roi_mask in self.masks.values():
-            combined_roi = cv2.bitwise_or(combined_roi, roi_mask)
-        background_feature_mask = cv2.bitwise_not(combined_roi)
+        current_gray = self._analysis_gray(frame)
+        previous_gray = self._analysis_gray(previous_frame)
         aligned_previous, camera_stabilized = self._stabilize_previous(
-            previous_gray, current_gray, background_feature_mask
+            previous_gray, current_gray, self._background_feature_mask
         )
         flow = cv2.calcOpticalFlowFarneback(
             aligned_previous,
@@ -826,7 +900,8 @@ class TSTMotionEngine:
         """Return a compact contour for the latest segmentation of ``name``.
 
         The contour supports preview/validation overlays without retaining a
-        full raster mask for every processed frame.
+        full raster mask for every processed frame. Points are in SOURCE
+        pixel coordinates, whatever the internal analysis scale and crop.
         """
         mask = self.last_mouse_masks.get(name)
         if mask is None:
@@ -839,7 +914,15 @@ class TSTMotionEngine:
         contour = max(contours, key=cv2.contourArea)
         epsilon = max(1.0, 0.01 * cv2.arcLength(contour, True))
         simplified = cv2.approxPolyDP(contour, epsilon, True).reshape(-1, 2)
-        return [[int(point[0]), int(point[1])] for point in simplified]
+        x0, y0, _, _ = self._crop
+        scale_x, scale_y = self._scale
+        return [
+            [
+                int(round((point[0] + x0) / scale_x)),
+                int(round((point[1] + y0) / scale_y)),
+            ]
+            for point in simplified
+        ]
 
     def export_state(self) -> Dict[str, object]:
         """Serialize temporal state for checkpoint-equivalent resume."""
