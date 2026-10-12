@@ -2110,7 +2110,7 @@ class MainWindow(QMainWindow):
             self.progress_bar.value(), "Stopping analysis…",
             "Saving progress; the window closes automatically when done."
         )
-        QTimer.singleShot(self.FORCE_QUIT_DELAY_MS, self._offer_force_quit)
+        self._schedule_force_quit_offer()
         event.ignore()
 
     def _offer_force_quit(self):
@@ -2121,7 +2121,18 @@ class MainWindow(QMainWindow):
             self._force_close = True
             self.close()
         else:
-            QTimer.singleShot(self.FORCE_QUIT_DELAY_MS, self._offer_force_quit)
+            self._schedule_force_quit_offer()
+
+    def _schedule_force_quit_offer(self):
+        # A timer owned by the window dies with it, unlike a free singleShot
+        # whose callback could otherwise run against a deleted window.
+        timer = getattr(self, "_force_quit_timer", None)
+        if timer is None:
+            timer = QTimer(self)
+            timer.setSingleShot(True)
+            timer.timeout.connect(self._offer_force_quit)
+            self._force_quit_timer = timer
+        timer.start(self.FORCE_QUIT_DELAY_MS)
 
     def _confirm_force_quit(self) -> bool:
         box = QMessageBox(self)
@@ -2137,8 +2148,12 @@ class MainWindow(QMainWindow):
             "Force Quit", QMessageBox.ButtonRole.DestructiveRole
         )
         box.addButton("Keep Waiting", QMessageBox.ButtonRole.RejectRole)
+        # Record the choice from the signal: the box (and even this window)
+        # may already be deleted when the nested event loop returns.
+        chosen = []
+        force.clicked.connect(lambda: chosen.append(True))
         box.exec()
-        return box.clickedButton() is force
+        return bool(chosen)
 
     def _stop_thread_forcefully(self):
         thread = self.analysis_thread

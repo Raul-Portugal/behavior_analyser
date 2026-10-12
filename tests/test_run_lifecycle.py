@@ -4,6 +4,8 @@ import unittest
 from pathlib import Path
 from unittest.mock import Mock, patch
 
+from PyQt6 import sip
+
 try:
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QMessageBox
@@ -57,11 +59,26 @@ class RunLifecycleTests(unittest.TestCase):
     def setUpClass(cls):
         cls.app = QApplication.instance() or QApplication([])
 
+    def _unless_deleted(self, method_name):
+        if not sip.isdeleted(self.window):
+            getattr(self.window, method_name)()
+
+    def _stop_force_quit_timer(self):
+        if sip.isdeleted(self.window):
+            return
+        timer = getattr(self.window, "_force_quit_timer", None)
+        if timer is not None:
+            timer.stop()
+        self.window._close_requested = False
+
     def setUp(self):
         self.window = MainWindow(temp_app_settings(self))
-        self.addCleanup(self.window.deleteLater)
-        self.addCleanup(self.window._detach_log_handler)
+        self.addCleanup(self._unless_deleted, "deleteLater")
+        self.addCleanup(self._unless_deleted, "_detach_log_handler")
         self.window.FORCE_QUIT_DELAY_MS = 60
+        # Runs before deleteLater (cleanups are LIFO): a force-quit offer
+        # still pending from this test must never fire during the next one.
+        self.addCleanup(self._stop_force_quit_timer)
         self.window.show()
         self.thread = FakeThread()
         self.worker = FakeWorker()
@@ -119,6 +136,17 @@ class RunLifecycleTests(unittest.TestCase):
         self._close_confirming()
         self.assertFalse(self.window.close())
         self.assertEqual(self.worker.stopped, 1)
+
+    def test_pending_force_quit_offer_dies_with_the_window(self):
+        self._close_confirming()
+        timer = self.window._force_quit_timer
+        self.assertTrue(timer.isActive())
+        self.assertIs(timer.parent(), self.window)
+        self.window._detach_log_handler()
+        with patch.object(self.window, "_confirm_force_quit") as confirm:
+            self.window.deleteLater()
+            QTest.qWait(200)  # longer than FORCE_QUIT_DELAY_MS
+        confirm.assert_not_called()
 
     def test_force_quit_after_the_timeout_closes_the_window(self):
         self._close_confirming()
