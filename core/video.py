@@ -223,9 +223,14 @@ class ReferenceFrameGenerator:
         
         cache_path = cls.get_cache_path(path)
         file_hash = cls.get_hash(path)
-        expected_dims = (
-            np.array(target_dims, dtype=np.int64)
-            if target_dims else np.array([-1, -1], dtype=np.int64)
+        handler = VideoHandler(path)
+        # The GUI passes None and the worker passes native dims; both mean
+        # the same frame and must share one cache key.
+        native_dims = tuple(handler.dimensions)
+        if target_dims is not None and tuple(target_dims) == native_dims:
+            target_dims = None
+        expected_dims = np.array(
+            target_dims if target_dims else native_dims, dtype=np.int64
         )
 
         # 1. Try Load Cache
@@ -243,7 +248,6 @@ class ReferenceFrameGenerator:
                 logger.debug("Ignoring invalid reference-frame cache", exc_info=True)
 
         # 2. Generate
-        handler = VideoHandler(path)
         indices = np.linspace(0, handler.total_frames - 1, min(num_samples, handler.total_frames), dtype=int)
         frames = []
         
