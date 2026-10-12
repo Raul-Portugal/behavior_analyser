@@ -31,6 +31,7 @@ from core.run_outputs import (
     apply_effective_parameters, create_run_folder, output_base_names,
     run_timestamp,
 )
+from core.time_bins import TIME_BIN_HEADERS
 from core.sample_sheet import (
     SampleMetadata, SampleSheetError, load_sample_sheet,
     metadata_for_videos, reserved_column_conflicts,
@@ -224,12 +225,14 @@ def load_sample_metadata(
         raise CliError(str(exc)) from exc
     conflicts = reserved_column_conflicts(
         sheet.columns,
-        list(COMMON_BATCH_HEADERS) + list(maze.get_batch_summary_headers()),
+        list(COMMON_BATCH_HEADERS) + list(maze.get_batch_summary_headers())
+        + ["video_filename", "paradigm"] + list(TIME_BIN_HEADERS),
     )
     if conflicts:
         raise CliError(
             f"{sheet_file.name}: column(s) {', '.join(conflicts)} clash with "
-            "columns of the batch summary; rename them in the sheet"
+            "output columns (batch summary or time bins); rename them in "
+            "the sheet"
         )
     match = metadata_for_videos(sheet, sheet_file, list(plan))
     if not match.is_complete:

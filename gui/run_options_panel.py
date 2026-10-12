@@ -16,6 +16,7 @@ from PyQt6.QtWidgets import (
 )
 
 from core.output_contract import COMMON_BATCH_HEADERS
+from core.time_bins import TIME_BIN_HEADERS
 from core.sample_sheet import (
     SampleMetadata, SampleSheet, SampleSheetError, SampleSheetMatch,
     describe_match, load_sample_sheet, metadata_for_videos,
@@ -128,7 +129,10 @@ class RunOptionsPanel(QWidget):
 
     def _column_conflict_message(self, sheet: SampleSheet) -> str:
         maze = self._maze()
-        reserved = list(COMMON_BATCH_HEADERS)
+        reserved = (
+            list(COMMON_BATCH_HEADERS) + ["video_filename", "paradigm"]
+            + list(TIME_BIN_HEADERS)
+        )
         if maze is not None:
             reserved += list(maze.get_batch_summary_headers())
         conflicts = reserved_column_conflicts(sheet.columns, reserved)
@@ -136,7 +140,8 @@ class RunOptionsPanel(QWidget):
             return ""
         return (
             f"{sheet.path.name}: column(s) {', '.join(conflicts)} clash with "
-            "columns of the batch summary. Rename them in the sheet."
+            "output columns (batch summary or time bins). Rename them in the "
+            "sheet."
         )
 
     def match(self) -> Optional[SampleSheetMatch]:

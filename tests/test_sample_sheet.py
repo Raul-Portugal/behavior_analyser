@@ -408,6 +408,18 @@ class SampleSheetRunTests(SheetFixture):
         self.assertEqual(code, cli.EXIT_BAD_INPUT)
         self.assertIn("paradigm", stderr)
 
+        # Columns of the time-bin tables are reserved too.
+        bins_clash = self.write_sheet(
+            "video,Value\n"
+            + "".join(f"videos/{v.name},x\n" for v in self.videos),
+            "bins_clash.csv",
+        )
+        code, _, stderr = self._cli(
+            "cli_bins_clash", "--sample-sheet", str(bins_clash)
+        )
+        self.assertEqual(code, cli.EXIT_BAD_INPUT)
+        self.assertIn("Value", stderr)
+
         code, _, stderr = self._cli(
             "cli_absent", "--sample-sheet", str(self.root / "nope.csv")
         )
