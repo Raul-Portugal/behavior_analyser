@@ -123,6 +123,11 @@ class ROIPreviewDialog(QDialog):
                 f"<b>{category.replace('_', ' ').title()}:</b> "
                 f"{info['count']} region(s), area={info['total_area']:.0f} px²<br>"
             )
+        if 'arena_area' in stats:
+            stats_text += (
+                f"<b>Arena:</b> area={stats['arena_area']:.0f} px² "
+                "(orange; the center region is outlined in cyan)<br>"
+            )
         
         stats_label = QLabel(stats_text)
         stats_layout.addWidget(stats_label)

@@ -242,9 +242,12 @@ class Freestyle(Maze):
         if not self.arena_mode or arena is None:
             roi_manager.set_center_overlay(None)
             return
-        roi_manager.set_center_overlay(
-            self.center_outline(arena.points, scale_factor)
-        )
+        try:
+            outline = self.center_outline(arena.points, scale_factor)
+        except ValueError as exc:
+            logger.warning(f"Could not derive the center overlay: {exc}")
+            outline = None
+        roi_manager.set_center_overlay(outline)
 
     @property
     def name(self) -> str:
