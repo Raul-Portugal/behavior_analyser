@@ -285,8 +285,9 @@ class AnalysisWorker(QObject):
                         )
                         if last_valid is not None:
                             engine.last_position = (
-                                int(last_valid[0] / analyzer.scale_ratio),
-                                int(last_valid[1] / analyzer.scale_ratio)
+                                analyzer.geometry.to_analysis_point(
+                                    last_valid
+                                )
                             )
                         engine.restore_state(
                             checkpoint.partial_result.get("_detector_state")
@@ -645,7 +646,10 @@ class AnalysisWorker(QObject):
                                 dot_color = (0, 165, 255)
                             else:
                                 dot_color = (0, 0, 255)
-                            cv2.circle(frame, pos, 8, dot_color, -1)
+                            center = (
+                                int(round(pos[0])), int(round(pos[1]))
+                            )
+                            cv2.circle(frame, center, 8, dot_color, -1)
                         
                         # 3. Draw Zone Text Overlay
                         current_zone = labels[curr_idx] if curr_idx < len(labels) else "outside"

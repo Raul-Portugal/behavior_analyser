@@ -72,7 +72,7 @@ class Analyzer:
         self.current_frame_img = None
         self.last_pos = None
 
-    def process_frames(self) -> Generator[Tuple[int, Optional[Tuple[int, int]], List[str]], None, None]:
+    def process_frames(self) -> Generator[Tuple[int, Optional[Tuple[float, float]], List[str]], None, None]:
         """Yields: (frame_idx, (x,y), [zone_names])"""
         
         # Use new core.video.BufferedVideoReader
@@ -98,9 +98,7 @@ class Analyzer:
                 zones = ['undetected']
                 
                 if raw_pos:
-                    upscaled_x = int(raw_pos[0] * self.scale_ratio)
-                    upscaled_y = int(raw_pos[1] * self.scale_ratio)
-                    final_pos = (upscaled_x, upscaled_y)
+                    final_pos = self.geometry.to_source(raw_pos)
                     zones = self.roi_manager.get_overlapping_zones(final_pos)
                 
                 self.last_pos = final_pos
@@ -122,7 +120,11 @@ class Analyzer:
         
         # Draw Position
         if self.last_pos:
-            cv2.circle(vis, self.last_pos, 8, (0, 0, 255), -1)
+            center = (
+                int(round(self.last_pos[0])),
+                int(round(self.last_pos[1])),
+            )
+            cv2.circle(vis, center, 8, (0, 0, 255), -1)
             
         return vis
 

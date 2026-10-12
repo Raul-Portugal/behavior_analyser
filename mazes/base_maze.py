@@ -13,7 +13,7 @@ class BaseAnalysisResult:
     Container for generic analysis results, shared across maze types.
     This is the base class for all specific maze result dataclasses.
     """
-    positions: List[Optional[Tuple[int, int]]] = field(default_factory=list)
+    positions: List[Optional[Tuple[float, float]]] = field(default_factory=list)
     timestamps: List[float] = field(default_factory=list)
     raw_roi_labels: List[str] = field(default_factory=list)
     roi_labels: List[str] = field(default_factory=list)
