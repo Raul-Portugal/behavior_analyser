@@ -12,6 +12,7 @@ try:
     from core.tst_display import tst_display_style
     from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
     from gui.tst_tuner import EnergyScanner, TstTunerDialog
+    from gui.tuners.tst_tuner import TstTunerWidget
     from mazes.tst import TST
     from roi_manager import ROIManager
     HAS_GUI = True
@@ -39,7 +40,7 @@ class TSTTunerTests(unittest.TestCase):
         tst.configure_mice(2)
         tst.set_parameters(1.7)
 
-        with patch.object(TstTunerDialog, "start_scan"):
+        with patch.object(TstTunerWidget, "start_scan"):
             dialog = TstTunerDialog(
                 Path("not-opened-during-this-test.mp4"),
                 roi_manager,
@@ -82,7 +83,7 @@ class TSTTunerTests(unittest.TestCase):
         )
         tst = TST()
         tst.configure_mice(2)
-        with patch.object(TstTunerDialog, "start_scan"):
+        with patch.object(TstTunerWidget, "start_scan"):
             dialog = TstTunerDialog(Path("not-opened.mp4"), roi_manager, tst)
         try:
             dialog.fps = 10.0
@@ -115,7 +116,7 @@ class TSTTunerTests(unittest.TestCase):
             "mouse_1",
             np.array([[5, 5], [45, 5], [45, 95], [5, 95]]),
         )
-        with patch.object(TstTunerDialog, "start_scan"):
+        with patch.object(TstTunerWidget, "start_scan"):
             return TstTunerDialog(Path("not-opened.mp4"), roi_manager, TST())
 
     def test_zoom_and_reset_before_a_scan_are_no_ops(self):
