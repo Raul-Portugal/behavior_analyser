@@ -303,6 +303,10 @@ class RoiEditorWidget(QWidget):
         """Set the reference line endpoints (source pixels) as one undo step."""
         return self.session.set_line((p1, p2), "Draw reference line")
 
+    def add_line_point(self, x: float, y: float) -> bool:
+        """Place the next reference-line end (continuous source pixels)."""
+        return self.session.add_line_point((x, y))
+
     def line_points(self):
         return self.session.document.line
 

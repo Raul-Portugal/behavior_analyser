@@ -155,7 +155,10 @@ class RoiCanvas(QGraphicsView):
         """Scale so the whole frame is visible; stays fitted on resize."""
         self._fit_mode = True
         rect = self.image_rect()
-        if rect.isEmpty() or self.viewport().width() < 4 or self.viewport().height() < 4:
+        # Before the widget is shown the viewport has no real size; showEvent
+        # fits then, and until that zoom stays at 100%.
+        if (rect.isEmpty() or not self.isVisible()
+                or self.viewport().width() < 4 or self.viewport().height() < 4):
             return
         self.fitInView(rect, Qt.AspectRatioMode.KeepAspectRatio)
         zoom = min(max(self.zoom, MIN_ZOOM), MAX_ZOOM)

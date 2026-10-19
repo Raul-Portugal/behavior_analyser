@@ -550,6 +550,18 @@ class EditSession(QObject):
         self._notify()
         return True
 
+    def add_line_point(self, point: Point) -> bool:
+        """Set the next reference-line end from continuous source coordinates.
+
+        The first call starts the line, the second completes it (one undo
+        step). Used by the compatibility dialog and by tests; no snapping.
+        """
+        if self.line_start is None:
+            self.line_start = (float(point[0]), float(point[1]))
+            self._notify()
+            return True
+        return self.set_line((self.line_start, point), "Draw reference line")
+
     def delete_line(self) -> bool:
         if self.document.line is None:
             return False
@@ -992,7 +1004,8 @@ class EditSession(QObject):
             self._message = ""
             if self.draft:
                 self.close_draft()
-            else:
+            elif self.current is None or self.zone_status(self.current).ok:
+                # The zone is done: move on to the next one that is not.
                 following = self.next_row_needing_attention(self.current)
                 if following is not None:
                     self.activate_zone(following)

@@ -11,11 +11,12 @@ from .rules import (ARENA_RULE, ARENA_STEP_DESCRIPTION, MIN_POLYGON_POINTS,
                     RoiStepState, evaluate_roi_step, roi_rule_for_maze)
 from .session import (TOOL_DRAW, TOOL_EDIT, TOOL_LINE, EditSession, ZoneRow)
 from .widget import RoiEditorWidget
+from .dialog import RoiEditorDialog, read_middle_frame
 
 __all__ = [
     "ARENA_RULE", "ARENA_STEP_DESCRIPTION", "EditSession",
     "MIN_POLYGON_POINTS", "MIN_ROI_AREA_PX", "REFERENCE_LINE_NAME",
-    "RoiDocument", "RoiEditorWidget", "RoiRule", "RoiStepState",
+    "RoiDocument", "RoiEditorDialog", "RoiEditorWidget", "RoiRule", "RoiStepState",
     "SNAP_RADIUS_SCREEN_PX", "Shape", "TOOL_DRAW", "TOOL_EDIT", "TOOL_LINE",
-    "ZoneRow", "evaluate_roi_step", "roi_rule_for_maze",
+    "ZoneRow", "evaluate_roi_step", "read_middle_frame", "roi_rule_for_maze",
 ]
