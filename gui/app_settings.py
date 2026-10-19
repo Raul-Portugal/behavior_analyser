@@ -40,6 +40,8 @@ class AppSettings:
     KEY_PARADIGM = "setup/last_paradigm"
     KEY_RECENT = "recent/files"
     KEY_RECURSIVE = "videos/add_folder_recursive"
+    KEY_WORKERS = "run/parallel_workers"
+    KEY_SAMPLE_SHEET = "run/sample_sheet"
 
     def __init__(self, qsettings: Optional[QSettings] = None):
         self._qs = qsettings if qsettings is not None else self._default_qsettings()
@@ -146,6 +148,30 @@ class AppSettings:
 
     def set_add_folder_recursive(self, enabled: bool) -> None:
         self._qs.setValue(self.KEY_RECURSIVE, "true" if enabled else "false")
+
+    def parallel_workers(self) -> int:
+        """Videos analysed at once; 0 means "Auto" (the default)."""
+        try:
+            return max(0, int(self._qs.value(self.KEY_WORKERS, 0)))
+        except (TypeError, ValueError):
+            return 0
+
+    def set_parallel_workers(self, count: int) -> None:
+        self._qs.setValue(self.KEY_WORKERS, max(0, int(count)))
+
+    def sample_sheet(self) -> Optional[Path]:
+        """The last sample sheet chosen (None if never chosen or deleted)."""
+        raw = self._qs.value(self.KEY_SAMPLE_SHEET, "")
+        if not isinstance(raw, str) or not raw:
+            return None
+        path = Path(raw)
+        return path if path.is_file() else None
+
+    def set_sample_sheet(self, path: Optional[PathLike]) -> None:
+        if path is None or str(path) == "":
+            self._qs.remove(self.KEY_SAMPLE_SHEET)
+        else:
+            self._qs.setValue(self.KEY_SAMPLE_SHEET, str(path))
 
     # ------------------------------------------------------------------
     # Recent templates and plans

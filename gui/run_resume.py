@@ -98,7 +98,7 @@ def _usable_checkpoints(output_dir: Path) -> List[InterruptedVideo]:
         try:
             video = Path(header["video_path"])
             settings_hash = str(header["settings_hash"])
-            if header.get("video_fingerprint") != CheckpointManager._get_video_fingerprint(video):
+            if header.get("video_fingerprint") != CheckpointManager.get_video_fingerprint(video):
                 continue
             last_frame = int(header.get("last_frame_processed", 0))
         except (KeyError, OSError, TypeError, ValueError):
@@ -163,7 +163,7 @@ def scan_for_resumable_runs(output_dir: Path) -> ResumeScan:
             key = match.matched.get(item.video)
             if key is None:
                 continue
-            if hasher._get_settings_hash(plan[key]) == item.settings_hash:
+            if hasher.get_settings_hash(plan[key]) == item.settings_hash:
                 explained.append(item)
         if not explained:
             continue

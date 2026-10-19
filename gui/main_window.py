@@ -6,6 +6,7 @@ Updated to use unified Core modules (VideoHandler, Models).
 import copy
 import html
 import logging
+import os
 import time
 from contextlib import contextmanager
 from pathlib import Path
@@ -14,11 +15,12 @@ from typing import Dict, List, Optional, Tuple
 from PyQt6.QtCore import QObject, QThread, QTimer, QUrl, Qt, pyqtSignal
 from PyQt6.QtWidgets import (QApplication, QCheckBox, QComboBox, QFileDialog,
                              QHBoxLayout, QLabel, QMainWindow, QMessageBox,
-                             QProgressBar, QProgressDialog, QPushButton, QTextEdit, QVBoxLayout,
-                             QWidget, QInputDialog)
+                             QProgressBar, QProgressDialog, QPushButton, QSpinBox,
+                             QTextEdit, QVBoxLayout, QWidget, QInputDialog)
 from PyQt6.QtGui import QAction, QDesktopServices, QKeySequence
 
 # --- CORE IMPORTS ---
+from core.batch_runner import default_worker_count
 from core.batch_plan_keys import (PlanMatch, build_plan_by_key,
                                   match_videos_to_plan)
 from core.calibration import rescale_for_new_reference
@@ -29,7 +31,9 @@ from core.version import APP_NAME, APP_VERSION
 # --- DIALOGS ---
 from gui import ux_helpers
 from gui.app_settings import AppSettings
+from gui.run_options_panel import RunOptionsPanel
 from gui.config_checks import dimension_mismatches, format_dimension_mismatches
+from gui.template_alignment import TemplateAlignment
 from gui.roi_selector import (REFERENCE_LINE_PROMPT, RoiSelectorDialog,
                               offer_reference_line)
 from gui.arm_entry_dialog import ArmEntryParametersDialog
@@ -162,6 +166,10 @@ class MainWindow(QMainWindow):
         # Keyed by plan key (see core.batch_plan_keys); path is the plan file.
         self.batch_plan_cache: Dict[str, BatchSettings] = {}
         self.batch_plan_path: Optional[Path] = None
+
+        # Carries the template's ROIs onto videos whose camera moved or
+        # whose size differs (see gui.template_alignment).
+        self._alignment = TemplateAlignment(self)
         
         # {video: (status, message)} shown as the icon of each list row.
         self._video_status: Dict[Path, Tuple[str, str]] = {}
@@ -317,10 +325,35 @@ class MainWindow(QMainWindow):
         self.cancel_button.setEnabled(False)
         self.preview_button.setEnabled(False)
         
+        self.workers_label = QLabel("Parallel videos:")
+        self.workers_spin = QSpinBox()
+        self.workers_spin.setRange(0, max(1, os.cpu_count() or 1))
+        self.workers_spin.setSpecialValueText("Auto")
+        self.workers_spin.setValue(self.app_settings.parallel_workers())
+        self.workers_spin.setToolTip(
+            "How many videos are analysed at the same time. Auto uses "
+            "min(CPU cores / 4, videos, RAM in GB / 3), at least 1; 1 runs "
+            "the videos one after another. Results are identical either way."
+        )
+        self.workers_spin.valueChanged.connect(
+            self.app_settings.set_parallel_workers
+        )
+
         action_layout.addWidget(self.start_button)
         action_layout.addWidget(self.preview_button)
         action_layout.addWidget(self.cancel_button)
+        action_layout.addWidget(self.workers_label)
+        action_layout.addWidget(self.workers_spin)
         main_layout.addLayout(action_layout)
+
+        # Run-level options (sample sheet, time bins): not part of any
+        # video's settings, so they never change the checkpoint hash.
+        self.run_options = RunOptionsPanel(
+            self.app_settings,
+            videos_provider=lambda: list(self.video_paths),
+            maze_provider=lambda: self.maze,
+        )
+        main_layout.addWidget(self.run_options)
         
         # Progress indicators
         self.progress_bar = QProgressBar()
@@ -454,6 +487,15 @@ class MainWindow(QMainWindow):
         set_output_action.triggered.connect(self.set_output_directory)
         tools_menu.addAction(set_output_action)
         self.set_output_action = set_output_action
+
+        align_action = QAction('&Align template to videos...', self)
+        align_action.setToolTip(
+            "Check that the loaded template's regions fit each video and "
+            "align them when the camera moved or the resolution differs"
+        )
+        align_action.triggered.connect(self._alignment.check_all)
+        tools_menu.addAction(align_action)
+        self.align_template_action = align_action
 
     def _rebuild_recent_menu(self):
         """List the most recently used templates and plans."""
@@ -674,6 +716,9 @@ class MainWindow(QMainWindow):
         self.move_up_button.setEnabled(has_selection and idle)
         self.move_down_button.setEnabled(has_selection and idle)
         self.clear_list_button.setEnabled(has_videos and idle)
+        run_options = getattr(self, "run_options", None)
+        if run_options is not None:
+            run_options.refresh()
         self._sync_actions(running=not idle)
 
     def _sync_actions(self, running: bool):
@@ -706,6 +751,7 @@ class MainWindow(QMainWindow):
             self._infer_maze_from_settings(settings_to_use)
 
         try:
+            self._refresh_center_overlay(settings_to_use)
             preview_dialog = ROIPreviewDialog(first_vid, settings_to_use.roi_manager, self.maze, self)
             preview_dialog.exec()
         except Exception as e:
@@ -1315,7 +1361,8 @@ class MainWindow(QMainWindow):
             if not progress.has(STEP_ROI):
                 self._show_setup_status("Configuration", "Defining regions of interest...")
                 roi_manager = ROIManager()
-                if not progress.zone_free_mode:
+                # Zone-free runs still need the selector for an open-field arena.
+                if not progress.zone_free_mode or self.maze.arena_enabled:
                     with _disposed(RoiSelectorDialog(video, self.maze, self)) as roi_dialog:
                         if not roi_dialog.exec():
                             return self._setup_cancelled(progress)
@@ -1365,6 +1412,8 @@ class MainWindow(QMainWindow):
         base_settings = BatchSettings(
             progress.roi_manager, progress.detection_config, 0.0
         )
+        # The template was drawn on this video: it is its reference view.
+        self._alignment.remember_template_video(ref_video_path, progress.roi_manager)
         # Only the final review is left; keep everything until it is accepted.
         progress.base_settings = base_settings
         self._pending_setup = progress
@@ -1459,6 +1508,9 @@ class MainWindow(QMainWindow):
                 "Verification", f"Video {i + 1} of {len(self.video_paths)}: {video_path.name}"
             )
             try:
+                current_settings = self._alignment.settings_for_review(
+                    video_path, base_settings, current_settings
+                )
                 while True:
                     dialog = SettingsDialog(
                         str(video_path), current_settings.copy(),
@@ -1488,6 +1540,17 @@ class MainWindow(QMainWindow):
                         dialog.deleteLater()
                         logger.info(f"Video '{video_path.name}' skipped")
                         break
+                    elif action == "align":
+                        # Re-align the ORIGINAL template (never a chained
+                        # result); the times and calibration entered so far
+                        # are kept.
+                        carried = dialog.get_settings()
+                        redraw_cm = dialog.get_real_world_cm() or None
+                        dialog.deleteLater()
+                        aligned = self._alignment.align_one(
+                            video_path, base_settings, carried
+                        )
+                        current_settings = aligned if aligned is not None else carried
                     elif action == "redraw":
                         # Keep the times the user already set; the cm length
                         # (not the old scale factor) is what carries over.
@@ -1594,6 +1657,13 @@ class MainWindow(QMainWindow):
         )
         return redrawn
 
+    def _refresh_center_overlay(self, settings: BatchSettings) -> None:
+        """Cache the open-field center outline so previews and the validation
+        video can draw it (no-op for paradigms without an arena)."""
+        update = getattr(self.maze, 'update_roi_overlay', None)
+        if callable(update):
+            update(settings.roi_manager, settings.scale_factor)
+
     def run_worker(self, analysis_plan: Dict[Path, BatchSettings],
                    confirm_start: bool = True):
         first_settings = next(iter(analysis_plan.values()), None)
@@ -1611,12 +1681,18 @@ class MainWindow(QMainWindow):
             return
         if not self._validate_analysis_plan(analysis_plan, confirm_start):
             return
+        proceed, sample_metadata = self.run_options.resolve_for_run(
+            list(analysis_plan)
+        )
+        if not proceed:
+            return
         effective_parameters = self.maze.get_algorithm_parameters()
         for settings in analysis_plan.values():
             settings.paradigm_id = self.maze.name
             settings.algorithm_parameters = copy.deepcopy(
                 effective_parameters
             )
+            self._refresh_center_overlay(settings)
 
         self._run_started = time.monotonic()
         self._worker_eta = None
@@ -1632,7 +1708,10 @@ class MainWindow(QMainWindow):
         self.analysis_thread = QThread()
         try:
             self.analysis_worker = AnalysisWorker(
-                analysis_plan, self.output_dir, self.maze
+                analysis_plan, self.output_dir, self.maze,
+                workers=self._worker_count(len(analysis_plan)),
+                sample_metadata=sample_metadata,
+                bin_seconds=self.run_options.bin_seconds(),
             )
         except Exception as exc:
             self.analysis_thread = None
@@ -1658,6 +1737,13 @@ class MainWindow(QMainWindow):
         self.analysis_thread.finished.connect(self.analysis_thread.deleteLater)
 
         self.analysis_thread.start()
+
+    def _worker_count(self, video_count: int) -> int:
+        """Videos to analyse at once: the spinbox, or the automatic default."""
+        chosen = self.workers_spin.value()
+        if chosen <= 0:
+            return default_worker_count(video_count)
+        return max(1, min(chosen, video_count))
 
     def _run_preflight(
         self,
@@ -1698,11 +1784,23 @@ class MainWindow(QMainWindow):
         user sees one summary (with any warnings) and chooses Start; with
         ``confirm_start`` False the box only appears when there are warnings.
         """
+        # Apply stored alignments and align videos whose size differs from
+        # their ROIs' (in place); declining ends here, as pre-flight would.
+        if not self._alignment.prepare_plan(analysis_plan):
+            return False
         # Video, settings, disk and system checks run once for the batch.
         all_issues, all_warnings = self._run_preflight(analysis_plan)
         expected_parameters = None
 
         for video_path, settings in analysis_plan.items():
+            if (
+                getattr(self.maze, 'arena_enabled', False)
+                and settings.roi_manager.arena is None
+            ):
+                all_issues.append(
+                    f"{video_path.name}: the open-field arena is enabled but "
+                    "no arena was drawn. Redraw the regions for this video."
+                )
             required_categories = [
                 internal_name
                 for internal_name, _ in self.maze.get_roi_definitions()
@@ -2051,6 +2149,8 @@ class MainWindow(QMainWindow):
         self.add_folder_button.setEnabled(not is_running)
         self.clear_list_button.setEnabled(not is_running and bool(self.video_paths))
         self.recursive_check.setEnabled(not is_running)
+        self.workers_spin.setEnabled(not is_running)
+        self.run_options.setEnabled(not is_running)
         has_selection = bool(self.video_list_widget.selectedItems())
         for button in (self.remove_selected_button, self.move_up_button,
                        self.move_down_button):

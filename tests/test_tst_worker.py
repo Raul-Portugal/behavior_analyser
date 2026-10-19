@@ -9,6 +9,7 @@ try:
     from core.models import BatchSettings, DetectionConfig
     from core.video import VideoReadError
     from gui.worker import AnalysisWorker
+    from tests import worker_support as support
     from mazes.tst import TST
     from roi_manager import ROIManager
     from tests import tst_synthetic as synthetic
@@ -33,12 +34,13 @@ class TSTWorkerTests(unittest.TestCase):
             _roi_manager(), DetectionConfig(), 0.0, per_roi_times={}
         )
         with tempfile.TemporaryDirectory() as directory:
-            worker = AnalysisWorker({}, Path(directory), TST())
-            with patch("gui.worker.BufferedVideoReader", return_value=reader):
+            pipeline, _ = support.make_pipeline(
+                Path(directory), TST(), settings
+            )
+            with patch("core.pipeline.BufferedVideoReader", return_value=reader):
                 with self.assertRaises(VideoReadError):
-                    worker._run_tst_analysis(
+                    pipeline._run_tst_analysis(
                         Path("unused.avi"), settings, 0, 100, handler,
-                        Mock(), 0, lambda pct: pct, "unused",
                     )
         reader.release.assert_called_once()
 

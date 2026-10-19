@@ -125,7 +125,7 @@ class WorkerCancellationTests(unittest.TestCase):
                 if len(writes) == 3:
                     worker.stop()
 
-        with patch("gui.worker.SafeVideoWriter", StoppingWriter):
+        with patch("core.pipeline.SafeVideoWriter", StoppingWriter):
             worker.run()
 
         self._assert_cancelled_cleanly(outcomes)
@@ -150,7 +150,7 @@ class WorkerCancellationTests(unittest.TestCase):
                 if len(writes) == 2:
                     worker.stop()
 
-        with patch("gui.worker.SafeVideoWriter", StoppingWriter):
+        with patch("core.pipeline.SafeVideoWriter", StoppingWriter):
             worker.run()
 
         self._assert_cancelled_cleanly(outcomes)
