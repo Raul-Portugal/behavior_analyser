@@ -4,7 +4,7 @@ Thread-safe plotting implementation.
 """
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import List, Tuple, Type
+from typing import List, NamedTuple, Sequence, Tuple, Type
 import logging
 import csv
 
@@ -23,6 +23,44 @@ from core.zone_events import (
 )
 
 logger = logging.getLogger(__name__)
+
+# --- ENTRY SEQUENCE METRICS ---
+
+class AlternationMetrics(NamedTuple):
+    """Spontaneous-alternation counts derived from an arm entry sequence."""
+    possible_alternations: int
+    correct_alternations: int
+    alternation_score: float
+    same_arm_return_count: int
+    same_arm_returns: float
+
+
+def sequence_alternation_metrics(sequence: Sequence[str]) -> AlternationMetrics:
+    """Alternation score and same-arm returns for a sequence of arm letters.
+
+    Shared by the analysis and by criterion validation, so automated and
+    manual entry sequences are scored by exactly the same rule: an
+    alternation is any run of three consecutive entries into three different
+    arms.
+    """
+    sequence = list(sequence)
+    possible = max(0, len(sequence) - 2)
+    correct = sum(
+        len(set(sequence[index:index + 3])) == 3
+        for index in range(possible)
+    )
+    score = correct / possible * 100 if possible else 0.0
+
+    total_transitions = max(0, len(sequence) - 1)
+    same_arm = sum(
+        sequence[index] == sequence[index + 1]
+        for index in range(total_transitions)
+    )
+    same_arm_pct = (
+        same_arm / total_transitions * 100 if total_transitions else 0.0
+    )
+    return AlternationMetrics(possible, correct, score, same_arm, same_arm_pct)
+
 
 # --- HELPER PLOTTING FUNCTIONS ---
 
@@ -178,25 +216,12 @@ class YMaze(Maze):
         result.arm_sequence = "".join(sequence)
         result.total_arm_entries = len(sequence)
 
-        result.possible_alternations = max(0, len(sequence) - 2)
-        result.correct_alternations = sum(
-            len(set(sequence[index:index + 3])) == 3
-            for index in range(result.possible_alternations)
-        )
-        result.alternation_score = (
-            result.correct_alternations / result.possible_alternations * 100
-            if result.possible_alternations else 0.0
-        )
-
-        total_transitions = max(0, len(sequence) - 1)
-        result.same_arm_return_count = sum(
-            sequence[index] == sequence[index + 1]
-            for index in range(total_transitions)
-        )
-        result.same_arm_returns = (
-            result.same_arm_return_count / total_transitions * 100
-            if total_transitions else 0.0
-        )
+        metrics = sequence_alternation_metrics(sequence)
+        result.possible_alternations = metrics.possible_alternations
+        result.correct_alternations = metrics.correct_alternations
+        result.alternation_score = metrics.alternation_score
+        result.same_arm_return_count = metrics.same_arm_return_count
+        result.same_arm_returns = metrics.same_arm_returns
 
     def get_algorithm_parameters(self) -> dict:
         return {
