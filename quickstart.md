@@ -2,6 +2,11 @@
 
 This guide will walk you through a complete analysis workflow, from loading your first video to reviewing the generated heatmaps and data.
 
+**What's new in 3.4:** parallel videos, a headless command line, an open-field
+arena analysis, sample-sheet metadata, time bins and ROI template alignment.
+Results for existing analyses are unchanged compared with 3.3.0. See
+`CHANGELOG.md`.
+
 **What's new in 3.3:** faster analysis (results identical to 3.2.0), remembered
 settings, resume after a restart and keyboard shortcuts. See `CHANGELOG.md`.
 
@@ -31,6 +36,19 @@ A dialog will appear asking you to select the paradigm (e.g., "Y-Maze", "Elevate
 ### Step B2: Paradigm Options
 - **Y-Maze / Elevated Plus Maze:** after the ROIs, set the **Minimum dwell time** (a zone change must last this long to count, which ignores flicker across a zone border) and whether **the arm the animal starts in counts as an entry**.
 - **Freestyle / Open Field:** the setup dialog also holds the immobility parameters: the **Immobility threshold** (cm/s), the **Speed smoothing window** (s), the **Minimum immobility bout** (s) and the **Minimum zone dwell** (s). Immobility is scored from the smoothed speed, and is reported as N/A if the video is not calibrated.
+
+- **Open-field arena (Freestyle):** tick **Open field arena** in the setup
+  dialog to get center/periphery metrics and thigmotaxis. The ROI selector then
+  asks for the **arena boundary** first (the floor outline, drawn like any zone,
+  before the zones and the reference line). Choose how the center is defined:
+  a **distance from the wall in cm** (default 10 cm, needs the reference line)
+  or a **share of the arena area** (default 25%; used automatically when the
+  video is not calibrated). The ROI selector previews an area-share center.
+  The run reports center time, center entries, latency to center, thigmotaxis
+  (% of time and of distance), mean distance to the wall and center versus
+  periphery speed, and writes `*_arena_zones.csv`. Detection is restricted to
+  the arena, and the center outline is drawn in the validation video. Zones are
+  optional in this mode; `arena` is a reserved zone name. See `OUTPUTS.md`.
 
 ### Step C: Tune Detection Parameters
 The Interactive Detection Tuner ensures the software cleanly separates the animal from the background.
@@ -64,6 +82,12 @@ The final review dialog allows you to:
 - A single summary box lists the settings and any pre-flight warnings. Click **Start analysis** to begin. The progress bar shows the estimated time remaining for the batch.
 - *Note: If you need to stop, click **Cancel Analysis** (or press Esc) and confirm. The software will save a checkpoint, and you can resume from the exact same frame later!*
 
+### Parallel videos
+Next to the Start button, **Parallel videos** sets how many videos are analysed
+at the same time. **Auto** (the default) picks `min(CPU cores / 4, videos,
+RAM in GB / 3)`, at least 1; 1 runs the videos one after another. Outputs are
+byte-identical to a sequential run.
+
 ### Animal metadata and time bins (optional)
 Under the Start button, **Sample sheet...** attaches animal information to the
 results and **Time bins** also reports the metrics in consecutive bins of N
@@ -83,6 +107,20 @@ load it: videos with no row, or whose filename matches several rows, are
 listed, and you are asked before starting with blank metadata for them.
 Headless: `python -m core.cli run --plan plan.json --out DIR --sample-sheet
 sheet.csv --bin-seconds 60`.
+
+### Running from the command line
+A saved batch plan (or the `run_plan.json` of an earlier run) can be analysed
+without the GUI, for example on a server:
+
+```bash
+python -m core.cli run --plan plan.json --out results --workers 2
+```
+
+The run folder is created inside `results` and is identical to a GUI run.
+Options: `--workers N` (default Auto), `--sample-sheet`, `--bin-seconds`,
+`--quiet`, and `--videos` (plus `--paradigm`) when you pass a template instead of
+a plan. Exit codes: `0` success, `1` a video failed, `2` bad arguments or
+plan, `130` cancelled.
 
 ### Resume after a restart
 Every run folder contains a `run_plan.json` with the exact settings of the

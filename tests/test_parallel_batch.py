@@ -77,10 +77,25 @@ class ParallelBatchTests(unittest.TestCase):
             for n in "abc"
         ]
 
+    @staticmethod
+    def _is_multiprocessing_helper(process):
+        # multiprocessing starts one long-lived resource tracker per
+        # interpreter on POSIX; it is not a leaked analysis worker.
+        try:
+            return any(
+                "resource_tracker" in part for part in process.cmdline()
+            )
+        except (psutil.Error, OSError):
+            return False
+
     def _assert_no_child_processes(self):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
-            children = psutil.Process().children(recursive=True)
+            children = [
+                child
+                for child in psutil.Process().children(recursive=True)
+                if not self._is_multiprocessing_helper(child)
+            ]
             if not children:
                 return
             time.sleep(0.2)
@@ -175,12 +190,19 @@ class ParallelBatchTests(unittest.TestCase):
         self._assert_no_child_processes()
 
     def test_cancelled_parallel_run_leaves_resumable_checkpoints(self):
-        def stop_once_tracking(worker, _pct, _main, sub):
-            if "Frame " in sub and not worker.is_cancelled:
+        tracking = set()
+
+        def stop_once_all_are_tracking(worker, _pct, main, sub):
+            # Slow runners may not start every child at once; cancel only
+            # after all three videos are mid-tracking so each checkpoints.
+            if "Frame " in sub:
+                tracking.add(main)
+            if len(tracking) >= 3 and not worker.is_cancelled:
                 worker.stop()
 
         worker, outcomes, _, _ = self._run(
-            3, "resume", self._long_videos(), on_progress=stop_once_tracking
+            3, "resume", self._long_videos(),
+            on_progress=stop_once_all_are_tracking,
         )
         self.assertTrue(outcomes[0].cancelled)
         checkpoints = worker.checkpoint_mgr.find_all_checkpoints()
