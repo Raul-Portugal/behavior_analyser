@@ -1,5 +1,77 @@
 # Changelog
 
+## 3.5.0
+
+Criterion validation release. **This release adds tools for criterion
+validation of the automated scores against blinded manual scoring. Analysis
+results are unchanged from 3.4.0**, so 3.4.0 and 3.5.0 results can be pooled.
+The validation tools are additive: they read analysis outputs and manual
+annotation files and never change an analysis output.
+
+> **Scientific caveat:** criterion validation must be performed per lab/setup
+> using the Validation tools and `VALIDATION_PROTOCOL.md` before results are
+> published. Until you have done it for your recordings, always review the
+> validation video and tracking coverage before interpreting results.
+
+### Added
+
+- **Agreement statistics** (`core/agreement_stats.py`, standard library and
+  NumPy only):
+  - Cohen's kappa with a confidence interval and the confusion matrix.
+  - ICC(2,1) and ICC(3,1) with F-based confidence intervals.
+  - Bland-Altman bias and limits of agreement with confidence intervals, plus
+    the proportional-bias slope.
+  - Pearson and Spearman correlation with confidence intervals and p-values.
+  - RMSE, MAE and mean absolute percentage difference.
+  - Published reference values are reproduced in the tests: Shrout & Fleiss
+    (1979) ICC(2,1) 0.29 and ICC(3,1) 0.71, and Bland & Altman (1986) PEFR
+    bias -2.1 with limits of agreement -78 to 74.
+- **Comparison tools** (`core/positional_validation.py`):
+  - Loading of arm-entry annotations, accepting flexible arm names (`A`,
+    `arm_a`, `open`, `closed_arm_2`, ...).
+  - Event matching with a time tolerance, reporting precision, recall and F1.
+  - Sequence edit distance between entry sequences.
+  - Y-maze and elevated plus maze comparisons.
+  - Frame-label kappa for zone and state labels.
+  - Position errors in px and cm.
+  - Loading of the exported `*_tracking_data.csv`.
+- **TST validation.** Loading of the exported `*_tst_motion_evidence.csv`
+  (`core/tst_validation.py`) and immobility-time agreement between the
+  automated evidence and manual frame annotations or stopwatch totals.
+- **Validation menu** in the main window:
+  - **Score a video manually...** is a blind manual scoring dialog with
+    per-paradigm hotkeys (Y-maze, EPM, open field, TST), held-key TST bouts,
+    undo, autosave and resume, and the scorer's initials recorded. It writes
+    `*_manual_arm_entries.csv`, `*_manual_epm_totals.csv`,
+    `*_manual_zone_intervals.csv`, `*_manual_tst_annotations.csv` and a
+    scoring sidecar JSON.
+  - **Tracking spot-check...** shows randomly sampled frames without the
+    tracker's position, asks you to click on the animal and reports the
+    position error. The random seed and the sampled frames are recorded so the
+    sample can be reproduced.
+  - **Build validation report...** writes a self-contained HTML report with
+    pooled agreement tables, Bland-Altman and scatter plots, confusion
+    matrices, acceptance criteria that you can pre-register, marked PASS or
+    FAIL, and the SHA-256 of every input file. Each table is also written as a
+    CSV.
+  - A reusable frame-accurate OpenCV video player widget
+    (`gui/video_player.py`) is used by the scoring and spot-check dialogs.
+- **`VALIDATION_PROTOCOL.md`** describes how to select a validation set, do
+  blinded scoring with two scorers, compute and interpret the statistics, set
+  acceptance criteria, and includes a methods-section template.
+
+### Changed
+
+- The Y-maze alternation and same-arm-return arithmetic moved into one shared
+  function (`sequence_alternation_metrics`), so automated and manual entry
+  sequences are scored by exactly the same rule. The analysis output is
+  identical to 3.4.0.
+
+### Fixed
+
+- The local plot-speed test limit was loosened so it no longer fails on loaded
+  machines (test-only; no change to the application).
+
 ## 3.4.0
 
 Throughput, open-field and metadata release. **Results for existing analyses

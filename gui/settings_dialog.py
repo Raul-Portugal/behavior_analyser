@@ -142,10 +142,18 @@ class SettingsDialog(QDialog):
             time_layout.addLayout(start_hbox)
             time_layout.addLayout(end_hbox)
             
-            self.start_slider.valueChanged.connect(self.on_slider_change)
-            self.end_slider.valueChanged.connect(self.on_slider_change)
-            self.start_spinbox.valueChanged.connect(self.on_spinbox_change)
-            self.end_spinbox.valueChanged.connect(self.on_spinbox_change)
+            self.start_slider.valueChanged.connect(
+                lambda _value: self.on_slider_change(self.start_slider)
+            )
+            self.end_slider.valueChanged.connect(
+                lambda _value: self.on_slider_change(self.end_slider)
+            )
+            self.start_spinbox.valueChanged.connect(
+                lambda _value: self.on_spinbox_change(self.start_spinbox)
+            )
+            self.end_spinbox.valueChanged.connect(
+                lambda _value: self.on_spinbox_change(self.end_spinbox)
+            )
 
         time_group.setLayout(time_layout)
         main_layout.addWidget(time_group)
@@ -284,13 +292,12 @@ class SettingsDialog(QDialog):
             return self.video_info.duration
         return value / SLIDER_STEPS_PER_SECOND
 
-    def on_slider_change(self):
+    def on_slider_change(self, slider):
         """Mirror a moved slider into its own spinbox only.
 
         The other spinbox keeps whatever precise value it holds, so touching
         one control never rewrites (and truncates) the other.
         """
-        slider = self.sender()
         is_start = slider is self.start_slider
         own_spin = self.start_spinbox if is_start else self.end_spinbox
         other_spin = self.end_spinbox if is_start else self.start_spinbox
@@ -301,9 +308,8 @@ class SettingsDialog(QDialog):
         self._set_quietly(slider, self._seconds_to_slider(own_spin.value()))
         self.update_preview(seconds)
 
-    def on_spinbox_change(self):
+    def on_spinbox_change(self, spin):
         """Mirror an edited spinbox into its own slider only."""
-        spin = self.sender()
         is_start = spin is self.start_spinbox
         other_spin = self.end_spinbox if is_start else self.start_spinbox
         value = spin.value()
