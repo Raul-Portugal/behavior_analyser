@@ -38,6 +38,9 @@ class AppSettings:
     KEY_CONFIG_DIR = "folders/last_config"
     KEY_GEOMETRY = "window/geometry"
     KEY_STATE = "window/state"
+    KEY_WS_GEOMETRY = "workspace/geometry"
+    KEY_WS_STATE = "workspace/state"
+    KEY_WS_SPLITTER = "workspace/splitter_sizes"
     KEY_PARADIGM = "setup/last_paradigm"
     KEY_RECENT = "recent/files"
     KEY_RECENT_PROJECTS = "recent/projects"
@@ -132,6 +135,44 @@ class AppSettings:
     def save_window(self, geometry: QByteArray, state: QByteArray) -> None:
         self._qs.setValue(self.KEY_GEOMETRY, geometry)
         self._qs.setValue(self.KEY_STATE, state)
+
+    # ------------------------------------------------------------------
+    # Workspace window (4.0): its own layout, separate from the classic one
+    # ------------------------------------------------------------------
+    def workspace_geometry(self) -> Optional[QByteArray]:
+        value = self._qs.value(self.KEY_WS_GEOMETRY)
+        return value if isinstance(value, QByteArray) and not value.isEmpty() else None
+
+    def workspace_state(self) -> Optional[QByteArray]:
+        value = self._qs.value(self.KEY_WS_STATE)
+        return value if isinstance(value, QByteArray) and not value.isEmpty() else None
+
+    def save_workspace_window(self, geometry: QByteArray, state: QByteArray) -> None:
+        self._qs.setValue(self.KEY_WS_GEOMETRY, geometry)
+        self._qs.setValue(self.KEY_WS_STATE, state)
+
+    def workspace_splitter_sizes(self) -> List[int]:
+        """Widths of the video / center / context panes ([] if never saved)."""
+        raw = self._qs.value(self.KEY_WS_SPLITTER, "")
+        if not isinstance(raw, str) or not raw:
+            return []
+        try:
+            loaded = json.loads(raw)
+        except ValueError:
+            return []
+        if (
+            not isinstance(loaded, list)
+            or not loaded
+            or not all(isinstance(v, int) and not isinstance(v, bool) and v >= 0
+                       for v in loaded)
+        ):
+            return []
+        return loaded
+
+    def set_workspace_splitter_sizes(self, sizes: List[int]) -> None:
+        self._qs.setValue(
+            self.KEY_WS_SPLITTER, json.dumps([int(v) for v in sizes])
+        )
 
     # ------------------------------------------------------------------
     # Setup choices

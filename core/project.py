@@ -752,6 +752,43 @@ class Project:
         self._changed()
         return updated
 
+    def has_configured_videos(self) -> bool:
+        """True if any video (or the template) already has settings."""
+        return self.template_settings is not None or any(
+            video.settings is not None or video._raw_settings is not None
+            for video in self.videos
+        )
+
+    def set_paradigm(self, paradigm: str) -> List[str]:
+        """Choose the project's paradigm.
+
+        Settings are paradigm specific, so *changing* the paradigm of a
+        project that has configured videos clears them: the template, the
+        algorithm parameters and every video's settings, verification and
+        fingerprint (videos go back to ``new``; their run history stays).
+        Choosing the first paradigm, or the one already effective, clears
+        nothing. Returns the keys of the videos that lost their settings.
+        """
+        paradigm = paradigm or ""
+        cleared: List[str] = []
+        current = self.effective_paradigm()
+        if paradigm != current and self.has_configured_videos():
+            self.template_settings = None
+            self.algorithm_parameters = {}
+            for video in self.videos:
+                if video.settings is not None or video._raw_settings is not None:
+                    cleared.append(video.key)
+                video.settings = None
+                video._raw_settings = None
+                video.settings_source = SOURCE_TEMPLATE
+                video.verified = False
+                video.fingerprint = None
+                video.last_status = STATUS_NEW
+        if paradigm != self.paradigm or cleared:
+            self.paradigm = paradigm
+            self._changed()
+        return cleared
+
     def apply_template_to(self, keys: Optional[Iterable[str]] = None) -> List[str]:
         """Reset videos to the template (all videos when ``keys`` is None)."""
         if self.template_settings is None:
