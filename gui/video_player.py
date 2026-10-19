@@ -244,17 +244,21 @@ class VideoPlayerWidget(QWidget):
             Qt.AlignmentFlag.AlignRight | Qt.AlignmentFlag.AlignVCenter)
         self.time_label.setStyleSheet("font-family: Consolas, monospace;")
 
+        scrub = QHBoxLayout()
+        scrub.addWidget(self.slider, 1)
+        scrub.addWidget(self.time_label)
+
         controls = QHBoxLayout()
         for widget in (self.jump_back_button, self.step_back_button,
                        self.play_button, self.step_forward_button,
                        self.jump_forward_button, self.speed_combo):
             controls.addWidget(widget)
-        controls.addWidget(self.slider, 1)
-        controls.addWidget(self.time_label)
+        controls.addStretch(1)
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 0, 0, 0)
         layout.addWidget(self.view, 1)
+        layout.addLayout(scrub)
         layout.addLayout(controls)
 
     def _set_controls_enabled(self, enabled: bool) -> None:
