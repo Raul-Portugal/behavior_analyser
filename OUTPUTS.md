@@ -21,7 +21,7 @@ separate runs or videos being mixed.
 
 ## Manifest (`manifest.json`, schema 3)
 
-`schema_version` is `3` (3.4.0). Top-level keys: `application`, `paradigm`,
+`schema_version` is `3` (3.4.0; unchanged in 3.5.0). Top-level keys: `application`, `paradigm`,
 `started_at`, `finished_at`, `cancelled`, `requested_videos`,
 `completed_videos`, `sample_sheet` (path of the sample sheet, or `null`),
 `time_bin_seconds` (bin length, or `null` when bins are off), `videos`,
@@ -355,6 +355,57 @@ Notes:
   outside it are in no bin. Bins are still counted from the analysis start,
   so a window that starts later leaves the first bins partly or fully empty.
   `uncertain_s` is time with no scorable state, as in the summary.
+
+## Validation outputs (3.5)
+
+The **Validation** menu writes its own files. They are never part of an
+analysis run folder and never change an analysis output. See
+`VALIDATION_PROTOCOL.md` for the workflow. `<video>` is the video's file name
+without its extension; the files go to the folder chosen in the dialog (by
+default the video's folder).
+
+### Manual scoring (Validation > Score a video manually...)
+
+| File | Written for | Content |
+| --- | --- | --- |
+| `<video>_manual_arm_entries.csv` | Y-maze, EPM | `entry_number,arm,timestamp_s`, the columns of `<base>_arm_entries.csv`. Arms are `arm_a`, `arm_b`, `arm_c` (Y-maze) or `open_arm_1`, `open_arm_2`, `closed_arm_1`, `closed_arm_2` (EPM). Center markers are not entries and are not listed. `timestamp_s` is `frame / fps` |
+| `<video>_manual_epm_totals.csv` | EPM | `metric,value` totals derived from the scored arm and center marks (time in open arms, closed arms and center, percent time in open arms) |
+| `<video>_manual_zone_intervals.csv` | Open field | `interval_number,zone,start_frame,end_frame,start_s,end_s,duration_s`. `zone` is `center` or `periphery`. The intervals tile the scoring window; frames are inclusive, `start_s = start_frame / fps` and `end_s = (end_frame + 1) / fps` |
+| `<video>_manual_tst_annotations.csv` | TST | `mouse_name,frame,state` with one row per labelled frame; states are `immobile_static`, `passive_swing`, `active_escape` and `uncertain` (same format as `TST_VALIDATION.md`) |
+| `<video>_manual_scoring_<paradigm>_<initials>.json` | All | The scoring sidecar, autosaved while scoring and used to resume an interrupted session (accepted only for the same paradigm, video and initials). Keys: `schema_version`, `application`, `app_version`, `paradigm`, `video_name`, `fps`, `total_frames`, `scorer_initials`, `date_started`, `date_saved`, `date`, `blind` (always `true`), `roi_file`, `window`, `initial_zone`, `events`, `mice`, `fill_unmarked`, `bouts`, `saved_files`, `csv_up_to_date`. `paradigm` is `y_maze`, `epm`, `open_field` or `tst`; the initials are `ANON` when none were entered |
+
+### Tracking spot-check (Validation > Tracking spot-check...)
+
+| File | Content |
+| --- | --- |
+| `<base>_position_spotcheck.csv` | One row per reviewed frame: `sample_number, frame, timestamp_s, visible, manual_x, manual_y, auto_x, auto_y, error_px, error_cm, outcome, scale_factor`. Positions are source pixels; `error_cm` is blank when the video is not calibrated. `outcome` is `matched`, `missed` (animal visible, tracker found nothing), `false_detection` (animal not visible, tracker reported a position), `correct_absent` or `unreadable` (frame could not be decoded; not counted) |
+| `<base>_position_spotcheck_summary.json` | Provenance (`application`, `app_version`, `date`, `scorer_initials`, `video`, `tracking_csv`, `summary_json`, `blind`) and `results`: `seed`, `requested_samples`, `sampled_frames`, `reviewed`, `unreadable`, `visible`, `not_visible`, `matched`, `missed`, `miss_rate`, `false_detections`, mean, median and 95th percentile error in px and cm, `scale_factor` and `calibrated`. The seed and the sampled frames reproduce the sample |
+
+`<base>` is the `<base>` of the run's `<base>_tracking_data.csv`.
+
+### Validation report (Validation > Build validation report...)
+
+The report folder (default `validation_report_YYYYMMDD_HHMMSS`, next to the
+first input) holds:
+
+- `validation_report.html`: one self-contained file (styles and plots
+  embedded, nothing loaded from the network) with the per-video tables, pooled
+  agreement, event precision and recall, Bland-Altman and scatter plots,
+  confusion matrices, the position spot-check, the acceptance criteria and the
+  application version, date and input files.
+- `validation_report_<table>.csv`: every table of the report, one file each:
+  `inputs`, `y_maze_per_video`, `epm_per_video`, `open_field_per_video`,
+  `tst_per_mouse`, `pooled_agreement`, `pooled_events`, `frame_agreement`,
+  `<name>_confusion` (`open_field_zones_confusion`, `tst_states_confusion`),
+  `position_spotcheck_per_video`, `position_spotcheck_pooled`,
+  `acceptance_criteria` and `input_files`. Only the tables that have data are
+  written.
+
+`acceptance_criteria` lists each criterion (`criterion, key, comparison,
+threshold, value, result`) with `result` `pass`, `fail` or `not evaluable`.
+`input_files` lists every input (`role, video, path, size_bytes, sha256`), so
+the report can be tied to the exact files it was computed from. Differences are
+automated minus manual.
 
 ## Batch plans
 
