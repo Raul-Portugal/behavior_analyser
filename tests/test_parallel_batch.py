@@ -70,10 +70,12 @@ class ParallelBatchTests(unittest.TestCase):
             worker.run()
         return worker, outcomes, statuses, logs
 
-    def _long_videos(self):
+    def _long_videos(self, frames=2500):
         """Videos long enough that a cancel always lands mid-tracking."""
         return [
-            support.write_tracking_video(self.video_dir, 2500, f"long_{n}.avi")
+            support.write_tracking_video(
+                self.video_dir, frames, f"long_{n}.avi"
+            )
             for n in "abc"
         ]
 
@@ -200,13 +202,19 @@ class ParallelBatchTests(unittest.TestCase):
             if len(tracking) >= 3 and not worker.is_cancelled:
                 worker.stop()
 
-        worker, outcomes, _, _ = self._run(
-            3, "resume", self._long_videos(),
+        worker, outcomes, statuses, _ = self._run(
+            3, "resume", self._long_videos(frames=10000),
             on_progress=stop_once_all_are_tracking,
         )
         self.assertTrue(outcomes[0].cancelled)
+        # On a slow runner a child can finish tracking before the last one
+        # starts; a finished video correctly leaves no checkpoint. Every
+        # video that was still being analysed must leave one.
+        finished = {name for name, state, _ in statuses if state == "done"}
+        interrupted = 3 - len(finished)
+        self.assertGreaterEqual(interrupted, 1)
         checkpoints = worker.checkpoint_mgr.find_all_checkpoints()
-        self.assertEqual(len(checkpoints), 3)
+        self.assertEqual(len(checkpoints), interrupted)
 
 
 @unittest.skipUnless(HAS_RUNTIME, "GUI/scientific runtime is not installed")
