@@ -6,6 +6,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import List, Tuple, Type
 
+from mazes.arm_entry import ArmEntrySetupMixin
 from mazes.base_maze import BaseAnalysisResult, Maze
 from core.zone_events import (
     debounce_zone_labels,
@@ -43,8 +44,9 @@ class EPMAnalysisResult(BaseAnalysisResult):
     arm_entries: List[Tuple[str, float]] = field(default_factory=list)
 
 
-class EPM(Maze):
+class EPM(ArmEntrySetupMixin, Maze):
     name = "Elevated Plus Maze"
+    LEGACY_ROI_SIGNATURE = ("open_arm_1", "closed_arm_1")
 
     def __init__(self):
         self.min_dwell_seconds = 0.10

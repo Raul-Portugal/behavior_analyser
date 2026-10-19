@@ -47,11 +47,11 @@ ARENA_RULE = RoiRule(1, 1)
 
 
 def roi_rule_for_maze(maze) -> RoiRule:
-    """TST mice hold exactly one polygon each; every other category 1 or more."""
-    from mazes.tst import TST
-    if isinstance(maze, TST):
-        return RoiRule(1, 1)
-    return RoiRule(1, None)
+    """TST mice hold exactly one polygon each; every other category 1 or more.
+
+    The limit comes from the maze (``Maze.max_polygons_per_roi``).
+    """
+    return RoiRule(1, getattr(maze, 'max_polygons_per_roi', None))
 
 
 def evaluate_roi_step(rule: RoiRule, finished: int, pending_points: int,

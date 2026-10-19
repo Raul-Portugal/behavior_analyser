@@ -11,7 +11,10 @@ import numpy as np
 from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 
-from mazes.base_maze import BaseAnalysisResult, Maze
+from mazes.base_maze import (
+    ANALYSIS_MOTION, KIND_TST, STEP_PARADIGM_PARAMS, STEP_REVIEW, STEP_ROIS,
+    STEP_TIME_WINDOW, STEP_TST_TUNING, BaseAnalysisResult, Maze,
+)
 from core.plot_utils import decimate_min_max, run_spans
 from core.tst_events import smooth_tst_immobility_states
 from core.tst_motion_engine import TSTMotionConfig, TSTMotionEngine
@@ -134,9 +137,93 @@ class TST(Maze):
         self.num_mice = count
         self._custom_rois = [(f"mouse_{i+1}", f"Mouse {i+1}") for i in range(count)]
 
-    def needs_reference_line(self) -> bool:
+    # --- Setup hooks -------------------------------------------------
+    MAX_MICE = 6
+
+    @property
+    def analysis_kind(self) -> str:
+        return ANALYSIS_MOTION
+
+    @property
+    def wizard_kind(self) -> str:
+        return KIND_TST
+
+    @property
+    def has_per_roi_times(self) -> bool:
+        return True
+
+    @property
+    def reports_distance(self) -> bool:
         """TST reports no distances, so calibration is never offered."""
         return False
+
+    @property
+    def max_polygons_per_roi(self) -> Optional[int]:
+        return 1
+
+    def setup_steps(self) -> List[str]:
+        return [
+            STEP_PARADIGM_PARAMS, STEP_ROIS, STEP_TST_TUNING,
+            STEP_TIME_WINDOW, STEP_REVIEW,
+        ]
+
+    def time_window_subjects(self, roi_manager) -> List[str]:
+        return sorted(k for k in roi_manager.rois if k != 'outside')
+
+    def validate_parameters(self) -> List[str]:
+        issues = []
+        if not 1 <= self.num_mice <= self.MAX_MICE:
+            issues.append(
+                f"Mouse count must be between 1 and {self.MAX_MICE}"
+            )
+        if self.min_time_seconds < 0:
+            issues.append("Minimum bout length cannot be negative")
+        if self.max_motion_gap_seconds < 0:
+            issues.append("Maximum gap cannot be negative")
+        return issues
+
+    def validate_rois(self, roi_manager) -> List[str]:
+        if roi_manager is None:
+            return ["No ROIs defined"]
+        required = [name for name, _ in self.get_roi_definitions()]
+        issues: List[str] = []
+        if required:
+            _, roi_issues = roi_manager.validate_rois(required)
+            issues.extend(roi_issues)
+        extra = set(roi_manager.rois) - set(required)
+        if extra:
+            issues.append(
+                f"unexpected TST ROI categories: {', '.join(sorted(extra))}"
+            )
+        for category in required:
+            count = len(roi_manager.rois.get(category, []))
+            if count != 1:
+                issues.append(f"{category} must contain exactly one ROI, found {count}")
+        return issues
+
+    def validate_time_windows(self, settings) -> List[str]:
+        required = {name for name, _ in self.get_roi_definitions()}
+        unknown = set(settings.per_roi_times) - required
+        if unknown:
+            return [
+                "time ranges reference unknown mice: "
+                f"{', '.join(sorted(unknown))}"
+            ]
+        return []
+
+    @classmethod
+    def matches_roi_names(cls, roi_names) -> bool:
+        return any(str(name).startswith('mouse_') for name in roi_names)
+
+    def infer_from_settings(self, settings) -> None:
+        super().infer_from_settings(settings)
+        rois = settings.roi_manager.rois
+        if settings.paradigm_id == self.name:
+            count = sum(1 for key in rois if key != 'outside')
+        else:
+            # Legacy configs without a paradigm id: infer from ROI names.
+            count = sum(1 for key in rois if str(key).startswith('mouse_'))
+        self.configure_mice(count)
 
     def get_roi_definitions(self) -> List[Tuple[str, str]]:
         if not self._custom_rois: return [("mouse_1", "Mouse 1")]
