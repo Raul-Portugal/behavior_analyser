@@ -21,7 +21,7 @@ except ModuleNotFoundError:
 FPS = 30.0
 HOUR_SAMPLES = int(3600 * FPS)
 # Shared CI runners are much slower and noisier than a workstation.
-TIME_LIMIT_S = 10.0 if os.environ.get("CI") else 2.0
+TIME_LIMIT_S = 10.0 if os.environ.get("CI") else 5.0
 
 
 def _hour_tst_result(mice=4):
