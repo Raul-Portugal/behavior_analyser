@@ -1,5 +1,9 @@
 """
 Main entry point for the Behavioral Analysis Suite GUI application.
+
+``gui_main.py [project.bmaproj]`` opens the 4.0 workspace window (and the
+project given on the command line); ``--classic`` opens the classic wizard
+window instead; ``--startup-check`` builds and closes both and exits.
 """
 import logging
 import multiprocessing
@@ -14,6 +18,7 @@ sys.path.insert(0, str(project_root))
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
 from gui.main_window import MainWindow
+from gui.workspace.window import WorkspaceWindow
 
 logger = logging.getLogger(__name__)
 
@@ -65,22 +70,41 @@ def main(arguments=None):
         )
         return run_parallel_selftest(report)
     startup_check = "--startup-check" in arguments
-    qt_arguments = [
-        argument for argument in arguments
-        if argument != "--startup-check"
-    ]
+    classic = "--classic" in arguments
+    flags = {"--startup-check", "--classic"}
+    qt_arguments = [argument for argument in arguments if argument not in flags]
+    project_argument = _path_argument(qt_arguments[1:])
     sys.excepthook = _handle_uncaught_exception
     # Root-logger level is application configuration, so it lives here rather
     # than as a side effect of constructing the window.
     logging.getLogger().setLevel(logging.INFO)
     app = QApplication(qt_arguments)
-    main_win = MainWindow()
     if startup_check:
-        main_win.close()
-        app.processEvents()
+        # Both interfaces must construct and close cleanly in a packaged build.
+        for window_class in (WorkspaceWindow, MainWindow):
+            window = window_class()
+            window.close()
+            app.processEvents()
         return 0
-    main_win.show()
+    if classic:
+        main_win = MainWindow()
+        main_win.show()
+        return app.exec()
+    workspace = WorkspaceWindow()
+    workspace.show()
+    workspace.schedule_start(project_argument)
     return app.exec()
+
+
+def _path_argument(arguments):
+    """The first command-line argument that names an existing file."""
+    for argument in arguments:
+        if argument.startswith("-"):
+            continue
+        candidate = Path(argument)
+        if candidate.is_file():
+            return candidate
+    return None
 
 
 if __name__ == '__main__':

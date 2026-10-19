@@ -275,7 +275,9 @@ For a reproducible release build, use `requirements-lock.txt`.
 **4. Run the application:**
 
 ```bash
-python gui_main.py
+python gui_main.py                 # the workspace window
+python gui_main.py study.bmaproj   # ... opening a project
+python gui_main.py --classic       # the classic wizard window
 ```
 
 ---
@@ -307,8 +309,8 @@ python gui_main.py --startup-check
 The tests need the PyQt6 runtime. On a machine without a display, set
 `QT_QPA_PLATFORM=offscreen` first. The full suite takes about a minute and a
 half. `ruff` is configured in `pyproject.toml` (`pip install ruff`), and
-`--startup-check` verifies that the application imports and starts, then exits
-with status 0.
+`--startup-check` verifies that the application imports and starts (both the
+workspace and the classic window), then exits with status 0.
 
 ROI templates are tied to the source video dimensions on which they were
 drawn. The preflight check blocks reuse on videos with incompatible
