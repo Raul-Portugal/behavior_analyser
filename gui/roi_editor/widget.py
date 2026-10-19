@@ -151,6 +151,10 @@ class RoiEditorWidget(QWidget):
         for button in (self.fit_button, self.actual_button):
             toolbar.addWidget(button)
         toolbar.addStretch(1)
+        self.help_button = self._tool_button(
+            "?", "Keyboard and mouse shortcuts (? or F1)", self.toggle_help
+        )
+        toolbar.addWidget(self.help_button)
         root.addLayout(toolbar)
 
         # -- zone panel + canvas ----------------------------------------
@@ -328,10 +332,23 @@ class RoiEditorWidget(QWidget):
     # ------------------------------------------------------------------
     # Keys
     # ------------------------------------------------------------------
+    def toggle_help(self) -> None:
+        """Show or hide the shortcut overlay."""
+        self.canvas.set_help_visible(not self.canvas.help_visible())
+
+    def help_visible(self) -> bool:
+        return self.canvas.help_visible()
+
     def handle_key_event(self, event) -> bool:
         """Editor shortcuts; True when the key was used."""
         key = event.key()
         modifiers = event.modifiers()
+        if key in (Qt.Key.Key_Question, Qt.Key.Key_F1):
+            self.toggle_help()
+            return True
+        if key == Qt.Key.Key_Escape and self.canvas.help_visible():
+            self.canvas.set_help_visible(False)
+            return True
         if self.session.key_press(key, modifiers):
             return True
         ctrl = bool(modifiers & Qt.KeyboardModifier.ControlModifier)

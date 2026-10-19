@@ -53,8 +53,14 @@ class _EditorCase(unittest.TestCase):
         widget.show()
         widget.set_zoom(zoom)
         self.app.processEvents()
-        self.addCleanup(widget.deleteLater)
+        self.addCleanup(self._dispose, widget)
         return widget
+
+    @staticmethod
+    def _dispose(widget):
+        # Hidden at once: a lingering window would steal later mouse events.
+        widget.hide()
+        widget.deleteLater()
 
     # -- real mouse events, in source pixels ---------------------------
     def vp(self, widget, x, y):

@@ -18,6 +18,7 @@ from PyQt6.QtWidgets import (QGraphicsEllipseItem, QGraphicsItem,
                              QGraphicsRectItem, QGraphicsScene,
                              QGraphicsSimpleTextItem, QGraphicsView)
 
+from .help import HelpOverlay
 from .rules import polygon_centroid
 from .session import TOOL_DRAW, TOOL_EDIT, TOOL_LINE, EditSession
 
@@ -87,6 +88,7 @@ class RoiCanvas(QGraphicsView):
         # Called with a key event the canvas did not use; True if consumed.
         self.key_handler: Optional[Callable] = None
 
+        self.help_overlay = HelpOverlay(self.viewport())
         session.changed.connect(self.refresh)
         session.state_changed.connect(self.refresh)
         self._apply_zoom_state()
@@ -168,8 +170,20 @@ class RoiCanvas(QGraphicsView):
 
     def resizeEvent(self, event):
         super().resizeEvent(event)
+        self.help_overlay.place(self.viewport().rect())
         if self._fit_mode:
             self.fit_to_view()
+
+    def set_help_visible(self, visible: bool) -> None:
+        if visible:
+            self.help_overlay.place(self.viewport().rect())
+            self.help_overlay.show()
+            self.help_overlay.raise_()
+        else:
+            self.help_overlay.hide()
+
+    def help_visible(self) -> bool:
+        return self.help_overlay.isVisible()
 
     def showEvent(self, event):
         super().showEvent(event)
