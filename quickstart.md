@@ -31,25 +31,66 @@ Click the **"Configure & Start Analysis"** button.
 ### Step A: Select Maze Type
 A dialog will appear asking you to select the paradigm (e.g., "Y-Maze", "Elevated Plus Maze", "Tail Suspension Test", or "Freestyle / Open Field"). Select the appropriate option.
 
-### Step B: Draw Regions of Interest (ROIs)
-1. You will see a frame from the middle of your video.
-2. Follow the prompt at the top left to draw the current zone (e.g., "Arm A").
-3. **Left-click** to drop points and draw a polygon around the arm.
-4. **Right-click** to close and finish the shape.
-5. Click **"Next Zone"** and repeat until all zones are drawn.
-6. *Calibration:* You will be asked to draw a reference line. Draw a line along an object of known length in the real world (e.g., a 30cm maze arm). This allows the software to output distances in centimeters instead of pixels. **Always draw a reference line when you want cm**: the software no longer estimates a scale from the ROI bounding box. The TST does not use calibration and skips this prompt.
+### Step B: Draw and Edit Regions of Interest (ROIs)
+The **ROI editor** opens on a frame from the middle of your video. The **Zones**
+list on the left has one row per zone (the arena first, if it is switched on),
+and a **Reference line** row at the bottom. Each row shows whether the zone is
+done (✓), missing (○) or breaks a rule (✗, for example a TST mouse with two
+polygons, or a polygon smaller than 100 px²). Click any row at any time to draw
+or edit that zone: there is no fixed order.
+
+**Drawing a zone** (the *Draw* tool, key `D`)
+1. Pick the zone in the list (the editor starts on the first missing one).
+2. **Click** to drop points around the arm.
+3. Press **Enter**, **double-click** or **right-click** to close the polygon.
+   **Esc** cancels the shape in progress; **Backspace** removes its last point.
+   A zone that takes exactly one polygon (arena, TST mouse) moves you on to the
+   next missing zone by itself.
+4. New points **snap to existing vertices** within 6 screen pixels, so
+   neighbouring zones (for example the Y-maze arms and the center) can share an
+   exact border. Hold **Alt** to place a point without snapping.
+
+**Editing** (the *Edit* tool, key `E`): nothing has to be redrawn from scratch.
+- Drag a **vertex** to move it, or drag a **polygon** to move all of it.
+- **Double-click an edge** to insert a vertex. Press **Delete** or
+  **right-click** to remove the selected vertex or polygon (a polygon keeps at
+  least three vertices).
+- With a polygon selected, the blue handle above it **rotates** and the orange
+  handle at its corner **scales** it. The arrow keys nudge the selection by one
+  pixel (Shift: ten).
+- **Ctrl+Z** undoes and **Ctrl+Shift+Z** (or **Ctrl+Y**) redoes every edit, not
+  just the last point. **Clear zone** removes all polygons of the selected zone
+  in one undoable step.
+
+**Zoom and pan:** **Ctrl+wheel** zooms at the cursor, **Fit** (or `F`) shows the
+whole frame, `1` shows actual size, and a **middle-button drag** or
+**Space+drag** pans. The status bar shows the cursor position in source pixels
+and the zoom. Press **?** for the list of shortcuts.
+
+**Calibration** (the *Line* tool, key `L`, or the Reference line row): draw a
+line along an object of known length in the real world (e.g., a 30cm maze arm):
+click two points or drag, then drag an end to adjust it; its length in pixels is
+shown on the line. This allows the software to output distances in centimeters
+instead of pixels. **Always draw a reference line when you want cm**: the
+software no longer estimates a scale from the ROI bounding box. When you press
+**OK** without a line you are asked once whether to draw one. The TST does not
+use calibration and skips this prompt.
+
+**Finish** with **OK** once every zone is done (a pending shape of three or more
+points is closed for you); the editor lists the zones that still need work.
+**Cancel** asks before it throws away changes.
 
 ### Step B2: Paradigm Options
 - **Y-Maze / Elevated Plus Maze:** after the ROIs, set the **Minimum dwell time** (a zone change must last this long to count, which ignores flicker across a zone border) and whether **the arm the animal starts in counts as an entry**.
 - **Freestyle / Open Field:** the setup dialog also holds the immobility parameters: the **Immobility threshold** (cm/s), the **Speed smoothing window** (s), the **Minimum immobility bout** (s) and the **Minimum zone dwell** (s). Immobility is scored from the smoothed speed, and is reported as N/A if the video is not calibrated.
 
 - **Open-field arena (Freestyle):** tick **Open field arena** in the setup
-  dialog to get center/periphery metrics and thigmotaxis. The ROI selector then
-  asks for the **arena boundary** first (the floor outline, drawn like any zone,
+  dialog to get center/periphery metrics and thigmotaxis. The ROI editor then
+  lists the **arena boundary** first (the floor outline, drawn like any zone,
   before the zones and the reference line). Choose how the center is defined:
   a **distance from the wall in cm** (default 10 cm, needs the reference line)
   or a **share of the arena area** (default 25%; used automatically when the
-  video is not calibrated). The ROI selector previews an area-share center.
+  video is not calibrated). The ROI editor previews an area-share center.
   The run reports center time, center entries, latency to center, thigmotaxis
   (% of time and of distance), mean distance to the wall and center versus
   periphery speed, and writes `*_arena_zones.csv`. Detection is restricted to
@@ -83,7 +124,7 @@ The final review dialog allows you to:
 
 ## 4. Run the Batch Analysis
 - If you have multiple videos loaded, the software will ask if you want to **Review each video** or **Run all now**.
-  - **Review each video:** Allows you to adjust start/end times or redraw ROIs slightly if the camera moved between recordings.
+  - **Review each video:** Allows you to adjust start/end times or **Redraw ROIs** if the camera moved between recordings: the ROI editor opens with the current ROIs, arena and reference line already loaded, so you only move what changed.
   - **Run all now:** Applies the exact same ROIs and settings to every video in the list.
 - A single summary box lists the settings and any pre-flight warnings. Click **Start analysis** to begin. The progress bar shows the estimated time remaining for the batch.
 - *Note: If you need to stop, click **Cancel Analysis** (or press Esc) and confirm. The software will save a checkpoint, and you can resume from the exact same frame later!*
@@ -246,8 +287,21 @@ blinded manual scoring, without leaving the application. See
 | Main window | Esc | Cancel the running analysis (asks for confirmation) |
 | Video list | Del or Backspace | Remove the selected videos |
 | Video list | Alt+Up, Alt+Down | Move the selected videos up or down |
-| ROI selector | Enter | Next |
-| ROI selector | Backspace or Ctrl+Z | Undo the last point (reopens a closed shape) |
+| ROI editor | Click | Add a point to the polygon being drawn (snaps to nearby vertices) |
+| ROI editor | Enter, double-click, right-click | Close the polygon; with none open, go to the next zone to do |
+| ROI editor | Esc | Cancel the polygon in progress (Esc again closes the editor, asking first) |
+| ROI editor | Backspace | Remove the last point |
+| ROI editor | Ctrl+Z | Undo any edit (pending points first) |
+| ROI editor | Ctrl+Shift+Z, Ctrl+Y | Redo |
+| ROI editor | D, E, L | Draw, Edit and reference-Line tools |
+| ROI editor | Delete, right-click | Delete the selected vertex or polygon (the line, in the Line tool) |
+| ROI editor | Double-click an edge | Insert a vertex |
+| ROI editor | Arrow keys (Shift: x10) | Nudge the selected vertex or polygon by 1 px |
+| ROI editor | Alt (held) | Place or drag a point without snapping |
+| ROI editor | Ctrl+wheel | Zoom at the cursor |
+| ROI editor | Middle-drag, Space+drag | Pan |
+| ROI editor | F or Ctrl+0, 1 or Ctrl+1 | Fit the frame, actual size (100%) |
+| ROI editor | ? or F1 | Show or hide the shortcut help |
 | TST tuner | Space | Play or pause |
 | TST tuner | Left, Right | Step one frame |
 | TST tuner | Ctrl+Left, Ctrl+Right | Step ten frames |

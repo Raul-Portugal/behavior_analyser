@@ -7,7 +7,7 @@ from unittest.mock import patch
 import numpy as np
 
 try:
-    from PyQt6.QtCore import QPointF, Qt
+    from PyQt6.QtCore import Qt
     from PyQt6.QtTest import QTest
     from PyQt6.QtWidgets import QApplication, QMessageBox
     from core.models import AppConfig, BatchSettings
@@ -107,88 +107,101 @@ class RoiSelectorEnforcementTests(unittest.TestCase):
 
     @staticmethod
     def _points(dialog, *coords):
-        dialog.current_polygon_points = [QPointF(x, y) for x, y in coords]
-        dialog._refresh_step_state()
+        for x, y in coords:
+            dialog.editor.add_point(x, y)
 
-    def test_next_is_disabled_until_a_tst_mouse_has_its_polygon(self):
+    def _finish(self, dialog):
+        """Press OK; returns the warning boxes that were shown."""
+        with patch.object(QMessageBox, "warning") as warning:
+            dialog.accept()
+        return warning
+
+    def test_ok_is_refused_until_a_tst_mouse_has_its_polygon(self):
         dialog = self._dialog(self._tst())
-        self.assertFalse(dialog.next_button.isEnabled())
-        self.assertIn("exactly 1 polygon", dialog.hint_label.text())
+        self.assertFalse(dialog.editor.is_valid())
+        self.assertIn("exactly 1 polygon", dialog.editor.hint_label.text())
+        self.assertIn("Mouse 1", dialog.editor.hint_label.text())
+        self.assertTrue(self._finish(dialog).called)       # nothing drawn
+        self.assertEqual(dialog.result(), 0)
 
         self._points(dialog, (10, 10), (60, 10))
-        self.assertFalse(dialog.next_button.isEnabled())
-        self._points(dialog, (10, 10), (60, 10), (60, 60))
-        self.assertTrue(dialog.next_button.isEnabled())
+        self.assertIn("Add 1 more point", dialog.editor.hint_label.text())
+        self.assertTrue(self._finish(dialog).called)       # unfinished shape
+        self.assertEqual(dialog.result(), 0)
+
+        self._points(dialog, (60, 60))
+        self.assertTrue(dialog.editor.pending_points())
+        self.assertFalse(self._finish(dialog).called)      # closed by OK
+        self.assertEqual(dialog.result(), dialog.DialogCode.Accepted)
+        self.assertEqual(len(dialog.get_roi_manager().rois["mouse_1"]), 1)
 
     def test_a_second_polygon_for_one_mouse_is_refused(self):
         dialog = self._dialog(self._tst(2))
         self._points(dialog, (10, 10), (60, 10), (60, 60))
-        self.assertTrue(dialog.finalize_polygon())
-        self.assertEqual(dialog._finished_count(), 1)
+        self.assertTrue(dialog.editor.close_shape())
+        dialog.editor.set_current_zone("mouse_1")
+        self.assertEqual(dialog.editor.zone_status("mouse_1").count, 1)
 
-        class _Click:
-            def button(self):
-                return Qt.MouseButton.LeftButton
+        dialog.editor.set_tool("draw")
+        self.assertFalse(dialog.editor.add_point(5, 5))
+        self.assertEqual(dialog.editor.pending_points(), [])
+        self.assertIn("undo", dialog.editor.hint_label.text())
 
-            def pos(self):
-                from PyQt6.QtCore import QPoint
-                return QPoint(5, 5)
-
-        dialog.add_point(_Click())
-        self.assertEqual(dialog.current_polygon_points, [])
-        self.assertIn("undo", dialog.hint_label.text())
-
-    def test_undo_reopens_a_closed_polygon_so_it_can_be_redrawn(self):
+    def test_undo_removes_a_closed_polygon_so_it_can_be_redrawn(self):
         dialog = self._dialog(self._tst())
         self._points(dialog, (10, 10), (60, 10), (60, 60))
-        dialog.finalize_polygon()
-        self.assertTrue(dialog.next_button.isEnabled())
+        dialog.editor.close_shape()
+        self.assertTrue(dialog.editor.is_valid())
 
-        dialog.undo_point()
-        self.assertEqual(dialog._finished_count(), 0)
+        dialog.editor.undo()
+        self.assertEqual(dialog.editor.zone_status("mouse_1").count, 0)
         self.assertNotIn("mouse_1", dialog.roi_manager.rois)
-        self.assertFalse(dialog.next_button.isEnabled())
+        self.assertFalse(dialog.editor.is_valid())
 
-    def test_advancing_moves_to_the_next_mouse_and_blocks_again(self):
+    def test_closing_a_shape_moves_to_the_next_mouse_and_blocks_again(self):
         dialog = self._dialog(self._tst(2))
         self._points(dialog, (10, 10), (60, 10), (60, 60))
-        dialog.next_button.click()  # closes the shape and moves on
-        self.assertEqual(dialog.current_roi_index, 1)
-        self.assertFalse(dialog.next_button.isEnabled())
-        self.assertIn("Mouse 2", dialog.hint_label.text())
+        QTest.keyClick(dialog, Qt.Key.Key_Return)   # closes the shape
+        self.assertEqual(dialog.editor.current_zone(), "mouse_2")
+        self.assertFalse(dialog.editor.is_valid())
+        self.assertIn("Mouse 2", dialog.editor.hint_label.text())
+        self.assertTrue(self._finish(dialog).called)
 
     def test_too_small_polygon_is_refused_with_a_hint(self):
         dialog = self._dialog(create_maze("Y-Maze"))
         self._points(dialog, (10, 10), (15, 10), (15, 15))
-        self.assertFalse(dialog.finalize_polygon())
-        self.assertEqual(dialog._finished_count(), 0)
-        self.assertIn("too small", dialog.hint_label.text())
+        self.assertFalse(dialog.editor.close_shape())
+        self.assertEqual(dialog.editor.zone_status("arm_a").count, 0)
+        self.assertIn("too small", dialog.editor.hint_label.text())
         self.assertGreater(MIN_ROI_AREA_PX, 12.5)
 
-    def test_enter_advances_and_backspace_or_ctrl_z_undo(self):
+    def test_enter_closes_and_backspace_or_ctrl_z_undo(self):
         dialog = self._dialog(create_maze("Y-Maze"))
         dialog.show()
         self._points(dialog, (10, 10), (60, 10), (60, 60))
 
         QTest.keyClick(dialog, Qt.Key.Key_Backspace)
-        self.assertEqual(len(dialog.current_polygon_points), 2)
-        self._points(dialog, (10, 10), (60, 10), (60, 60))
+        self.assertEqual(len(dialog.editor.pending_points()), 2)
+        self._points(dialog, (60, 60))
         QTest.keyClick(dialog, Qt.Key.Key_Z, Qt.KeyboardModifier.ControlModifier)
-        self.assertEqual(len(dialog.current_polygon_points), 2)
+        self.assertEqual(len(dialog.editor.pending_points()), 2)
 
-        self._points(dialog, (10, 10), (60, 10), (60, 60))
+        self._points(dialog, (60, 60))
         QTest.keyClick(dialog, Qt.Key.Key_Return)
-        self.assertEqual(dialog.current_roi_index, 1)
-        self.assertEqual(dialog._finished_count(), 0)  # new category
         self.assertEqual(len(dialog.roi_manager.rois["arm_a"]), 1)
+        self.assertEqual(dialog.editor.current_zone(), "arm_a")   # open-ended zone
+        # Enter again: the zone is done, so on to the next missing one.
+        QTest.keyClick(dialog, Qt.Key.Key_Return)
+        self.assertEqual(dialog.editor.current_zone(), "arm_b")
         with patch.object(ux_helpers, "confirm_discard", return_value=True):
             dialog.close()
 
-    def test_enter_does_nothing_while_next_is_disabled(self):
+    def test_enter_does_nothing_while_the_zone_is_still_missing(self):
         dialog = self._dialog(create_maze("Y-Maze"))
         dialog.show()
         QTest.keyClick(dialog, Qt.Key.Key_Return)
-        self.assertEqual(dialog.current_roi_index, 0)
+        self.assertEqual(dialog.editor.current_zone(), "arm_a")
+        self.assertEqual(dialog.result(), 0)
         dialog.close()
 
 

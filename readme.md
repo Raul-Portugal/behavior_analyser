@@ -90,7 +90,7 @@ interrupted run after a restart, and has keyboard shortcuts. See
   length, and enter its length in cm, to get distances and speeds in cm. Without
   it, distances are reported in pixels and Freestyle immobility is N/A. There is
   no automatic scale estimate from the ROI bounding box.
-- **Interactive ROI Definition**: Visually draw polygons for each maze arm or testing zone directly on a video frame.
+- **Interactive ROI Editor**: Draw polygons for each maze arm or testing zone on a zoomable video frame, then keep editing them: move vertices or whole polygons, insert and delete vertices, rotate and scale, undo and redo every edit, and snap shared borders. Redraw during verification reopens the editor on the existing ROIs.
 - **Template Alignment**: Reuse ROIs on videos recorded with a slightly moved
   camera or at another resolution. *Tools > Align template to videos...*
   compares each video's background with the template's, flags the ones that no
@@ -197,8 +197,21 @@ See [OUTPUTS.md](OUTPUTS.md) for the formats.
 | Main window | Esc | Cancel the running analysis (asks for confirmation) |
 | Video list | Del or Backspace | Remove the selected videos |
 | Video list | Alt+Up, Alt+Down | Move the selected videos up or down |
-| ROI selector | Enter | Next |
-| ROI selector | Backspace or Ctrl+Z | Undo the last point (reopens a closed shape) |
+| ROI editor | Click | Add a point to the polygon being drawn (snaps to nearby vertices) |
+| ROI editor | Enter, double-click, right-click | Close the polygon; with none open, go to the next zone to do |
+| ROI editor | Esc | Cancel the polygon in progress (Esc again closes the editor, asking first) |
+| ROI editor | Backspace | Remove the last point |
+| ROI editor | Ctrl+Z | Undo any edit (pending points first) |
+| ROI editor | Ctrl+Shift+Z, Ctrl+Y | Redo |
+| ROI editor | D, E, L | Draw, Edit and reference-Line tools |
+| ROI editor | Delete, right-click | Delete the selected vertex or polygon (the line, in the Line tool) |
+| ROI editor | Double-click an edge | Insert a vertex |
+| ROI editor | Arrow keys (Shift: x10) | Nudge the selected vertex or polygon by 1 px |
+| ROI editor | Alt (held) | Place or drag a point without snapping |
+| ROI editor | Ctrl+wheel | Zoom at the cursor |
+| ROI editor | Middle-drag, Space+drag | Pan |
+| ROI editor | F or Ctrl+0, 1 or Ctrl+1 | Fit the frame, actual size (100%) |
+| ROI editor | ? or F1 | Show or hide the shortcut help |
 | TST tuner | Space | Play or pause |
 | TST tuner | Left, Right | Step one frame |
 | TST tuner | Ctrl+Left, Ctrl+Right | Step ten frames |
