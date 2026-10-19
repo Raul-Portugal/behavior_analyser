@@ -180,6 +180,11 @@ class Freestyle(Maze):
         self.arena_center_area_fraction = DEFAULT_CENTER_AREA_FRACTION
 
     @property
+    def zones_configured(self) -> bool:
+        """True once zones (possibly none: zone-free) have been chosen."""
+        return self._zones_configured
+
+    @property
     def arena_enabled(self) -> bool:
         """True when an arena polygon is requested and arena metrics are on."""
         return self.arena_mode
