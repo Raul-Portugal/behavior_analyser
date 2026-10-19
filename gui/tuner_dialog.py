@@ -274,7 +274,7 @@ class TunerDialog(QDialog):
                 self.format_slider_value(name, val, scale, decimals, unit)
             )
         )
-        slider.valueChanged.connect(self.update_detection)
+        slider.valueChanged.connect(self.on_parameter_change)
         layout.addWidget(label, row, 0)
         layout.addWidget(slider, row, 1)
         self.sliders[name] = slider
@@ -285,9 +285,14 @@ class TunerDialog(QDialog):
             self.current_frame_idx = value
             self.update_detection()
 
+    def on_parameter_change(self, _value: int = 0):
+        # A new parameter makes earlier quality samples incomparable.
+        # (Avoid QObject.sender(): when update_detection is called directly
+        # it can point at a deleted object and crash on comparison.)
+        self.quality_monitor.reset()
+        self.update_detection()
+
     def update_detection(self):
-        if self.sender() in self.sliders.values():
-            self.quality_monitor.reset()
 
         # Update config
         self.config.threshold_percentile = self.sliders["Threshold percentile"].value() / 10.0
