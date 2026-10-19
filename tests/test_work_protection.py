@@ -19,6 +19,7 @@ try:
                                     STEP_MICE, STEP_ROI, STEP_TST_TUNER,
                                     STEP_ZONES, SetupProgress, wizard_steps)
     from gui.tst_tuner import TstTunerDialog
+    from gui.tuners.tst_tuner import TstTunerWidget
     from gui.tuner_dialog import TunerDialog
     from mazes import create_maze
     from roi_manager import ROIManager
@@ -327,7 +328,7 @@ class DiscardGuardTests(unittest.TestCase):
         roi_manager = ROIManager(source_dimensions=(100, 100))
         roi_manager.add_roi("mouse_1", _square())
         tst = create_maze("Tail Suspension Test")
-        with patch.object(TstTunerDialog, "start_scan"):
+        with patch.object(TstTunerWidget, "start_scan"):
             dialog = TstTunerDialog(Path("unopened.mp4"), roi_manager, tst)
         self.addCleanup(dialog.deleteLater)
         try:
@@ -335,7 +336,7 @@ class DiscardGuardTests(unittest.TestCase):
                 dialog.reject()
             confirm.assert_not_called()
 
-            dialog.accept_button.setEnabled(True)  # what a finished scan does
+            dialog.widget._scan_complete = True  # what a finished scan does
             dialog.setResult(7)
             with self._confirm(False) as confirm:
                 dialog.reject()
