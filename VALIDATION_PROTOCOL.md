@@ -115,6 +115,83 @@ Other quantities (event timing, frame labels, position error) are secondary.
 
 ## 4. Running the comparison
 
+### In the application (Validation menu)
+
+Everything below can be done without leaving the application. The
+**Validation** menu has three tools; their statistics are exactly the ones
+described in this protocol (they call the same functions), and none of them
+changes an analysis output.
+
+1. **Validation > Score a video manually...** (blind scoring). Choose the
+   paradigm, the video, your initials and where to save. You may also load the
+   template or batch plan to draw the zone outlines (only the outlines you
+   drew; nothing from the analysis is loaded, so the scoring is blind). The
+   video player plays at 0.25x to 2x, steps one frame (Left/Right), jumps 10
+   frames (Shift+Left/Right), scrubs, and goes to the start/end with Home/End;
+   Space plays and pauses. Hotkeys mark the frame on screen:
+
+   | Paradigm | Keys |
+   | --- | --- |
+   | Y-maze | `A`, `B`, `C` (or `1`, `2`, `3`) log an entry into that arm; `0` marks the center (optional, not an entry) |
+   | EPM | `1` open arm 1, `2` open arm 2, `3` closed arm 1, `4` closed arm 2, `0` center |
+   | Open field | `C` toggles center / periphery, or, in hold mode, is held while the animal is in the center |
+   | TST | hold `I` immobile, `P` passive swing (counts as immobile), `A` active, `U` uncertain; every frame shown while the key is down gets that state |
+
+   Ctrl+Z undoes, Delete removes the selected row, and double-clicking a row
+   jumps to its frame. Progress is autosaved next to the output files
+   (`<video>_manual_scoring_<paradigm>_<initials>.json`, which also records
+   the scorer's initials, the date, the application version and that the
+   session was blind) and an interrupted session resumes when you reopen the
+   same video with the same initials. **Save** writes:
+
+   | File | Content |
+   | --- | --- |
+   | `<video>_manual_arm_entries.csv` | `entry_number,arm,timestamp_s`, the columns of `<base>_arm_entries.csv` (Y-maze `arm_a`..; EPM `open_arm_1`..) |
+   | `<video>_manual_epm_totals.csv` | EPM only, when you marked the center: `metric,value` with `time_in_open_arms_s`, `time_in_closed_arms_s`, `time_in_center_s`, `percent_time_in_open`. Each mark lasts until the next one (or the end of the scoring window); time before the first mark is not counted |
+   | `<video>_manual_zone_intervals.csv` | Open field: `interval_number,zone,start_frame,end_frame,start_s,end_s,duration_s`. Intervals tile the scoring window; frames are inclusive, `start_s = start_frame / fps`, `end_s = (end_frame + 1) / fps` |
+   | `<video>_manual_tst_annotations.csv` | `mouse_name,frame,state` as in `TST_VALIDATION.md`. Choose the mouse in the dialog; with "unmarked frames = active_escape" every frame of the scoring window is labelled, so immobility seconds can be derived |
+
+   Set the scoring window (start and end) to the window the analysis scores.
+   A second scorer should save to a different folder; the dialog asks before
+   replacing files that this session did not write.
+
+2. **Validation > Tracking spot-check...** (position accuracy). Pick a run
+   folder (or a video and its `*_tracking_data.csv`). The dialog draws N random
+   frames (default 50) with a visible fixed seed (the same seed on the same
+   tracking file gives the same frames), shows each *without* the automated
+   dot, and you click the animal's center or press **Not visible** (N);
+   Backspace goes back. At the end it reports position error in px and cm
+   (using the run's `scale_factor`), the miss rate and false detections, and
+   saves `<base>_position_spotcheck.csv` and
+   `<base>_position_spotcheck_summary.json` (seed, sampled frames, counts,
+   statistics, scorer and date).
+
+3. **Validation > Build validation report...** (agreement report). Add the run
+   folder(s) and the folder(s) with the manual files; they are matched per video
+   by filename stem (a manual file called `video1_manual_arm_entries.csv`
+   matches the run output of `video1`; other CSVs are recognised by their
+   header). Review the matching table, fix it where needed (double-click a
+   cell to choose another file), then set the event tolerance, the
+   acceptance criteria and the output folder. The report is one HTML file
+   (all styles and plots embedded, nothing loaded from the network) plus a
+   CSV of every table. It contains the per-video tables, pooled agreement
+   (ICC(2,1) with CI, Bland-Altman bias and limits of agreement, Pearson and
+   Spearman), event precision, recall and F1, Bland-Altman and scatter plots,
+   the TST (and open-field zone) confusion matrix with kappa, the position
+   spot-check, the acceptance criteria marked pass or fail, and the
+   application version, date and every input file with its SHA-256.
+
+   Event precision, recall and F1 are pooled over videos by summing the
+   counts, and the mean of the per-video F1 is shown beside the pooled value.
+   Open-field center time needs a run with the **open-field arena** option
+   (`freestyle_metrics.arena` in the summary). Criteria that cannot be
+   computed (no data, or fewer than two videos) are marked "not evaluable",
+   never silently passed.
+
+The Python flow below does the same per video if you prefer scripts.
+
+### From Python
+
 Typical flow after the analysis has finished (per video):
 
 ```python

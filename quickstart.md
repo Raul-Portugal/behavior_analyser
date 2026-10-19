@@ -198,7 +198,28 @@ with them. Criterion validation of the automated scores against blinded
 manual scoring is still pending, so review the validation video before
 interpreting results.
 
-## 6. Keyboard Shortcuts and Saved Settings
+## 6. Validate the Automated Scores (Validation Menu)
+
+The **Validation** menu lets you check the automated scores against your own
+blinded manual scoring, without leaving the application. See
+`VALIDATION_PROTOCOL.md` for how to choose the recordings and read the result.
+
+1. **Score a video manually...**: pick the paradigm and the raw video, enter
+   your initials and press the hotkeys as events happen (Y-maze `A`/`B`/`C`,
+   EPM `1`-`4` and `0` for the center, open field `C` for the center, TST hold
+   `I`/`P`/`A`/`U`). Space plays, Left/Right step a frame, Shift+Left/Right
+   jump 10 frames, Ctrl+Z undoes. The scoring is blind: no analysis result is
+   shown. Progress is autosaved; **Save annotation files** writes the manual
+   CSVs next to the video.
+2. **Tracking spot-check...**: choose a run folder, click the animal in 50
+   random frames (shown without the tracker's dot) and read the position error,
+   miss rate and false detections.
+3. **Build validation report...**: add the run folder and the folder with the
+   manual files, check the video matching, set the acceptance criteria (for
+   example ICC >= 0.90) and build. You get one self-contained HTML report and a
+   CSV for each table.
+
+## 7. Keyboard Shortcuts and Saved Settings
 
 | Where | Keys | Action |
 |---|---|---|
@@ -217,6 +238,13 @@ interpreting results.
 | TST tuner | Ctrl+Left, Ctrl+Right | Step ten frames |
 | Detection tuner | N, P | Next or previous frame |
 | Detection tuner | + (or =), - | Forward or back 100 frames |
+| Manual scoring | Space | Play or pause |
+| Manual scoring | Left, Right | Step one frame |
+| Manual scoring | Shift+Left, Shift+Right | Step ten frames |
+| Manual scoring | Home, End | First or last frame |
+| Manual scoring | Ctrl+Z, Delete | Undo; delete the selected row |
+| Manual scoring | A/B/C, 1-4, 0, C, I/P/A/U | Score (depends on the paradigm; shown in the dialog) |
+| Spot-check | N, Backspace | Animal not visible; previous frame |
 
 The application remembers folders, window layout, the last paradigm, recent
 files and the output folder. They are stored in your user profile with Qt's
@@ -224,7 +252,7 @@ QSettings (the registry on Windows), not next to the executable. Set the
 `BEHAVIORAL_MAZE_ANALYZER_SETTINGS_FILE` environment variable to the path of
 an ini file to store them there instead.
 
-## 7. Developer Checks
+## 8. Developer Checks
 If you are running from source, check an installation or a change with:
 
 ```bash

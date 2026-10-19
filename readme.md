@@ -104,6 +104,12 @@ interrupted run after a restart, and has keyboard shortcuts. See
 - **Explicit Tracking Gaps**: Frames where the animal is not detected are
   exported as `undetected`; they are not counted as time outside the arena or
   as immobility.
+- **In-app Validation Tools** (Validation menu): blind manual scoring with
+  hotkeys on a built-in frame-accurate video player (Y-maze, EPM, open field,
+  TST), a tracking position spot-check, and an agreement report (ICC,
+  Bland-Altman, event precision/recall, kappa, acceptance criteria) written as
+  a self-contained HTML file with CSV tables. See
+  [VALIDATION_PROTOCOL.md](VALIDATION_PROTOCOL.md).
 - **Comprehensive Outputs**:
   - Frame-by-frame tracking data (CSV)
   - Detailed statistical summaries (CSV, JSON)

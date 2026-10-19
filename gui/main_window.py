@@ -497,6 +497,49 @@ class MainWindow(QMainWindow):
         tools_menu.addAction(align_action)
         self.align_template_action = align_action
 
+        validation_menu = menubar.addMenu('&Validation')
+        manual_action = QAction('&Score a video manually...', self)
+        manual_action.setToolTip(
+            "Blind manual scoring with hotkeys, saved as annotation files "
+            "for the validation report"
+        )
+        manual_action.triggered.connect(self.open_manual_scoring)
+        validation_menu.addAction(manual_action)
+        self.manual_scoring_action = manual_action
+
+        spotcheck_action = QAction('Tracking s&pot-check...', self)
+        spotcheck_action.setToolTip(
+            "Click the animal in randomly sampled frames to measure the "
+            "tracker's position error"
+        )
+        spotcheck_action.triggered.connect(self.open_position_spotcheck)
+        validation_menu.addAction(spotcheck_action)
+        self.position_spotcheck_action = spotcheck_action
+
+        report_action = QAction('&Build validation report...', self)
+        report_action.setToolTip(
+            "Compare automated results with manual scoring: agreement "
+            "statistics, plots and acceptance criteria in one HTML report"
+        )
+        report_action.triggered.connect(self.open_validation_report)
+        validation_menu.addAction(report_action)
+        self.validation_report_action = report_action
+
+    def open_manual_scoring(self):
+        """Validation > Score a video manually (modal; imported on demand)."""
+        from gui.manual_scoring_dialog import open_manual_scoring
+        open_manual_scoring(self, self.app_settings)
+
+    def open_position_spotcheck(self):
+        """Validation > Tracking spot-check (modal; imported on demand)."""
+        from gui.position_spotcheck_dialog import open_position_spotcheck
+        open_position_spotcheck(self, self.app_settings)
+
+    def open_validation_report(self):
+        """Validation > Build validation report (modal; imported on demand)."""
+        from gui.validation_report_dialog import open_validation_report
+        open_validation_report(self, self.app_settings)
+
     def _rebuild_recent_menu(self):
         """List the most recently used templates and plans."""
         self.recent_menu.clear()
