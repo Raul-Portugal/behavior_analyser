@@ -2,6 +2,12 @@
 
 This guide will walk you through a complete analysis workflow, from loading your first video to reviewing the generated heatmaps and data.
 
+**What's new in 3.5:** a **Validation** menu to check the automated scores
+against your own blinded manual scoring (blind manual scoring, a tracking
+spot-check and an agreement report); see section 6 and
+`VALIDATION_PROTOCOL.md`. Results for existing analyses are unchanged from
+3.4.0.
+
 **What's new in 3.4:** parallel videos, a headless command line, an open-field
 arena analysis, sample-sheet metadata, time bins and ROI template alignment.
 Results for existing analyses are unchanged compared with 3.3.0. See
@@ -194,9 +200,11 @@ save a new configuration.
 
 Results from 3.2.0 are not directly comparable with 3.1.x; see
 `CHANGELOG.md`. Results from 3.3.0 are identical to 3.2.0 and can be pooled
-with them. Criterion validation of the automated scores against blinded
-manual scoring is still pending, so review the validation video before
-interpreting results.
+with them, and 3.5.0 results are unchanged from 3.4.0. Criterion validation
+of the automated scores against blinded manual scoring must be performed per
+lab/setup (see section 6 and `VALIDATION_PROTOCOL.md`) before results are
+published; until then, review the validation video before interpreting
+results.
 
 ## 6. Validate the Automated Scores (Validation Menu)
 
@@ -205,19 +213,26 @@ blinded manual scoring, without leaving the application. See
 `VALIDATION_PROTOCOL.md` for how to choose the recordings and read the result.
 
 1. **Score a video manually...**: pick the paradigm and the raw video, enter
-   your initials and press the hotkeys as events happen (Y-maze `A`/`B`/`C`,
-   EPM `1`-`4` and `0` for the center, open field `C` for the center, TST hold
-   `I`/`P`/`A`/`U`). Space plays, Left/Right step a frame, Shift+Left/Right
-   jump 10 frames, Ctrl+Z undoes. The scoring is blind: no analysis result is
-   shown. Progress is autosaved; **Save annotation files** writes the manual
-   CSVs next to the video.
-2. **Tracking spot-check...**: choose a run folder, click the animal in 50
-   random frames (shown without the tracker's dot) and read the position error,
-   miss rate and false detections.
+   your initials and press the hotkeys as events happen (Y-maze `A`/`B`/`C`
+   for arm entries, EPM `1`-`4` for the arms and `0` for the center, open field
+   `C` to toggle between center and periphery, TST hold `I`/`P`/`A`/`U`). Space
+   plays, Left/Right step a frame, Shift+Left/Right jump 10 frames, Ctrl+Z
+   undoes. The scoring is blind: no analysis result is shown. Progress is
+   autosaved and resumes when you reopen the same video with the same
+   initials; **Save annotation files** writes the manual CSVs
+   (`*_manual_arm_entries.csv`, `*_manual_epm_totals.csv`,
+   `*_manual_zone_intervals.csv` or `*_manual_tst_annotations.csv`) to the
+   **Save to** folder, which defaults to the video's folder.
+2. **Tracking spot-check...**: choose a run folder, click the animal in random
+   frames (50 by default, with a fixed seed that is shown and recorded; the
+   tracker's dot is hidden) and read the position error, miss rate and false
+   detections. The results are saved as `*_position_spotcheck.csv` and
+   `*_position_spotcheck_summary.json`.
 3. **Build validation report...**: add the run folder and the folder with the
-   manual files, check the video matching, set the acceptance criteria (for
-   example ICC >= 0.90) and build. You get one self-contained HTML report and a
-   CSV for each table.
+   manual files, check the video matching, set the acceptance criteria (the
+   **Protocol defaults** include ICC >= 0.90) and build. You get one
+   self-contained `validation_report.html` and a CSV for each table in the
+   output folder. The file formats are described in `OUTPUTS.md`.
 
 ## 7. Keyboard Shortcuts and Saved Settings
 
@@ -244,7 +259,8 @@ blinded manual scoring, without leaving the application. See
 | Manual scoring | Home, End | First or last frame |
 | Manual scoring | Ctrl+Z, Delete | Undo; delete the selected row |
 | Manual scoring | A/B/C, 1-4, 0, C, I/P/A/U | Score (depends on the paradigm; shown in the dialog) |
-| Spot-check | N, Backspace | Animal not visible; previous frame |
+| Spot-check | N | Animal not visible |
+| Spot-check | Backspace, Left | Previous frame |
 
 The application remembers folders, window layout, the last paradigm, recent
 files and the output folder. They are stored in your user profile with Qt's

@@ -9,7 +9,9 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 > **Development status:** This is active research software. Always review the
 > validation video and tracking coverage before interpreting results.
 > Criterion validation of the automated scores against blinded manual scoring
-> is still pending.
+> must be performed per lab/setup, using the Validation menu and
+> [VALIDATION_PROTOCOL.md](VALIDATION_PROTOCOL.md), before results are
+> published.
 >
 > **3.2.0 results differ from 3.1.x:** the detection tuner now matches the
 > production analysis resolution, centroids are sub-pixel, Freestyle immobility
@@ -28,6 +30,16 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 > tuner profiles saved by 3.1 (engine v2) are rejected with a re-tune message:
 > open the video in the TST tuner, review the evidence and save a new
 > configuration. Checkpoints from v2 runs cannot be resumed.
+
+## What's new in 3.5
+
+3.5.0 adds tools for criterion validation of the automated scores against
+blinded manual scoring: a **Validation** menu with blind manual scoring,
+a tracking position spot-check and a self-contained agreement report (ICC,
+Bland-Altman, kappa, event precision and recall, pre-registrable acceptance
+criteria), plus `VALIDATION_PROTOCOL.md`. **Analysis results are unchanged
+from 3.4.0.** See [VALIDATION_PROTOCOL.md](VALIDATION_PROTOCOL.md),
+[OUTPUTS.md](OUTPUTS.md) and [CHANGELOG.md](CHANGELOG.md).
 
 ## What's new in 3.4
 
