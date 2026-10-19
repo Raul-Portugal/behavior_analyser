@@ -1600,7 +1600,9 @@ class MainWindow(QMainWindow):
                         carried = dialog.get_settings()
                         real_world_cm = dialog.get_real_world_cm()
                         dialog.deleteLater()
-                        with _disposed(RoiSelectorDialog(str(video_path), self.maze, self)) as roi_dialog:
+                        with _disposed(RoiSelectorDialog(
+                                str(video_path), self.maze, self,
+                                initial_roi_manager=carried.roi_manager)) as roi_dialog:
                             if roi_dialog.exec():
                                 current_settings = self.settings_after_redraw(
                                     carried,
