@@ -1,8 +1,13 @@
-"""Small dialog for the arm-entry rules shared by the Y-maze and the EPM."""
+"""Small dialog for the arm-entry rules shared by the Y-maze and the EPM.
+
+The controls live in ``ArmEntryParamsPanel`` (shared with the workspace);
+this dialog only hosts that panel with OK/Cancel.
+"""
 from typing import Any, Dict
 
-from PyQt6.QtWidgets import (QCheckBox, QDialog, QDialogButtonBox,
-                             QDoubleSpinBox, QFormLayout, QLabel, QVBoxLayout)
+from PyQt6.QtWidgets import QDialog, QDialogButtonBox, QVBoxLayout
+
+from gui.setup_panels.paradigm_params import ArmEntryParamsPanel
 
 
 class ArmEntryParametersDialog(QDialog):
@@ -12,27 +17,10 @@ class ArmEntryParametersDialog(QDialog):
         super().__init__(parent)
         self.setWindowTitle(f"{maze.name}: Arm Entry Rules")
 
-        info = QLabel(
-            "An arm entry is counted when the animal enters an arm from the "
-            "center and stays long enough to be confirmed. Brief flickers "
-            "across a zone border are ignored."
-        )
-        info.setWordWrap(True)
-
-        self.dwell_spin = QDoubleSpinBox(
-            decimals=2, minimum=0.0, maximum=10.0, singleStep=0.05,
-            value=float(maze.min_dwell_seconds)
-        )
-        self.dwell_spin.setSuffix(" s")
-        self.dwell_spin.setToolTip(
-            "A zone change must last at least this long to count."
-        )
-        self.initial_check = QCheckBox("Count the arm the animal starts in as an entry")
-        self.initial_check.setChecked(bool(maze.count_initial_arm))
-
-        form = QFormLayout()
-        form.addRow("Minimum dwell time:", self.dwell_spin)
-        form.addRow(self.initial_check)
+        self.panel = ArmEntryParamsPanel(maze, preserve_exact=False)
+        # The controls keep their historic dialog attribute names.
+        self.dwell_spin = self.panel.dwell_spin
+        self.initial_check = self.panel.initial_check
 
         buttons = QDialogButtonBox(
             QDialogButtonBox.StandardButton.Ok
@@ -42,13 +30,9 @@ class ArmEntryParametersDialog(QDialog):
         buttons.rejected.connect(self.reject)
 
         layout = QVBoxLayout(self)
-        layout.addWidget(info)
-        layout.addLayout(form)
+        layout.addWidget(self.panel)
         layout.addWidget(buttons)
 
     def get_parameters(self) -> Dict[str, Any]:
         """Return values in the shape ``configure_algorithm_parameters`` expects."""
-        return {
-            'min_dwell_seconds': float(self.dwell_spin.value()),
-            'count_initial_arm': self.initial_check.isChecked(),
-        }
+        return self.panel.get_parameters()

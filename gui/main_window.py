@@ -38,8 +38,8 @@ from gui.roi_selector import (REFERENCE_LINE_PROMPT, RoiSelectorDialog,
                               offer_reference_line)
 from gui.arm_entry_dialog import ArmEntryParametersDialog
 from gui.settings_dialog import SettingsDialog
-from gui.setup_progress import (KIND_ARMS, KIND_FREESTYLE, KIND_STANDARD,
-                                KIND_TST, STEP_ARM_RULES, STEP_DETECTION,
+from gui.setup_progress import (KIND_ARMS, KIND_FREESTYLE, KIND_TST,
+                                STEP_ARM_RULES, STEP_DETECTION,
                                 STEP_MICE, STEP_ROI, STEP_TST_TUNER,
                                 STEP_ZONES, SetupProgress)
 from gui.tuner_dialog import TunerDialog
@@ -57,11 +57,8 @@ from gui.freestyle_config_dialog import FreestyleConfigDialog
 
 # --- UTILS ---
 from roi_manager import ROIManager
-from mazes import AVAILABLE_MAZES, create_maze
+from mazes import AVAILABLE_MAZES, create_maze, infer_maze_from_settings
 from mazes.base_maze import Maze
-from mazes.epm import EPM
-from mazes.tst import TST
-from mazes.y_maze import YMaze
 from preflight_checker import PreflightChecker, ValidationDialog
 
 logger = logging.getLogger(__name__)
@@ -945,20 +942,9 @@ class MainWindow(QMainWindow):
         return self.batch_plan_cache[key].copy() if key is not None else None
 
     def _infer_maze_from_settings(self, settings):
+        """Pick and configure the maze a saved configuration was made for."""
         if not settings or not settings.roi_manager: return
-        if settings.paradigm_id in AVAILABLE_MAZES:
-            self.maze = create_maze(settings.paradigm_id)
-            self.maze.configure_algorithm_parameters(settings.algorithm_parameters)
-            return
-
-        keys = set(settings.roi_manager.rois.keys())
-        if 'arm_a' in keys and 'arm_b' in keys: self.maze = create_maze("Y-Maze")
-        elif 'open_arm_1' in keys and 'closed_arm_1' in keys: self.maze = create_maze("Elevated Plus Maze")
-        elif any(k.startswith('mouse_') for k in keys): self.maze = create_maze("Tail Suspension Test")
-        else:
-            self.maze = create_maze("Freestyle / Open Field")
-            zones = [(k, k.replace('_', ' ').title()) for k in keys if k != 'outside']
-            self.maze.configure_zones(zones)
+        self.maze = infer_maze_from_settings(settings)
 
     def set_output_directory(self):
         folder = QFileDialog.getExistingDirectory(
@@ -1228,13 +1214,7 @@ class MainWindow(QMainWindow):
         return _CANCEL
 
     def _wizard_kind(self, maze_choice: str) -> str:
-        if isinstance(self.maze, TST):
-            return KIND_TST
-        if maze_choice == "Freestyle / Open Field":
-            return KIND_FREESTYLE
-        if isinstance(self.maze, (YMaze, EPM)):
-            return KIND_ARMS
-        return KIND_STANDARD
+        return self.maze.wizard_kind
 
     def _setup_cancelled(self, progress: SetupProgress) -> None:
         """Keep what was collected if it is worth resuming; always returns None."""
@@ -1317,19 +1297,7 @@ class MainWindow(QMainWindow):
 
     def _configure_maze_from_settings(self, settings: BatchSettings, maze_choice: str):
         """Restore maze state (parameters, zones, mouse count) from loaded settings."""
-        if settings.algorithm_parameters:
-            self.maze.configure_algorithm_parameters(settings.algorithm_parameters)
-        rois = settings.roi_manager.rois
-        if maze_choice == "Freestyle / Open Field":
-            zones = [(k, k.replace('_', ' ').title()) for k in rois.keys() if k != 'outside']
-            self.maze.configure_zones(zones)
-        elif isinstance(self.maze, TST):
-            if settings.paradigm_id == self.maze.name:
-                count = sum(1 for k in rois.keys() if k != 'outside')
-            else:
-                # Legacy configs without a paradigm id: infer from ROI names.
-                count = sum(1 for k in rois.keys() if k.startswith('mouse_'))
-            self.maze.configure_mice(count)
+        self.maze.infer_from_settings(settings)
 
     def _generate_reference_frame(self, ref_video_path: Path):
         """Build the reference frame off the UI thread (raises TaskCancelled)."""
@@ -1838,59 +1806,10 @@ class MainWindow(QMainWindow):
         expected_parameters = None
 
         for video_path, settings in analysis_plan.items():
-            if (
-                getattr(self.maze, 'arena_enabled', False)
-                and settings.roi_manager.arena is None
-            ):
-                all_issues.append(
-                    f"{video_path.name}: the open-field arena is enabled but "
-                    "no arena was drawn. Redraw the regions for this video."
-                )
-            required_categories = [
-                internal_name
-                for internal_name, _ in self.maze.get_roi_definitions()
-            ]
-            if required_categories:
-                _, roi_issues = settings.roi_manager.validate_rois(
-                    required_categories
-                )
-                all_issues.extend(
-                    f"{video_path.name}: {issue}" for issue in roi_issues
-                )
-            if isinstance(self.maze, TST):
-                configured_categories = set(
-                    settings.roi_manager.rois
-                )
-                expected_categories = set(required_categories)
-                unexpected = configured_categories - expected_categories
-                if unexpected:
-                    all_issues.append(
-                        f"{video_path.name}: unexpected TST ROI categories: "
-                        f"{', '.join(sorted(unexpected))}"
-                    )
-                for category in expected_categories:
-                    roi_count = len(
-                        settings.roi_manager.rois.get(category, [])
-                    )
-                    if roi_count != 1:
-                        all_issues.append(
-                            f"{video_path.name}: {category} must contain "
-                            f"exactly one ROI, found {roi_count}"
-                        )
-                interval_keys = set(settings.per_roi_times)
-                invalid_interval_keys = interval_keys - expected_categories
-                if invalid_interval_keys:
-                    all_issues.append(
-                        f"{video_path.name}: time ranges reference unknown "
-                        "mice: "
-                        f"{', '.join(sorted(invalid_interval_keys))}"
-                    )
-
-            if settings.paradigm_id and settings.paradigm_id != self.maze.name:
-                all_issues.append(
-                    f"{video_path.name}: configuration is for "
-                    f"'{settings.paradigm_id}', not '{self.maze.name}'"
-                )
+            all_issues.extend(
+                f"{video_path.name}: {issue}"
+                for issue in self.maze.validate_settings(settings)
+            )
 
             if expected_parameters is None:
                 expected_parameters = settings.algorithm_parameters

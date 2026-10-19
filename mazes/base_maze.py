@@ -4,7 +4,31 @@ Defines the abstract base class for all maze types and their result containers.
 from abc import ABC, abstractmethod
 from dataclasses import dataclass, field
 from pathlib import Path
-from typing import Any, Dict, List, Optional, Tuple, Type
+from typing import Any, Dict, Iterable, List, Optional, Tuple, Type
+
+# Ordered step ids a setup flow may contain (the workspace and the classic
+# wizard both read them from ``Maze.setup_steps``).
+STEP_PARADIGM_PARAMS = "paradigm_params"
+STEP_ROIS = "rois"
+STEP_CALIBRATION = "calibration"
+STEP_DETECTION_TUNING = "detection_tuning"
+STEP_TST_TUNING = "tst_tuning"
+STEP_TIME_WINDOW = "time_window"
+STEP_REVIEW = "review"
+ALL_SETUP_STEPS = (
+    STEP_PARADIGM_PARAMS, STEP_ROIS, STEP_CALIBRATION, STEP_DETECTION_TUNING,
+    STEP_TST_TUNING, STEP_TIME_WINDOW, STEP_REVIEW,
+)
+
+# ``Maze.analysis_kind``: how a video is analysed.
+ANALYSIS_TRACKING = "tracking"   # centroid tracking, then zone/movement metrics
+ANALYSIS_MOTION = "motion"       # per-animal motion decomposition (TST)
+
+# ``Maze.wizard_kind``: which parameter panel / classic wizard flow applies.
+KIND_STANDARD = "standard"
+KIND_ARMS = "arms"
+KIND_FREESTYLE = "freestyle"
+KIND_TST = "tst"
 
 
 @dataclass
@@ -126,7 +150,126 @@ class Maze(ABC):
 
     def needs_reference_line(self) -> bool:
         """Whether the setup flow should offer distance calibration."""
+        return self.reports_distance
+
+    # ------------------------------------------------------------------
+    # Setup hooks: what the setup flow (classic wizard or workspace) asks
+    # for, so it never has to branch on the paradigm itself.
+    # ------------------------------------------------------------------
+    @property
+    def analysis_kind(self) -> str:
+        """``"tracking"`` (centroid + zones) or ``"motion"`` (TST engine)."""
+        return ANALYSIS_TRACKING
+
+    @property
+    def wizard_kind(self) -> str:
+        """Parameter-panel family: standard, arms, freestyle or tst."""
+        return KIND_STANDARD
+
+    @property
+    def uses_detection_tuner(self) -> bool:
+        """Whether the centroid detection tuner is part of the setup."""
+        return self.analysis_kind == ANALYSIS_TRACKING
+
+    @property
+    def uses_motion_tuner(self) -> bool:
+        """Whether the TST motion tuner is part of the setup."""
+        return self.analysis_kind == ANALYSIS_MOTION
+
+    @property
+    def has_per_roi_times(self) -> bool:
+        """Whether every ROI (mouse) gets its own start/end window."""
+        return False
+
+    @property
+    def reports_distance(self) -> bool:
+        """Whether results contain distances (so a calibration is useful).
+
+        When False the scale factor is always 0 (pixel units are never
+        reported either).
+        """
         return True
+
+    @property
+    def max_polygons_per_roi(self) -> Optional[int]:
+        """Most polygons one ROI category may hold; None means unlimited."""
+        return None
+
+    def setup_steps(self) -> List[str]:
+        """Ordered setup step ids (a subset of ``ALL_SETUP_STEPS``)."""
+        steps = [STEP_ROIS]
+        if self.reports_distance:
+            steps.append(STEP_CALIBRATION)
+        if self.uses_detection_tuner:
+            steps.append(STEP_DETECTION_TUNING)
+        if self.uses_motion_tuner:
+            steps.append(STEP_TST_TUNING)
+        steps += [STEP_TIME_WINDOW, STEP_REVIEW]
+        return steps
+
+    def time_window_subjects(self, roi_manager) -> List[str]:
+        """ROI names that need their own time window (empty: one global)."""
+        return []
+
+    def validate_parameters(self) -> List[str]:
+        """Problems with the paradigm parameters that block a run."""
+        return []
+
+    def validate_rois(self, roi_manager) -> List[str]:
+        """Problems with one video's ROIs that block a run (empty: fine).
+
+        Messages are exactly what the run pre-checks report, without the
+        video-name prefix.
+        """
+        issues: List[str] = []
+        if roi_manager is None:
+            return ["No ROIs defined"]
+        required = [name for name, _ in self.get_roi_definitions()]
+        if required:
+            _, roi_issues = roi_manager.validate_rois(required)
+            issues.extend(roi_issues)
+        return issues
+
+    def validate_time_windows(self, settings) -> List[str]:
+        """Problems with the per-ROI time windows of one video's settings."""
+        return []
+
+    def validate_settings(self, settings) -> List[str]:
+        """Every maze-level problem of one video's settings."""
+        issues = list(self.validate_rois(settings.roi_manager))
+        issues.extend(self.validate_time_windows(settings))
+        if settings.paradigm_id and settings.paradigm_id != self.name:
+            issues.append(
+                f"configuration is for '{settings.paradigm_id}', "
+                f"not '{self.name}'"
+            )
+        return issues
+
+    @classmethod
+    def matches_roi_names(cls, roi_names: Iterable[str]) -> bool:
+        """Legacy heuristic: do these ROI names look like this paradigm?
+
+        Used only for saved configurations without a ``paradigm_id``.
+        """
+        return False
+
+    @classmethod
+    def matches_settings(cls, settings) -> bool:
+        """Whether saved ``BatchSettings`` belong to this paradigm.
+
+        ``settings.paradigm_id`` decides when it names a known paradigm;
+        otherwise the legacy ROI-name heuristics are used, tried in registry
+        order (so the catch-all Freestyle only matches what no other maze
+        claims).
+        """
+        from mazes import maze_class_for_settings
+        return maze_class_for_settings(settings) is cls
+
+    def infer_from_settings(self, settings) -> None:
+        """Restore this maze's parameters from saved ``BatchSettings``."""
+        parameters = getattr(settings, 'algorithm_parameters', None)
+        if parameters:
+            self.configure_algorithm_parameters(parameters)
 
     def resolve_tracking_labels(self, result: BaseAnalysisResult) -> None:
         """Resolve raw frame labels before occupancy and metric calculation."""
