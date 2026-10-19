@@ -416,6 +416,121 @@ filename still match when the filename is unambiguous. A video that matches no
 entry is never given another video's settings; the application reports it as
 unmatched and asks whether to configure it separately, skip it or cancel.
 
+## Projects (4.0)
+
+A project (`.bmaproj`) keeps everything about one study in a single JSON file:
+the videos, the settings of every video, free metadata per video, the run
+options and the history of the runs made from it. It is data only: analysis
+outputs are never changed by it, and a run started from a project writes the
+same run folder, `run_plan.json` and `manifest.json` as any other run.
+
+```json
+{
+  "type": "project",
+  "schema_version": 1,
+  "name": "Cohort A, Y-maze",
+  "created_at": "2026-03-02T09:14:00+0000",
+  "modified_at": "2026-03-02T11:40:12+0000",
+  "app_version": "4.0.0",
+  "paradigm": "Y-Maze",
+  "algorithm_parameters": {},
+  "notes": "",
+  "run_options": {
+    "parallel_workers": 0,
+    "time_bin_seconds": 60.0,
+    "sample_sheet": "sheets/cohort_a.csv",
+    "create_validation_video": false
+  },
+  "template_settings": { "schema_version": 5, "roi_manager": {}, "...": "..." },
+  "videos": [
+    {
+      "key": "videos/mouse1.mp4",
+      "path": "videos/mouse1.mp4",
+      "metadata": { "animal_id": "A01", "group": "control" },
+      "settings": "template",
+      "settings_source": "template",
+      "verified": true,
+      "fingerprint": "3f1c0b7a52d94e0c8a1b77e2",
+      "last_status": "done",
+      "last_run_dir": "analysis_run_20260302_104500",
+      "notes": ""
+    },
+    {
+      "key": "videos/mouse2.mp4",
+      "path": "videos/mouse2.mp4",
+      "metadata": { "animal_id": "A02", "group": "treated" },
+      "settings": { "schema_version": 5, "roi_manager": {}, "...": "..." },
+      "settings_source": "custom",
+      "verified": false,
+      "fingerprint": "9d2e41c6b0a85f3d1c7e04aa",
+      "last_status": "configured",
+      "last_run_dir": null,
+      "notes": "camera was bumped"
+    }
+  ],
+  "runs": [
+    {
+      "run_dir": "analysis_run_20260302_104500",
+      "started_at": "2026-03-02T10:45:00+0000",
+      "finished_at": "2026-03-02T10:52:31+0000",
+      "cancelled": false,
+      "completed": 1,
+      "failed": 0,
+      "manifest": "analysis_run_20260302_104500/manifest.json",
+      "settings_hashes": { "videos/mouse1.mp4": "b1a07c2e55d3e9f0a4c18d62" }
+    }
+  ]
+}
+```
+
+(`"roi_manager": {}` and `"..."` stand for the usual settings content, see
+"Configuration schemas"; they are not abbreviated in a real file.)
+
+- **Paths** (`path`, `last_run_dir`, `run_dir`, `manifest`, `sample_sheet`) are
+  stored relative to the project file's folder, with forward slashes, and
+  resolved against it on load, so a study folder can be moved or shared as a
+  whole. A path with no relative form (another drive) is stored absolute.
+- **`key`** identifies a video for good: it starts as the video's path
+  relative to the project file (the same key a batch plan uses) and never
+  changes when the video is relinked or the project file is saved elsewhere.
+  Run history refers to videos by key.
+- **`settings`** is a full settings object (the same as a template or one batch
+  plan entry), `null` for a video that is not configured yet, or the string
+  `"template"` for a video whose settings are exactly `template_settings`
+  (written once instead of once per video). `settings_source` is `template`,
+  `custom` or `aligned` (the result of aligning the template to this video).
+  Changing a video's settings clears `verified` and sets `last_status` back to
+  `configured`.
+- **`fingerprint`** is the checkpoint video fingerprint (path, size and
+  modification time) taken when the video was configured. When it no longer
+  matches, the project reports that the video changed since it was configured.
+  Relinking a video records it again, since the path is part of it.
+- **`last_status`** is `new` (no settings), `configured`, `done`, `warning`
+  (done, with a quality warning), `failed` or `interrupted` (listed in the
+  run's `run_plan.json` but without an outcome in the manifest). It is set from
+  the run's `manifest.json` (schema 3) when the run is recorded.
+- **`settings_hashes`** per run are the manifest's per-video `settings_hash`,
+  keyed by video key.
+- **`run_options.parallel_workers`** `0` means automatic.
+  `time_bin_seconds` `0` means no time bins.
+
+The file is written atomically (a temporary file, then a rename). A project
+with a newer `schema_version` than the application understands is refused with
+a clear message; unknown settings inside a video entry (for example from a
+newer settings schema) are kept as they are and written back unchanged.
+While a project is open the application writes `<name>.bmaproj.autosave` next
+to it a couple of seconds after each change and offers to recover it at the
+next start when it is newer than the project file; saving the project removes
+it.
+
+Projects convert both ways with the earlier formats. A project can be started
+from a template (every video inherits it), from a batch plan (entries are
+matched to videos exactly as when loading a plan) or from any 3.x run folder,
+using `run_plan.json` for the videos and settings and `manifest.json` for the
+metadata, sample sheet, time-bin length, video fingerprints and each video's
+outcome. A project can be exported as an ordinary batch plan (keys relative to
+the plan file) that 3.x builds and the command line read.
+
 ## Reference-line endpoints in configurations
 
 The `roi_manager` block of a saved template, batch plan or `run_plan.json`

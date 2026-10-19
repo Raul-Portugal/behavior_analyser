@@ -277,6 +277,10 @@ class BatchSettings:
         data = cls._load_json(filepath)
         if data.get('type') == 'batch_plan':
             raise ValueError("File is a Batch Plan, use load_batch_plan")
+        if data.get('type') == 'project':
+            raise ValueError(
+                "File is a project (.bmaproj), open it as a project"
+            )
         content = data['data'] if 'type' in data else data
         return cls.from_dict(content)
 
@@ -296,7 +300,10 @@ class BatchSettings:
     def detect_file_type(filepath: Path) -> str:
         try:
             data = BatchSettings._load_json(filepath)
-            return 'batch_plan' if data.get('type') == 'batch_plan' else 'template'
+            kind = data.get('type')
+            if kind in ('batch_plan', 'project'):
+                return kind
+            return 'template'
         except (OSError, ValueError, TypeError, json.JSONDecodeError):
             return 'unknown'
 

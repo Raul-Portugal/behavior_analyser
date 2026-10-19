@@ -17,6 +17,7 @@ from PyQt6.QtCore import QByteArray, QSettings
 ORGANIZATION = "BehavioralMazeAnalyzer"
 APPLICATION = "BehavioralMazeAnalyzer"
 MAX_RECENT_FILES = 8
+MAX_RECENT_PROJECTS = 8
 
 # Lets tests, portable installs and CI keep settings in a plain ini file
 # instead of the registry / user config folder.
@@ -39,6 +40,8 @@ class AppSettings:
     KEY_STATE = "window/state"
     KEY_PARADIGM = "setup/last_paradigm"
     KEY_RECENT = "recent/files"
+    KEY_RECENT_PROJECTS = "recent/projects"
+    KEY_LAST_PROJECT = "projects/last"
     KEY_RECURSIVE = "videos/add_folder_recursive"
     KEY_WORKERS = "run/parallel_workers"
     KEY_SAMPLE_SHEET = "run/sample_sheet"
@@ -176,8 +179,8 @@ class AppSettings:
     # ------------------------------------------------------------------
     # Recent templates and plans
     # ------------------------------------------------------------------
-    def _stored_recent(self) -> List[str]:
-        raw = self._qs.value(self.KEY_RECENT, "")
+    def _stored_recent(self, key: Optional[str] = None) -> List[str]:
+        raw = self._qs.value(key or self.KEY_RECENT, "")
         if not isinstance(raw, str) or not raw:
             return []
         try:
@@ -213,3 +216,55 @@ class AppSettings:
 
     def clear_recent_files(self) -> None:
         self._qs.remove(self.KEY_RECENT)
+
+    # ------------------------------------------------------------------
+    # Recent projects (.bmaproj)
+    # ------------------------------------------------------------------
+    def recent_projects(self, existing_only: bool = True) -> List[Path]:
+        """Most recent first (at most 8); missing files are left out."""
+        paths = [Path(item) for item in self._stored_recent(self.KEY_RECENT_PROJECTS)]
+        if existing_only:
+            paths = [path for path in paths if path.is_file()]
+        return paths[:MAX_RECENT_PROJECTS]
+
+    def add_recent_project(self, path: PathLike) -> None:
+        """Put a project first in the list; it also becomes ``last_project``."""
+        entry = str(Path(path).resolve())
+        items = [
+            item for item in self._stored_recent(self.KEY_RECENT_PROJECTS)
+            if not _same_file(item, entry)
+        ]
+        items.insert(0, entry)
+        self._qs.setValue(
+            self.KEY_RECENT_PROJECTS, json.dumps(items[:MAX_RECENT_PROJECTS])
+        )
+        self._qs.setValue(self.KEY_LAST_PROJECT, entry)
+
+    def remove_recent_project(self, path: PathLike) -> None:
+        items = [
+            item for item in self._stored_recent(self.KEY_RECENT_PROJECTS)
+            if not _same_file(item, path)
+        ]
+        self._qs.setValue(self.KEY_RECENT_PROJECTS, json.dumps(items))
+        raw = self._qs.value(self.KEY_LAST_PROJECT, "")
+        if isinstance(raw, str) and raw and _same_file(raw, path):
+            self._qs.remove(self.KEY_LAST_PROJECT)
+
+    def clear_recent_projects(self) -> None:
+        self._qs.remove(self.KEY_RECENT_PROJECTS)
+        self._qs.remove(self.KEY_LAST_PROJECT)
+
+    def last_project(self) -> Optional[Path]:
+        """The project opened or saved last, if its file still exists.
+
+        Closing a project on purpose can ``clear_last_project`` so the next
+        start does not reopen it; the recent list is kept.
+        """
+        raw = self._qs.value(self.KEY_LAST_PROJECT, "")
+        if not isinstance(raw, str) or not raw:
+            return None
+        path = Path(raw)
+        return path if path.is_file() else None
+
+    def clear_last_project(self) -> None:
+        self._qs.remove(self.KEY_LAST_PROJECT)
