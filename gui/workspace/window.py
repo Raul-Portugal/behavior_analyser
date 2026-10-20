@@ -69,6 +69,7 @@ from gui.workspace.setup_tab import SetupTab  # Setup tab (X2b-2)
 from gui.workspace.tabs import (TAB_NAMES, TAB_RESULTS, TAB_RUN, TAB_SETUP,
                                 TAB_TITLES, PlaceholderTab, WorkspaceTab)
 from gui.workspace.video_panel import VideoPanel
+from gui.workspace.welcome import WelcomeCard
 
 logger = logging.getLogger(__name__)
 
@@ -132,6 +133,7 @@ class WorkspaceWindow(QMainWindow):
         self.setAcceptDrops(True)
         self.resize(1400, 850)
         self._build_ui()
+        self.welcome_card = WelcomeCard(self)   # first-run migration helper
         self._build_actions()
         self._build_menus()
         self._build_toolbar()
@@ -981,6 +983,8 @@ class WorkspaceWindow(QMainWindow):
             informative=str(last),
         ):
             return self.open_path(last)
+        if last is None:
+            self.welcome_card.show_if_needed()
         return False
 
     def schedule_start(self, path: Optional[os.PathLike] = None) -> None:
