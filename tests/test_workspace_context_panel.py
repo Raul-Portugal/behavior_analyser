@@ -206,7 +206,10 @@ class ThumbnailTests(ContextFixture):
 
     def test_previews_are_cached(self):
         self.add(self.real, self.videos[0])
+        # Read both previews first; re-selecting them must not read again.
         self.select("real.avi")
+        self.settle()
+        self.select("m1.mp4")
         self.settle()
         with patch.object(thumbnails, "read_preview",
                           side_effect=AssertionError("read again")) as read:
