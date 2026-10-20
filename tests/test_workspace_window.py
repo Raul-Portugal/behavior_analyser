@@ -761,9 +761,13 @@ class TabExtensionTests(WorkspaceFixture):
         def on_tab_activated(self):
             self.events.append(("activated",))
 
-    def test_placeholders_are_installed(self):
+    def test_a_widget_is_installed_for_every_tab(self):
         for name in ("setup_tab", "run_tab", "results_tab"):
-            self.assertIsInstance(getattr(self.window, name), PlaceholderTab)
+            self.assertIsInstance(getattr(self.window, name), WorkspaceTab)
+
+    def test_run_and_results_are_real_tabs(self):
+        for name in ("run_tab", "results_tab"):
+            self.assertNotIsInstance(getattr(self.window, name), PlaceholderTab)
 
     def test_installing_a_tab_attaches_it_and_replaces_the_attribute(self):
         tab = self.RecordingTab()

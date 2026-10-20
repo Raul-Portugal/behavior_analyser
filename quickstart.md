@@ -247,6 +247,66 @@ lab/setup (see section 6 and `VALIDATION_PROTOCOL.md`) before results are
 published; until then, review the validation video before interpreting
 results.
 
+## Workspace: Run
+The **Run** tab of the 4.0 workspace starts the analysis of the project's
+videos and follows it. It runs exactly what the classic window and the command
+line run: the same files come out for the same settings.
+
+- **Output folder.** Each run creates an `analysis_run_...` folder inside it.
+  It defaults to `runs/` next to the project file; **Change...** picks another
+  folder and the workspace remembers it for that project.
+- **Run.** *All configured videos*, *Selected videos* (the rows selected in the
+  table) or *Videos not yet done* (no finished analysis yet). Videos without
+  settings are left out of *All* and *Not yet done* with a warning, and block a
+  run of *Selected videos*: configure them in the Setup tab first.
+- **Parallel videos** and **Time bins** are saved in the project. The metadata
+  line shows the sample sheet and how many videos have values; **Sample
+  sheet...** loads one into the video table.
+- **Validation videos** has three states. Partly filled (the default) keeps each
+  video's own setting from Setup; checked or unchecked creates or skips the
+  validation video for every video of *this run* only. The project's settings
+  are not changed.
+- **Run analysis** (also F5) first checks the plan in one go: videos without
+  settings or whose file is missing, the paradigm, the paradigm's own checks,
+  metadata columns that clash with output columns, and the usual pre-flight
+  checks (video, disk and system). Problems stop the run and are listed;
+  warnings are listed once and you confirm them.
+- While it runs, the table shows each video's status, progress, ETA and last
+  message (a percentage per video is only known when videos run one after
+  another), with an overall progress bar and ETA and a log you can filter by
+  level and text. The video table is locked. **Cancel** asks first and saves a
+  checkpoint. Closing the window during a run asks, cancels, and closes by
+  itself once the run has stopped.
+- When it ends, the run is added to the project (the table statuses update) and
+  a summary offers **Open results** (the Results tab, showing that run) and
+  **Open folder**.
+- **Resume interrupted run** appears when the output folder holds checkpoints
+  of project videos whose settings are unchanged; it continues them from where
+  they stopped.
+
+## Workspace: Results
+The **Results** tab opens a finished run and shows what it produced. It lists
+the project's runs, newest first; **Open run folder...** opens any other run
+(manifest schema 3, and older runs as far as they were recorded).
+
+- **Videos.** `batch_summary.csv` as a table: click a header to sort (numbers
+  sort as numbers), type to filter every column, select cells and press Ctrl+C
+  to copy them, or **Export CSV...** to save the rows as shown. A warning badge
+  marks videos with quality warnings.
+- **The selected video** has an *Overview* (key metrics from its
+  `summary.json`, the sample-sheet values and the quality warnings), *Plots*
+  (thumbnails; click one to enlarge it) and *Video*. The video tab plays the
+  validation video when the run made one. Otherwise it plays the original video
+  with the analysis drawn on it: the tracked position, its trail, the zone and
+  the ROIs for tracking paradigms, and each mouse's state in the usual colours
+  for the Tail Suspension Test.
+- **Time bins.** When the run had time bins, chart one metric over the bins per
+  video, or choose **Group by** a metadata column to average each group (error
+  bars are the standard error of the mean; the legend gives n).
+- **Compare runs.** Choose two runs (for example before and after re-analysing)
+  and compare their batch summaries video by video. Changed values are
+  highlighted and show both values; **Only changed videos** hides the rest.
+
 ## 6. Validate the Automated Scores (Validation Menu)
 
 The **Validation** menu lets you check the automated scores against your own

@@ -914,6 +914,38 @@ class Project:
     # ------------------------------------------------------------------
     # Running
     # ------------------------------------------------------------------
+    def set_run_options(
+        self,
+        parallel_workers: Optional[int] = None,
+        time_bin_seconds: Optional[float] = None,
+        create_validation_video: Optional[bool] = None,
+    ) -> bool:
+        """Change run-level options (None leaves one alone); True if any changed."""
+        options = self.run_options
+        changed = False
+        if parallel_workers is not None:
+            if int(parallel_workers) < 0:
+                raise ProjectError("parallel_workers cannot be negative")
+            if int(parallel_workers) != options.parallel_workers:
+                options.parallel_workers = int(parallel_workers)
+                changed = True
+        if time_bin_seconds is not None:
+            seconds = float(time_bin_seconds)
+            if not seconds >= 0.0 or seconds == float("inf"):
+                raise ProjectError("time_bin_seconds must be a finite value >= 0")
+            if seconds != options.time_bin_seconds:
+                options.time_bin_seconds = seconds
+                changed = True
+        if (
+            create_validation_video is not None
+            and bool(create_validation_video) != options.create_validation_video
+        ):
+            options.create_validation_video = bool(create_validation_video)
+            changed = True
+        if changed:
+            self._changed()
+        return changed
+
     def effective_paradigm(self) -> str:
         """The project's paradigm, or the first one its settings name."""
         if self.paradigm:

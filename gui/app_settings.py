@@ -309,3 +309,33 @@ class AppSettings:
 
     def clear_last_project(self) -> None:
         self._qs.remove(self.KEY_LAST_PROJECT)
+
+    # ------------------------------------------------------------------
+    # Run output folder of each project (workspace Run tab)
+    # ------------------------------------------------------------------
+    KEY_RUN_OUTPUTS = "run/project_output_dirs"
+
+    def _run_output_map(self) -> dict:
+        raw = self._qs.value(self.KEY_RUN_OUTPUTS, "")
+        try:
+            data = json.loads(raw) if isinstance(raw, str) and raw else {}
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def run_output_dir(self, project_file: PathLike) -> Optional[Path]:
+        """The output folder chosen for a project (it may not exist yet)."""
+        found = self._run_output_map().get(os.path.normcase(os.path.abspath(project_file)))
+        return Path(found) if isinstance(found, str) and found else None
+
+    def set_run_output_dir(
+        self, project_file: PathLike, path: Optional[PathLike]
+    ) -> None:
+        """Remember (or, with None, forget) a project's run output folder."""
+        mapping = self._run_output_map()
+        key = os.path.normcase(os.path.abspath(project_file))
+        if path is None or str(path) == "":
+            mapping.pop(key, None)
+        else:
+            mapping[key] = str(path)
+        self._qs.setValue(self.KEY_RUN_OUTPUTS, json.dumps(mapping))
