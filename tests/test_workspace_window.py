@@ -767,6 +767,7 @@ class TabExtensionTests(WorkspaceFixture):
             self.assertIsInstance(getattr(self.window, name), WorkspaceTab)
 
     def test_run_and_results_are_real_tabs(self):
+        from gui.workspace.tabs import PlaceholderTab
         for name in ("run_tab", "results_tab"):
             self.assertNotIsInstance(getattr(self.window, name), PlaceholderTab)
 

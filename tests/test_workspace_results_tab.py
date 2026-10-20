@@ -120,11 +120,16 @@ class LoadingTests(ResultsFixture):
         )
 
     def test_ctrl_c_copies(self):
-        from PyQt6.QtTest import QTest
+        from PyQt6.QtCore import QEvent
+        from PyQt6.QtGui import QKeyEvent
         self.tab.show_run(self.run_dir)
         self.tab.table.selectAll()
-        self.tab.table.setFocus()
-        QTest.keyClick(self.tab.table, Qt.Key.Key_C, Qt.KeyboardModifier.ControlModifier)
+        event = QKeyEvent(
+            QEvent.Type.KeyPress, Qt.Key.Key_C,
+            Qt.KeyboardModifier.ControlModifier,
+        )
+        self.tab.table.keyPressEvent(event)
+        self.assertTrue(event.isAccepted())
         self.assertEqual(len(self.prompts.clipboard), 1)
 
     def test_open_run_folder_for_an_external_run(self):
