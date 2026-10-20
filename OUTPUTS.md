@@ -19,9 +19,16 @@ effective algorithm parameters, failures, quality warnings, and every
 generated artifact. This makes each run self-contained and prevents files from
 separate runs or videos being mixed.
 
+**The outputs are unchanged in 4.0.** Every file described below is written
+exactly as in 3.5.0, whichever interface started the run: a run from the 4.0
+workspace produces the same files as the command line (byte for byte, which the
+tests check) and as the classic interface. The new `.bmaproj` project (see
+"Projects (4.0)") is a separate file that records which runs were made; a run
+folder never needs it and does not refer to it.
+
 ## Manifest (`manifest.json`, schema 3)
 
-`schema_version` is `3` (3.4.0; unchanged in 3.5.0). Top-level keys: `application`, `paradigm`,
+`schema_version` is `3` (3.4.0; unchanged in 3.5.0 and 4.0.0). Top-level keys: `application`, `paradigm`,
 `started_at`, `finished_at`, `cancelled`, `requested_videos`,
 `completed_videos`, `sample_sheet` (path of the sample sheet, or `null`),
 `time_bin_seconds` (bin length, or `null` when bins are off), `videos`,
@@ -59,12 +66,15 @@ The application uses it in two ways:
 - **Resume after a restart.** A checkpoint only resumes when its settings hash
   matches the settings of the next run. At startup, and whenever videos are
   added, the application pairs each checkpoint with the run plan whose entry
-  for that video hashes to the same value. **Resume interrupted run** then
+  for that video hashes to the same value. **Resume interrupted run** (a button
+  in the workspace's Run tab, and a banner in the classic interface) then
   reloads that plan and the paradigm parameters, so the checkpoint continues
   exactly where it stopped. Checkpoints that no run plan explains (for
   example from runs started by an older version) are not resumed.
-- **File > Load settings from previous run...** loads the plan of an earlier
-  run folder so the same settings can be applied to new videos.
+- **File > Load settings from previous run...** (classic interface) loads the
+  plan of an earlier run folder so the same settings can be applied to new
+  videos. In the workspace, **File > Import > Previous run folder...** builds a
+  project from it.
 
 `run_plan.json` is a settings file, not a result: it contains no analysis
 output. If it cannot be written the analysis still runs (the failure is only
@@ -422,7 +432,11 @@ A project (`.bmaproj`) keeps everything about one study in a single JSON file:
 the videos, the settings of every video, free metadata per video, the run
 options and the history of the runs made from it. It is data only: analysis
 outputs are never changed by it, and a run started from a project writes the
-same run folder, `run_plan.json` and `manifest.json` as any other run.
+same run folder, `run_plan.json` and `manifest.json` as any other run (the
+outputs are unchanged in 4.0). The run folders are created in the Run tab's
+output folder, which defaults to `runs/` next to the project file; that folder
+is remembered per project by the application's settings, not stored in the
+project. The project's `runs` list is the history shown in the Results tab.
 
 ```json
 {
@@ -528,8 +542,10 @@ from a template (every video inherits it), from a batch plan (entries are
 matched to videos exactly as when loading a plan) or from any 3.x run folder,
 using `run_plan.json` for the videos and settings and `manifest.json` for the
 metadata, sample sheet, time-bin length, video fingerprints and each video's
-outcome. A project can be exported as an ordinary batch plan (keys relative to
-the plan file) that 3.x builds and the command line read.
+outcome. A project can be exported as an ordinary batch plan (**File > Export
+batch plan...**, keys relative to the plan file) that 3.x builds and the
+command line read; videos without settings are left out of the plan. Versions
+before 4.0 cannot open a `.bmaproj` file.
 
 ## Reference-line endpoints in configurations
 
