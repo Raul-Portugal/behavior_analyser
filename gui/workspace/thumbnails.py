@@ -13,6 +13,7 @@ deleted, so a late result can never reach a dead object.
 """
 import logging
 import os
+import time
 from collections import OrderedDict
 from dataclasses import dataclass
 from pathlib import Path
@@ -159,10 +160,18 @@ class ThumbnailLoader(QObject):
         self.loaded.emit(str(preview.path))
 
     def wait_idle(self, timeout_ms: int = 10000) -> bool:
-        """Block until queued reads finish and deliver their results (tests)."""
+        """Block until queued reads finish and deliver their results (tests).
+
+        PyQt delivers the worker's queued ``done`` signal through a proxy
+        receiver, not this object, so posted events are drained for every
+        receiver until each finished job has been handled.
+        """
         finished = self._pool.waitForDone(timeout_ms)
-        QCoreApplication.sendPostedEvents(self)
-        return finished
+        deadline = time.monotonic() + timeout_ms / 1000.0
+        while self._jobs and time.monotonic() < deadline:
+            QCoreApplication.sendPostedEvents()
+            QCoreApplication.processEvents()
+        return finished and not self._jobs
 
     def shutdown(self) -> None:
         """Drop queued reads and wait for the running one; results are ignored."""

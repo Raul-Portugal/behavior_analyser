@@ -65,6 +65,7 @@ from gui.workspace.context_panel import (ACTION_APPLY_TEMPLATE, ACTION_RELINK,
                                          ACTION_VERIFY, ContextPanel)
 from gui.workspace.prompts import (DISCARD, OPEN_FILTER, PROJECT_FILTER,
                                    SAVE, SOURCE_FILTER, Prompts)
+from gui.workspace.setup_tab import SetupTab  # Setup tab (X2b-2)
 from gui.workspace.tabs import (TAB_NAMES, TAB_RESULTS, TAB_RUN, TAB_SETUP,
                                 TAB_TITLES, PlaceholderTab, WorkspaceTab)
 from gui.workspace.video_panel import VideoPanel
@@ -134,6 +135,7 @@ class WorkspaceWindow(QMainWindow):
         self._build_actions()
         self._build_menus()
         self._build_toolbar()
+        self.install_tab(TAB_SETUP, SetupTab())  # Setup tab (X2b-2); also enables align_action
         self._restore_layout()
 
         self._autosave_timer = QTimer(self)

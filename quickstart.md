@@ -122,6 +122,42 @@ The final review dialog allows you to:
 - Enter the real-world length of the calibration line you drew earlier.
 - Check the box to generate a **Validation/Timelapse Video** (highly recommended for verifying results).
 
+### Workspace: Setup
+In the workspace window the steps above live in the **Setup** tab, so nothing
+pops up in front of the video list. The list on the left shows the steps of
+the chosen paradigm (parameters, regions, calibration, detection or TST
+tuning, time window, review); a green tick means done, a grey ring not done
+yet and a red mark a problem, which is listed under the step. Steps can be
+opened in any order; **Previous step** and **Next step** walk the list.
+
+- **What you are editing** is shown at the top. *Project template* is the
+  shared setting every video follows; changing it updates all the videos that
+  use it. Switch the scope to *Selected video(s)* to give the videos selected
+  in the table their own settings, starting from the template's values. A
+  video that is edited this way stops following the template until you use
+  **Apply template** on it again. With several videos selected, each step you
+  apply is copied to all of them, and everything else of each video stays as
+  it was.
+- **Apply** writes the open step into the project. Nothing changes until you
+  apply; leaving the step, switching scope or selection, closing the project
+  or the window with unapplied edits asks whether to apply, discard or stay.
+  **Revert step** drops the edits of the open step.
+- The **regions** and the tuners work on a frame of the *reference video*:
+  the first video of the project (pick another in the *Reference video* box)
+  for the template, or the selected video itself. If a selected video's frame
+  size differs from the one the template was drawn on, a warning with
+  **Align template...** appears; the same dialog opens from **Tools >
+  Align template to videos...**, which aligns the selected videos (or every
+  video that does not fit) and stores the result as their own, "aligned"
+  settings.
+- **Draw reference line...** in the calibration step jumps to the regions step
+  with the line tool selected.
+- **Mark selected videos verified** records that you checked their regions;
+  the review step also lists the problems found in the project's videos.
+
+The settings built here are identical to the ones the classic wizard produces
+for the same choices.
+
 ## 4. Run the Batch Analysis
 - If you have multiple videos loaded, the software will ask if you want to **Review each video** or **Run all now**.
   - **Review each video:** Allows you to adjust start/end times or **Redraw ROIs** if the camera moved between recordings: the ROI editor opens with the current ROIs, arena and reference line already loaded, so you only move what changed.
