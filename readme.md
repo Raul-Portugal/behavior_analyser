@@ -4,7 +4,7 @@
 [![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](https://opensource.org/licenses/MIT)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20macOS%20%7C%20Linux-lightgrey)](#)
 
-A flexible, user-friendly desktop application for analyzing animal behavior in common laboratory mazes. This tool provides a complete graphical workflow from video import to data export, designed for researchers who need reliable, reproducible results without extensive programming knowledge.
+A flexible, user-friendly desktop application for analyzing animal behavior in common laboratory mazes (Y-maze, elevated plus maze, open field and tail suspension). Since 4.0 everything happens in one **workspace** window: a project holds your videos, their settings and the history of your runs, and you move between **Setup**, **Run** and **Results** without a chain of dialogs. It is designed for researchers who need reliable, reproducible results without extensive programming knowledge.
 
 > **Development status:** This is active research software. Always review the
 > validation video and tracking coverage before interpreting results.
@@ -30,6 +30,20 @@ A flexible, user-friendly desktop application for analyzing animal behavior in c
 > tuner profiles saved by 3.1 (engine v2) are rejected with a re-tune message:
 > open the video in the TST tuner, review the evidence and save a new
 > configuration. Checkpoints from v2 runs cannot be resumed.
+
+## What's new in 4.0
+
+4.0.0 replaces the chain of modal dialogs with a single-window **workspace**:
+a video table, the **Setup**, **Run** and **Results** tabs and a context panel
+for the selected video. Your work is saved in a `.bmaproj` **project** (with
+autosave and crash recovery) that also records every run. Setup steps can be
+done in any order, with one template or per-video settings; the ROI editor is
+embedded in the Setup tab; the Results tab opens a run, plays the validation
+video, charts time bins by group and compares runs. **Analysis results are
+unchanged from 3.5.0**, and a workspace run writes output files that are
+byte-identical to the command line's. The classic interface is still there
+(`--classic`). See [Getting started](#getting-started),
+[OUTPUTS.md](OUTPUTS.md) and [CHANGELOG.md](CHANGELOG.md).
 
 ## What's new in 3.5
 
@@ -60,9 +74,48 @@ the application now remembers your folders and settings, can resume an
 interrupted run after a restart, and has keyboard shortcuts. See
 [CHANGELOG.md](CHANGELOG.md) for the complete list.
 
+## Getting started
+
+1. **Create a project.** Start the application (`Behavioral_Maze_Analyzer.exe`,
+   or `python gui_main.py`) and choose **File > New project...** (Ctrl+N), then
+   name the `.bmaproj` file. To continue earlier work, use **File > Open
+   project...** (Ctrl+O) or **File > Open recent**. If you used 3.x, the first
+   start offers a welcome card, and **File > Import** brings in a saved
+   template, a batch plan or a previous run folder.
+2. **Add videos.** **Add videos...** (Ctrl+Shift+V), **Add folder...**
+   (Ctrl+Shift+O), or drag videos and folders onto the window. The video table
+   lets you edit metadata (**Add column**), search, filter by status and
+   relink videos that moved. Choose the **Paradigm** in the panel on the right.
+3. **Setup.** In the **Setup** tab, work through the steps in any order:
+   paradigm parameters, regions of interest, calibration, detection (or TST
+   motion) tuning, time window and review. Edit the **Project template** that
+   every video follows, or switch to **Selected video(s)** to give some videos
+   their own settings. **Apply** writes a step into the project.
+4. **Run.** In the **Run** tab, pick the output folder and the scope (all
+   configured videos, the selected ones, or the ones not yet done), then press
+   **Run analysis** (F5). The pre-run checks, per-video progress, log, Cancel
+   and **Resume interrupted run** are all there.
+5. **Results.** The **Results** tab opens the finished run: the summary table,
+   per-video metrics, plots and warnings, the validation video, time-bin charts
+   and a comparison of two runs. Everything is also on disk in the
+   `analysis_run_...` folder (see [OUTPUTS.md](OUTPUTS.md)).
+
+[quickstart.md](quickstart.md) walks through all of this step by step.
+
+### Classic interface
+
+The 3.x wizard window (**Add Videos**, **Configure & Start Analysis**, ...) is
+still available: start it with `python gui_main.py --classic`, or choose
+**File > Switch to classic interface** in the workspace. It runs the same
+analysis, so results are identical. **File > Export batch plan...** in the
+workspace writes a 3.x batch plan that the classic interface and the command
+line can load; `.bmaproj` projects cannot be opened by versions before 4.0.
+
 ## Key Features
 
-- **Standalone Application**: Run the software directly via a Windows executable—no Python setup required.
+- **Single-Window Workspace and Projects (4.0)**: A `.bmaproj` project keeps the videos, per-video metadata, settings, verification state and run history in one file, with autosave and recovery. The video table, the Setup / Run / Results tabs and the context panel replace the sequence of modal dialogs; imports from 3.x templates, batch plans and run folders are built in.
+
+- **Standalone Application**: Run the software directly via a Windows executable (no Python setup required).
 - **Batch Processing**: Analyze entire folders of videos in a single run with consistent or individually customized settings.
 - **Multi-Maze Support**: Comes with built-in, highly optimized logic for:
   - **Y-Maze**: Calculates spontaneous alternation, arm entries, and same-arm returns (includes hysteresis filtering for overlapping center zones).
@@ -90,7 +143,7 @@ interrupted run after a restart, and has keyboard shortcuts. See
   length, and enter its length in cm, to get distances and speeds in cm. Without
   it, distances are reported in pixels and Freestyle immobility is N/A. There is
   no automatic scale estimate from the ROI bounding box.
-- **Interactive ROI Editor**: Draw polygons for each maze arm or testing zone on a zoomable video frame, then keep editing them: move vertices or whole polygons, insert and delete vertices, rotate and scale, undo and redo every edit, and snap shared borders. Redraw during verification reopens the editor on the existing ROIs.
+- **Interactive ROI Editor**: Draw polygons for each maze arm or testing zone on a zoomable video frame, in any order, then keep editing them: move vertices or whole polygons, insert and delete vertices, rotate and scale, undo and redo every edit, and snap shared borders. It is embedded in the Setup tab; in the classic interface, Redraw during verification reopens the editor on the existing ROIs.
 - **Template Alignment**: Reuse ROIs on videos recorded with a slightly moved
   camera or at another resolution. *Tools > Align template to videos...*
   compares each video's background with the template's, flags the ones that no
@@ -113,10 +166,14 @@ interrupted run after a restart, and has keyboard shortcuts. See
   temporal state so a resumed run is equivalent to uninterrupted processing.
   Runs can be resumed even after closing the application (see
   [Resuming an interrupted run](#resuming-an-interrupted-run)).
+- **Results Review in the App**: The Results tab shows the batch summary
+  (sortable, filterable, exportable), per-video metrics, plots and quality
+  warnings, plays the validation video (or the original video with tracking
+  overlays), charts time bins per video or per group and compares two runs.
 - **Explicit Tracking Gaps**: Frames where the animal is not detected are
   exported as `undetected`; they are not counted as time outside the arena or
   as immobility.
-- **In-app Validation Tools** (Validation menu): blind manual scoring with
+- **In-app Validation Tools** (Validation menu, in both interfaces): blind manual scoring with
   hotkeys on a built-in frame-accurate video player (Y-maze, EPM, open field,
   TST), a tracking position spot-check, and an agreement report (ICC,
   Bland-Altman, event precision/recall, kappa, acceptance criteria) written as
@@ -137,20 +194,24 @@ interrupted run after a restart, and has keyboard shortcuts. See
 Every run folder contains a `run_plan.json` with the exact settings of that
 run. If a run was stopped (cancelled, crashed, or the application was
 closed), its checkpoints stay in the output folder's `.checkpoints/` folder.
-After a restart (at startup and whenever videos are added), the
-application pairs each checkpoint with the run plan whose settings match it
-and shows a **Resume interrupted run** banner (also available as
-**File > Resume interrupted run...**). Choosing it reloads the plan and
-continues from the saved frame; the result is equivalent to an uninterrupted
-run. Checkpoints older than 7 days, from another version, or that no run plan
-explains are ignored.
+In the workspace, the **Run** tab shows **Resume interrupted run** when the
+output folder holds checkpoints of project videos whose settings are
+unchanged. In the classic interface, after a restart (at startup and whenever
+videos are added), the application pairs each checkpoint with the run plan
+whose settings match it and shows a **Resume interrupted run** banner (also
+**File > Resume interrupted run...**). Either way the run continues from the
+saved frame and the result is equivalent to an uninterrupted run. Checkpoints
+older than 7 days, from another version, or that no run plan explains are
+ignored.
 
-**File > Load settings from previous run...** loads the plan of an earlier run
-folder to apply the same settings to new videos.
+To apply the settings of an earlier run to new videos, use **File > Import >
+Previous run folder...** in the workspace (it creates a project from the run)
+or **File > Load settings from previous run...** in the classic interface.
 
 ## Running several videos at once
 
-The **Parallel videos** control next to the Start button sets how many videos
+The **Parallel videos** control (in the Run tab, or next to the Start button in
+the classic interface) sets how many videos
 are analysed at the same time. **Auto** (the default) uses the smaller of
 CPU cores / 4, the number of videos and RAM in GB / 3, and at least 1; set 1 to
 run the videos one after another. Each video runs in its own spawned process,
@@ -159,15 +220,16 @@ and the outputs are byte-identical to a sequential run (about 2.2x faster on a
 
 ## Command line
 
-A saved batch plan (File > Save Configuration, or the `run_plan.json` of an
-earlier run) can be run without the GUI and without Qt:
+A saved batch plan (**File > Export batch plan...** in the workspace,
+**File > Save Configuration** in the classic interface, or the `run_plan.json`
+of an earlier run) can be run without the GUI and without Qt:
 
 ```bash
 python -m core.cli run --plan plan.json --out results     --workers 2 --sample-sheet sheet.csv --bin-seconds 60
 ```
 
 It writes the same run folder, batch summary, manifest and `run_plan.json` as a
-GUI run. `--workers N` sets the parallel videos (default: Auto, as above),
+GUI run (byte-identical files; this is tested for the workspace). `--workers N` sets the parallel videos (default: Auto, as above),
 `--sample-sheet` attaches a metadata CSV, `--bin-seconds N` turns on time-bin
 outputs, `--quiet` prints only failures and the result. A template (instead of
 a plan) needs `--videos` (files or folders), and `--paradigm` when it does not
@@ -177,29 +239,42 @@ arguments or plan, `130` cancelled. The packaged executable has a hidden
 
 ## Sample sheet and time bins
 
-**Sample sheet...** (or `--sample-sheet`) takes a CSV whose first column is
-`video` and whose other columns are free metadata (`animal_id`, `group`, ...).
+**Sample sheet...** (in the Run tab; or `--sample-sheet`) takes a CSV whose first
+column is `video` and whose other columns are free metadata (`animal_id`,
+`group`, ...). In the workspace the values also appear in the video table, and
+you can add your own columns with **Add column**.
 They are added to `batch_summary.csv`, each `*_summary.json` and the manifest;
-videos are matched to rows, never guessed. **Time bins** (or `--bin-seconds`)
-also writes each metric per bin in long format; each metric summed over the
+videos are matched to rows, never guessed. **Time bins** (set in seconds in the Run tab, in minutes in the classic
+interface, or `--bin-seconds`) also writes each metric per bin in long format; each metric summed over the
 bins equals the total. Both are off by default and change nothing when off.
 See [OUTPUTS.md](OUTPUTS.md) for the formats.
 
 ## Keyboard shortcuts
 
+The workspace, and the editors and tuners it hosts:
+
 | Where | Keys | Action |
 |---|---|---|
-| Main window | Ctrl+O | Add videos |
-| Main window | Ctrl+Shift+O | Add a folder of videos |
-| Main window | Ctrl+S | Save template |
-| Main window | Ctrl+L | Load configuration or batch plan |
-| Main window | F5 | Configure and start analysis |
-| Main window | Esc | Cancel the running analysis (asks for confirmation) |
-| Video list | Del or Backspace | Remove the selected videos |
-| Video list | Alt+Up, Alt+Down | Move the selected videos up or down |
+| Workspace | Ctrl+N | New project |
+| Workspace | Ctrl+O | Open a project (or import a template or batch plan) |
+| Workspace | Ctrl+S | Save the project |
+| Workspace | Ctrl+Shift+S | Save the project as... |
+| Workspace | Ctrl+W | Close the project |
+| Workspace | Ctrl+Q | Quit |
+| Workspace | Ctrl+Shift+V | Add videos |
+| Workspace | Ctrl+Shift+O | Add a folder of videos |
+| Workspace | F5 | Run the analysis (Cancel is a toolbar and Run tab button; it has no key) |
+| Video table | Del | Remove the selected videos from the project |
+| Video table | Alt+Up, Alt+Down | Move the selected videos up or down |
+| Video table | F2 or double-click | Edit a metadata cell |
+| Results table | Ctrl+C | Copy the selected cells |
+| Results video player | Space | Play or pause (when the player has focus) |
+| Results video player | Left, Right | Step one frame |
+| Results video player | Shift+Left, Shift+Right | Step ten frames |
+| Results video player | Home, End | First or last frame |
 | ROI editor | Click | Add a point to the polygon being drawn (snaps to nearby vertices) |
 | ROI editor | Enter, double-click, right-click | Close the polygon; with none open, go to the next zone to do |
-| ROI editor | Esc | Cancel the polygon in progress (Esc again closes the editor, asking first) |
+| ROI editor | Esc | Cancel the polygon in progress (in the classic dialog, Esc again closes the editor, asking first) |
 | ROI editor | Backspace | Remove the last point |
 | ROI editor | Ctrl+Z | Undo any edit (pending points first) |
 | ROI editor | Ctrl+Shift+Z, Ctrl+Y | Redo |
@@ -218,10 +293,24 @@ See [OUTPUTS.md](OUTPUTS.md) for the formats.
 | Detection tuner | N, P | Next or previous frame |
 | Detection tuner | + (or =), - | Forward or back 100 frames |
 
+### Classic interface
+
+| Where | Keys | Action |
+|---|---|---|
+| Main window | Ctrl+O | Add videos |
+| Main window | Ctrl+Shift+O | Add a folder of videos |
+| Main window | Ctrl+S | Save template |
+| Main window | Ctrl+L | Load configuration or batch plan |
+| Main window | F5 | Configure and start analysis |
+| Main window | Esc | Cancel the running analysis (asks for confirmation) |
+| Video list | Del or Backspace | Remove the selected videos |
+| Video list | Alt+Up, Alt+Down | Move the selected videos up or down |
+
 ## Where settings are stored
 
 The application remembers folders, window layout, the last paradigm, recent
-files and the output folder between sessions. These are stored per user with
+files, recent projects, the project that was open last, each project's run
+output folder and whether the welcome card was dismissed between sessions. These are stored per user with
 Qt's QSettings, which on Windows is the registry (under the current user);
 the application does not write them next to the executable. To use an ini file
 instead (for example for a portable setup or to start from clean settings),
