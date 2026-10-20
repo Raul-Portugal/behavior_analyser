@@ -151,6 +151,13 @@ class WorkspaceWindow(QMainWindow):
         self._update_title()
         self._update_ui_state()
 
+        # --- Run and Results tabs (workstream X2b-3) -------------------
+        from gui.workspace.results_tab import ResultsTab
+        from gui.workspace.run_tab import RunTab
+        self.install_tab(TAB_RESULTS, ResultsTab())
+        self.install_tab(TAB_RUN, RunTab())
+        # ---------------------------------------------------------------
+
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
