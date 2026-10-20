@@ -43,9 +43,9 @@ from pathlib import Path
 from typing import Dict, List, Optional, Set, Tuple
 
 from PyQt6.QtCore import Qt
-from PyQt6.QtWidgets import (QComboBox, QHBoxLayout, QLabel, QListWidget,
-                             QListWidgetItem, QPushButton, QStackedWidget,
-                             QVBoxLayout, QWidget)
+from PyQt6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel,
+                             QListWidget, QListWidgetItem, QPushButton,
+                             QStackedWidget, QVBoxLayout, QWidget)
 
 from core import roi_alignment as ra
 from core.models import AppConfig, BatchSettings
@@ -270,6 +270,10 @@ class SetupTab(WorkspaceTab):
             "Carry the template's regions onto videos whose camera moved or "
             "whose resolution differs."
         )
+        # A tuner still scanning when the application quits must be joined.
+        app = QApplication.instance()
+        if app is not None:
+            app.aboutToQuit.connect(self.shutdown)
         super().attach_workspace(window)
         self._refresh_actions()
 
