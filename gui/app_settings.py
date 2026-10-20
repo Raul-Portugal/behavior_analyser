@@ -44,6 +44,7 @@ class AppSettings:
     KEY_PARADIGM = "setup/last_paradigm"
     KEY_RECENT = "recent/files"
     KEY_RECENT_PROJECTS = "recent/projects"
+    KEY_WELCOME_DISMISSED = "workspace/welcome_dismissed"
     KEY_LAST_PROJECT = "projects/last"
     KEY_RECURSIVE = "videos/add_folder_recursive"
     KEY_WORKERS = "run/parallel_workers"
@@ -309,6 +310,18 @@ class AppSettings:
 
     def clear_last_project(self) -> None:
         self._qs.remove(self.KEY_LAST_PROJECT)
+
+    # ------------------------------------------------------------------
+    # First-run welcome card (workspace empty state)
+    # ------------------------------------------------------------------
+    def welcome_dismissed(self) -> bool:
+        """True once the one-time 3.x migration card was dealt with."""
+        return str(self._qs.value(self.KEY_WELCOME_DISMISSED, "false")).lower() == "true"
+
+    def set_welcome_dismissed(self, dismissed: bool = True) -> None:
+        self._qs.setValue(
+            self.KEY_WELCOME_DISMISSED, "true" if dismissed else "false"
+        )
 
     # ------------------------------------------------------------------
     # Run output folder of each project (workspace Run tab)
