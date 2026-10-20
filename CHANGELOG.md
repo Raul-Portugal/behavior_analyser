@@ -1,5 +1,111 @@
 # Changelog
 
+## 4.0.0
+
+Workspace release. **A new single-window workspace replaces the chain of modal
+dialogs. Analysis results are unchanged from 3.5.0**, so 3.5.0 and 4.0.0
+results can be pooled. The workspace calls the same batch runner as the
+command line and the classic interface: a workspace run produces output files
+that are byte-identical to a headless `python -m core.cli run` of the same
+videos and settings (sequential and parallel; tested), and the Setup tab
+produces exactly the same settings as the classic wizard (tested). The classic
+interface remains available with `--classic` and **File > Switch to classic
+interface**.
+
+> **Scientific caveat:** criterion validation must be performed per lab/setup
+> using the Validation tools and `VALIDATION_PROTOCOL.md` before results are
+> published. Until you have done it for your recordings, always review the
+> validation video and tracking coverage before interpreting results.
+
+### Added
+
+- **Workspace.** One window with a video table on the left, the **Setup**,
+  **Run** and **Results** tabs in the middle and a context panel on the right.
+  - **Projects** (`.bmaproj`, schema 1; `core/project.py`,
+    `core/project_io.py`): a project holds the videos, the template, the
+    per-video settings, metadata, verification state and the run history, with
+    autosave and recovery after a crash, a recent-projects list, and import
+    from 3.x templates, batch plans and previous run folders.
+  - **Video table** with metadata editing, filters and search, relinking of
+    moved videos, and drag-and-drop of videos, folders, projects and
+    configurations.
+  - **Context panel** for the selected video: details, paradigm, issues,
+    notes and actions (verify, apply template, relink, remove).
+  - **First-run welcome card.** When the workspace starts with no project to
+    reopen but the classic interface remembers recent templates or batch
+    plans, a one-time card offers **Create project**, **Open project**,
+    **Import your recent 3.x configuration...** (listing up to three recent
+    files) and **Use classic interface**. Dismissing it is remembered.
+- **Setup tab.**
+  - Setup steps can be done in any order.
+  - Settings can be edited for the whole template or per video.
+  - The paradigm parameter panels, the ROI editor, calibration, the detection
+    and TST tuners, the analysis time window and the review step are hosted
+    in the tab instead of opening dialogs.
+  - An unsaved-step guard warns before a step with unapplied changes is left.
+  - Template alignment to videos whose camera moved is integrated (**Tools >
+    Align template to videos...**).
+- **Run tab.**
+  - Run scope: all configured videos, selected videos, or videos not yet done.
+  - Pre-run checks (unconfigured or missing videos, paradigm and settings
+    validation, sample-sheet conflicts and the batch pre-flight) before
+    anything starts.
+  - Per-video progress, a filterable log and Cancel.
+  - Resume of interrupted runs from their checkpoints.
+  - Every run is recorded in the project's run history.
+- **Results tab.**
+  - A run picker and a summary table of `batch_summary.csv` that can be
+    sorted, filtered, copied and exported.
+  - Per-video metrics, plots and warnings.
+  - A validation video player. When no validation video exists, the original
+    video is shown with overlays drawn from the tracking and TST CSVs.
+  - Time-bin charts for a video or averaged per group.
+  - **Compare runs**, with changed values marked.
+- **ROI editor** (`gui/roi_editor/`), a zoomable editor used by the Setup tab
+  and by the modal flow.
+  - Zoom and pan; vertex drag, insert and delete; move, rotate and scale
+    whole polygons.
+  - Undo and redo.
+  - Zones can be drawn in any order.
+  - Snapping to the vertices of neighbouring zones so that zones share
+    borders (hold Alt to
+    turn it off).
+  - Choosing **Redraw** while verifying a video now opens the editor
+    preloaded with the existing regions.
+
+### Changed
+
+- Paradigm-specific setup knowledge moved into the Maze hooks and a Qt-free
+  `SetupState` (`core/setup_state.py`), so the dialogs and the workspace share
+  one implementation.
+- The detection tuner, the TST tuner and the setup dialogs are now embeddable
+  widgets (`gui/tuners/`, `gui/setup_panels/`); the dialogs are thin wrappers
+  around them.
+- `gui_main.py` opens the workspace by default. `--classic` opens the classic
+  wizard window, and `--startup-check` checks both interfaces.
+- `RoiSelectorDialog` is now a compatibility subclass of the new
+  `RoiEditorDialog`.
+
+### Fixed
+
+- Intermittent crashes from `QObject.sender()` in the tuner and settings
+  dialogs (the fix also shipped in 3.5.0).
+- Test-only race fixes (a thumbnail-cache test and a Results tab clipboard
+  test); no change to the application.
+
+### Upgrade notes
+
+- **Bringing 3.x configurations into a project.** Use the welcome card, or
+  **File > Import** (**Template...**, **Batch plan...**, **Previous run
+  folder...**), or open a template or batch plan with **File > Open project...**
+  or by dropping it on the window. Each import creates a new `.bmaproj`
+  project; the original files are not modified.
+- `.bmaproj` files are new and use schema 1. Versions before 4.0 cannot open
+  them. **File > Export batch plan...** writes the configured videos as a 3.x
+  batch plan, which gives 3.x compatibility.
+- Output files, `batch_summary.csv` and the manifest are unchanged from 3.5.0;
+  the project file is a separate file and is never needed to read results.
+
 ## 3.5.0
 
 Criterion validation release. **This release adds tools for criterion
