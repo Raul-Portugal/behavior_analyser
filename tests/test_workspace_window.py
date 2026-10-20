@@ -14,7 +14,7 @@ from tests.workspace_support import HAS_RUNTIME, WorkspaceFixture
 if HAS_RUNTIME:
     from PyQt6.QtCore import QCoreApplication, QEvent, Qt
     from PyQt6.QtWidgets import QSplitter, QTabWidget, QWidget
-    from gui.workspace.tabs import (PlaceholderTab, WorkspaceTab, TAB_RESULTS,
+    from gui.workspace.tabs import (WorkspaceTab, TAB_RESULTS,
                                     TAB_RUN, TAB_SETUP)
 
 
@@ -762,13 +762,14 @@ class TabExtensionTests(WorkspaceFixture):
             self.events.append(("activated",))
 
     def test_placeholders_are_installed(self):
+        # Pieces replace placeholders with real tabs; each is a WorkspaceTab.
         for name in ("setup_tab", "run_tab", "results_tab"):
-            self.assertIsInstance(getattr(self.window, name), PlaceholderTab)
+            self.assertIsInstance(getattr(self.window, name), WorkspaceTab)
 
     def test_installing_a_tab_attaches_it_and_replaces_the_attribute(self):
         tab = self.RecordingTab()
         old = self.window.install_tab(TAB_SETUP, tab)
-        self.assertIsInstance(old, PlaceholderTab)
+        self.assertIsInstance(old, WorkspaceTab)
         self.assertIs(self.window.setup_tab, tab)
         self.assertIs(self.window.tabs.widget(0), tab)
         self.assertIs(tab.workspace, self.window)
