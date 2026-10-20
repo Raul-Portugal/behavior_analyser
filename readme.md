@@ -221,7 +221,7 @@ and the outputs are byte-identical to a sequential run (about 2.2x faster on a
 ## Command line
 
 A saved batch plan (**File > Export batch plan...** in the workspace,
-**File > Save Configuration** in the classic interface, or the `run_plan.json`
+**File > Save Template...** in the classic interface, or the `run_plan.json`
 of an earlier run) can be run without the GUI and without Qt:
 
 ```bash
@@ -396,8 +396,8 @@ python gui_main.py --startup-check
 ```
 
 The tests need the PyQt6 runtime. On a machine without a display, set
-`QT_QPA_PLATFORM=offscreen` first. The full suite takes about a minute and a
-half. `ruff` is configured in `pyproject.toml` (`pip install ruff`), and
+`QT_QPA_PLATFORM=offscreen` first. The full suite takes a few minutes.
+`ruff` is configured in `pyproject.toml` (`pip install ruff`), and
 `--startup-check` verifies that the application imports and starts (both the
 workspace and the classic window), then exits with status 0.
 
