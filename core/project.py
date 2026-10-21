@@ -19,13 +19,16 @@ file; it never changes when the video is relinked, which keeps run history
 and exports pointing at the same entry.
 """
 import copy
+import hashlib
 import json
 import logging
+import math
 import os
 import time
 from dataclasses import dataclass, field
 from pathlib import Path, PurePosixPath, PureWindowsPath
-from typing import Any, Callable, Dict, Iterable, List, Mapping, Optional
+from typing import (Any, Callable, Dict, Iterable, List, Mapping, Optional,
+                    Tuple, Union)
 
 from core.models import BatchSettings
 from core.run_outputs import (MANIFEST_FILENAME, MANIFEST_SCHEMA_VERSION,
@@ -60,6 +63,29 @@ SETTINGS_SOURCES = (SOURCE_TEMPLATE, SOURCE_CUSTOM, SOURCE_ALIGNED)
 
 # Written in place of a settings object identical to the project template.
 _TEMPLATE_REFERENCE = "template"
+
+# ZoneOverride.source
+ZONE_ADJUSTED = "adjusted"
+ZONE_ALIGNED = "aligned"
+ZONE_SOURCES = (ZONE_ADJUSTED, ZONE_ALIGNED)
+
+# Project.zone_status: where a video's regions come from.
+ZONES_TEMPLATE = "template"
+ZONES_ADJUSTED = "adjusted"
+ZONES_ALIGNED = "aligned"
+ZONES_CUSTOM = "custom"      # a full legacy copy of the settings
+ZONE_STATUSES = (ZONES_TEMPLATE, ZONES_ADJUSTED, ZONES_ALIGNED, ZONES_CUSTOM)
+
+# TrialProtocol.start_mode
+START_VIDEO = "video_start"    # every trial begins when the video does
+START_PER_VIDEO = "per_video"  # each video has its own start (mouse entry)
+START_MODES = (START_VIDEO, START_PER_VIDEO)
+
+# Project.trial_status
+TRIAL_OK = "ok"
+TRIAL_NEEDS_START = "needs_start"
+TRIAL_INVALID = "invalid"
+TRIAL_STATUSES = (TRIAL_OK, TRIAL_NEEDS_START, TRIAL_INVALID)
 
 
 class ProjectError(ValueError):
@@ -191,6 +217,205 @@ class RunOptions:
 
 
 # ----------------------------------------------------------------------
+# Layered overrides: trial windows, zone overrides, the trial protocol
+# ----------------------------------------------------------------------
+class _Unset:
+    """Type of :data:`UNSET`."""
+
+    def __repr__(self) -> str:
+        return "UNSET"
+
+
+# Passed to :meth:`Project.set_trial` to clear one field (None leaves it).
+UNSET = _Unset()
+
+
+def _is_number(value: Any) -> bool:
+    return (
+        isinstance(value, (int, float)) and not isinstance(value, bool)
+        and math.isfinite(value)
+    )
+
+
+def _check_number(value: Any, what: str) -> Any:
+    """``value`` unchanged if it is a finite number (types are kept so the
+    composed settings hash like the ones a full copy would have had)."""
+    if not _is_number(value):
+        raise ProjectError(f"{what} must be a finite number, not {value!r}")
+    return value
+
+
+def _interval(value: Any, name: str) -> Tuple[Any, Any]:
+    if not isinstance(value, (list, tuple)) or len(value) != 2:
+        raise ProjectError(f"per_roi_times[{name!r}] must be a start/end pair")
+    return (
+        _check_number(value[0], f"per_roi_times[{name!r}] start"),
+        _check_number(value[1], f"per_roi_times[{name!r}] end"),
+    )
+
+
+@dataclass
+class TrialWindow:
+    """When the analysed part of one video starts and ends.
+
+    A layer over the project template: only what the user chose for this
+    video is stored. ``start_time`` counts only when ``start_set`` (the user
+    chose the start, even if it is 0); otherwise the video starts where the
+    template does. ``end_time`` None follows the project's trial protocol
+    (start plus its duration) or the template. ``per_roi_times`` (Tail
+    Suspension Test: one window per mouse) replaces the template's windows
+    when it is not empty.
+    """
+    start_time: float = 0.0
+    end_time: Optional[float] = None
+    per_roi_times: Dict[str, Tuple[float, float]] = field(default_factory=dict)
+    start_set: bool = False
+
+    def copy(self) -> "TrialWindow":
+        return TrialWindow(
+            self.start_time, self.end_time,
+            {name: (a, b) for name, (a, b) in self.per_roi_times.items()},
+            self.start_set,
+        )
+
+    def is_empty(self) -> bool:
+        """True when it changes nothing (no start, no end, no windows)."""
+        return (
+            not self.start_set and self.end_time is None
+            and not self.per_roi_times
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "start_time": self.start_time,
+            "end_time": self.end_time,
+            "per_roi_times": {
+                name: [a, b] for name, (a, b) in self.per_roi_times.items()
+            },
+            "start_set": bool(self.start_set),
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "TrialWindow":
+        if not isinstance(data, Mapping):
+            raise ProjectError("A trial window must be an object")
+        end = data.get("end_time")
+        raw_windows = data.get("per_roi_times") or {}
+        if not isinstance(raw_windows, Mapping):
+            raise ProjectError("per_roi_times must be an object")
+        return cls(
+            start_time=_check_number(data.get("start_time", 0.0), "start_time"),
+            end_time=None if end is None else _check_number(end, "end_time"),
+            per_roi_times={
+                str(name): _interval(value, str(name))
+                for name, value in raw_windows.items()
+            },
+            start_set=bool(data.get("start_set", False)),
+        )
+
+
+def _check_transform(matrix: Any) -> Optional[List[List[float]]]:
+    if matrix is None:
+        return None
+    try:
+        rows = [[float(v) for v in row] for row in matrix]
+    except (TypeError, ValueError) as exc:
+        raise ProjectError("transform must be a 3x3 matrix") from exc
+    if len(rows) != 3 or any(len(row) != 3 for row in rows) or not all(
+        math.isfinite(v) for row in rows for v in row
+    ):
+        raise ProjectError("transform must be a finite 3x3 matrix")
+    return rows
+
+
+@dataclass
+class ZoneOverride:
+    """The regions of one video when they differ from the template's.
+
+    ``source`` says how they came about: ``adjusted`` (edited by hand) or
+    ``aligned`` (the template's regions moved by ``transform``, a 3x3 matrix
+    from template pixels to this video's). ``reference`` is the fingerprint
+    of the template regions the override was derived from
+    (:meth:`Project.zones_reference`), so a later change of the template can
+    be noticed. ``scale_factor`` is set when the override also changes the
+    calibration (an alignment rescales it); None keeps the template's.
+    """
+    roi_manager: Any                       # roi_manager.ROIManager
+    source: str = ZONE_ADJUSTED
+    transform: Optional[List[List[float]]] = None
+    reference: Optional[str] = None
+    scale_factor: Optional[float] = None
+
+    def copy(self) -> "ZoneOverride":
+        return ZoneOverride(
+            copy.deepcopy(self.roi_manager), self.source,
+            copy.deepcopy(self.transform), self.reference, self.scale_factor,
+        )
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {
+            "roi_manager": self.roi_manager.to_dict(),
+            "source": self.source,
+            "transform": copy.deepcopy(self.transform),
+            "reference": self.reference,
+            "scale_factor": self.scale_factor,
+        }
+
+    @classmethod
+    def from_dict(cls, data: Mapping[str, Any]) -> "ZoneOverride":
+        from roi_manager import ROIManager
+        if not isinstance(data, Mapping) or "roi_manager" not in data:
+            raise ProjectError("A zone override needs its regions")
+        source = data.get("source", ZONE_ADJUSTED)
+        if source not in ZONE_SOURCES:
+            raise ProjectError(f"Unknown zone source {source!r}")
+        scale = data.get("scale_factor")
+        reference = data.get("reference")
+        return cls(
+            roi_manager=ROIManager.from_dict(data["roi_manager"]),
+            source=source,
+            transform=_check_transform(data.get("transform")),
+            reference=None if reference is None else str(reference),
+            scale_factor=(
+                None if scale is None else _check_number(scale, "scale_factor")
+            ),
+        )
+
+
+@dataclass
+class TrialProtocol:
+    """How long a trial lasts and where it starts, for the whole project.
+
+    ``duration_s`` None means "until the video ends". With ``start_mode``
+    ``per_video`` (a mouse enters the apparatus at its own moment) every
+    video needs its own start before it can be analysed.
+    """
+    duration_s: Optional[float] = None
+    start_mode: str = START_VIDEO
+
+    def __post_init__(self) -> None:
+        if self.start_mode not in START_MODES:
+            raise ProjectError(f"Unknown start mode {self.start_mode!r}")
+        if self.duration_s is not None:
+            _check_number(self.duration_s, "duration_s")
+            if self.duration_s <= 0:
+                raise ProjectError("The trial duration must be above 0")
+
+    def to_dict(self) -> Dict[str, Any]:
+        return {"duration_s": self.duration_s, "start_mode": self.start_mode}
+
+    @classmethod
+    def from_dict(cls, data: Optional[Mapping[str, Any]]) -> "TrialProtocol":
+        data = data or {}
+        if not isinstance(data, Mapping):
+            raise ProjectError("trial_protocol must be an object")
+        return cls(
+            duration_s=data.get("duration_s"),
+            start_mode=data.get("start_mode", START_VIDEO),
+        )
+
+
+# ----------------------------------------------------------------------
 # Videos
 # ----------------------------------------------------------------------
 @dataclass
@@ -199,7 +424,12 @@ class VideoEntry:
     key: str
     path: Path
     metadata: Dict[str, str] = field(default_factory=dict)
-    settings: Optional[BatchSettings] = None     # None = not configured
+    # The stored settings: a mirror of the project template for a video that
+    # follows it (``settings_source`` template), or a legacy full copy of
+    # its own (custom / aligned). None = not configured. What a run really
+    # uses is :meth:`Project.effective_settings`, which layers ``zones`` and
+    # ``trial`` on top.
+    settings: Optional[BatchSettings] = None
     settings_source: str = SOURCE_TEMPLATE
     verified: bool = False
     # ``get_video_fingerprint`` when the video was configured; a later
@@ -208,6 +438,14 @@ class VideoEntry:
     last_status: str = STATUS_NEW
     last_run_dir: Optional[Path] = None
     notes: str = ""
+    # Layered overrides: when this video's trial starts and ends, and its
+    # regions when they differ from the template's. None = the template's.
+    trial: Optional[TrialWindow] = None
+    zones: Optional[ZoneOverride] = None
+    # Facts about the file, when known (``Project.set_video_info``): they
+    # cap a protocol-computed end and check the regions' frame size.
+    duration_s: Optional[float] = None
+    frame_size: Optional[Tuple[int, int]] = None
     # Settings found in a file that this version cannot read. Kept verbatim
     # and written back, so opening and saving never destroys them.
     _raw_settings: Optional[Dict[str, Any]] = field(
@@ -441,6 +679,8 @@ class Project:
     run_options: RunOptions = field(default_factory=RunOptions)
     # The shared configuration new videos inherit until they are customised.
     template_settings: Optional[BatchSettings] = None
+    # How long a trial lasts and whether every video has its own start.
+    trial_protocol: TrialProtocol = field(default_factory=TrialProtocol)
     videos: List[VideoEntry] = field(default_factory=list)
     runs: List[RunRecord] = field(default_factory=list)
     notes: str = ""
@@ -780,6 +1020,11 @@ class Project:
                     cleared.append(video.key)
                 video.settings = None
                 video._raw_settings = None
+                video.zones = None      # regions are paradigm specific
+                if video.trial is not None:
+                    video.trial.per_roi_times = {}
+                    if video.trial.is_empty():
+                        video.trial = None
                 video.settings_source = SOURCE_TEMPLATE
                 video.verified = False
                 video.fingerprint = None
@@ -789,13 +1034,29 @@ class Project:
             self._changed()
         return cleared
 
-    def apply_template_to(self, keys: Optional[Iterable[str]] = None) -> List[str]:
-        """Reset videos to the template (all videos when ``keys`` is None)."""
+    def apply_template_to(
+        self, keys: Optional[Iterable[str]] = None, keep_trials: bool = True
+    ) -> List[str]:
+        """Reset videos to the template (all videos when ``keys`` is None).
+
+        Legacy full copies and zone overrides are dropped. Trial windows
+        (when each mouse entered) are data about the recording rather than
+        configuration, so they are kept unless ``keep_trials`` is False.
+        """
         if self.template_settings is None:
             raise ProjectError("The project has no template settings")
         entries = self.videos if keys is None else self.entries_for(keys)
         for video in entries:
-            self._configure(video, self.template_settings, SOURCE_TEMPLATE)
+            had_zones = video.zones is not None
+            video.zones = None
+            if not keep_trials:
+                video.trial = None
+            changed = self._configure(
+                video, self.template_settings, SOURCE_TEMPLATE
+            )
+            if had_zones and not changed:
+                video.verified = False
+                video.last_status = STATUS_CONFIGURED
         if entries:
             self._changed()
         return [video.key for video in entries]
@@ -807,10 +1068,26 @@ class Project:
         source: str = SOURCE_CUSTOM,
         verified: bool = False,
     ) -> VideoEntry:
-        """Give one video its own settings (``source``: custom or aligned)."""
+        """Give one video its own full settings (``source``: custom or aligned).
+
+        This is the legacy full copy: it forks every setting from the
+        template. To change only a video's times or regions, use
+        :meth:`set_trial` and :meth:`set_zone_override`, which keep it
+        following the rest of the template. Because ``settings`` are final,
+        the video's zone override is dropped (the copy carries its regions)
+        and an existing trial is rewritten to the copy's own times.
+        """
         if source not in (SOURCE_CUSTOM, SOURCE_ALIGNED):
             raise ProjectError(f"Unknown settings source {source!r}")
         entry = self.entry(key)
+        entry.zones = None
+        if entry.trial is not None:
+            entry.trial = TrialWindow(
+                start_time=settings.start_time,
+                end_time=settings.end_time,
+                per_roi_times=dict(settings.per_roi_times),
+                start_set=entry.trial.start_set,
+            )
         self._configure(entry, settings, source, verified)
         self._changed()
         return entry
@@ -957,14 +1234,363 @@ class Project:
                 return video.settings.paradigm_id
         return ""
 
-    def _effective_settings(self, entry: VideoEntry) -> BatchSettings:
-        """A copy of the entry's settings, carrying paradigm and parameters."""
+    # ------------------------------------------------------------------
+    # Template + layered overrides
+    # ------------------------------------------------------------------
+    def _entry_of(self, key: Union[str, VideoEntry]) -> VideoEntry:
+        return key if isinstance(key, VideoEntry) else self.entry(key)
+
+    @staticmethod
+    def _is_full_copy(entry: VideoEntry) -> bool:
+        """True for a legacy full copy (custom / aligned source)."""
+        return entry.settings is not None and entry.settings_source != SOURCE_TEMPLATE
+
+    def _protocol_sets_end(self, entry: VideoEntry) -> bool:
+        """Does the protocol duration decide this video's end?
+
+        It does for every video built from the template, and for a legacy
+        full copy only once it has a trial (a copy keeps its own end).
+        """
+        return self.trial_protocol.duration_s is not None and (
+            entry.trial is not None or not self._is_full_copy(entry)
+        )
+
+    def _composed_times(self, entry: VideoEntry) -> Tuple[Any, Any, Dict]:
+        """``(start, end, per_roi_times)`` of the entry's effective settings.
+
+        The base is the stored settings (the template or the legacy copy),
+        then the trial: the start when it was set, the end when it has one,
+        otherwise start plus the protocol duration (capped at the video
+        duration when that is known), and the per-mouse windows when it
+        has some. Values are passed through untouched.
+        """
+        base = entry.settings if entry.settings is not None else self.template_settings
+        if base is None:
+            start, end, windows = 0.0, None, {}
+        else:
+            start, end, windows = base.start_time, base.end_time, base.per_roi_times
+        trial = entry.trial
+        if trial is not None and trial.start_set:
+            start = trial.start_time
+        if trial is not None and trial.end_time is not None:
+            end = trial.end_time
+        elif self._protocol_sets_end(entry):
+            end = start + self.trial_protocol.duration_s
+            known = entry.duration_s
+            if known is not None and _is_number(start) and end > known:
+                end = known if known > start else None
+        if trial is not None and trial.per_roi_times:
+            windows = trial.per_roi_times
+        return start, end, {name: tuple(v) for name, v in windows.items()}
+
+    def effective_settings(
+        self, key: Union[str, VideoEntry]
+    ) -> Optional[BatchSettings]:
+        """The settings a run of this video uses; None if it has none.
+
+        Composed in layers: the stored settings (a copy of the template, or
+        the video's legacy full copy), then its zone override (regions and
+        calibration), then its trial (start, end, per-mouse windows; see
+        :meth:`_composed_times`), then the project's paradigm and algorithm
+        parameters where the settings carry none. The result is a fresh
+        copy, equal (``to_dict`` and settings hash) to the full copy that
+        had the same values written into it. Times that are not valid are
+        still applied; :meth:`trial_status` and :meth:`validate` report them.
+        """
+        entry = self._entry_of(key)
+        if entry.settings is None:
+            return None
         settings = entry.settings.copy()
+        zones = entry.zones
+        if zones is not None:
+            settings.roi_manager = copy.deepcopy(zones.roi_manager)
+            if zones.scale_factor is not None:
+                settings.scale_factor = zones.scale_factor
+        start, end, windows = self._composed_times(entry)
+        settings.start_time = start
+        settings.end_time = end
+        settings.per_roi_times = windows
         if not settings.paradigm_id and self.paradigm:
             settings.paradigm_id = self.paradigm
         if not settings.algorithm_parameters and self.algorithm_parameters:
             settings.algorithm_parameters = copy.deepcopy(self.algorithm_parameters)
         return settings
+
+    def zones_reference(self) -> Optional[str]:
+        """Fingerprint of the template's regions (None without a template).
+
+        Recorded in each zone override, so a later edit of the template's
+        regions can be told apart from an override that is still current.
+        """
+        if self.template_settings is None:
+            return None
+        return hashlib.sha1(
+            canonical_json(self.template_settings.roi_manager.to_dict()).encode()
+        ).hexdigest()[:16]
+
+    def zone_status(self, key: Union[str, VideoEntry]) -> str:
+        """Where the video's regions come from.
+
+        ``adjusted`` / ``aligned``: it has a zone override of that kind.
+        ``custom``: a legacy full copy (``aligned`` when it came from an
+        alignment). ``template``: the project template's regions.
+        """
+        entry = self._entry_of(key)
+        if entry.zones is not None:
+            return entry.zones.source
+        if self._is_full_copy(entry):
+            if entry.settings_source == SOURCE_ALIGNED:
+                return ZONES_ALIGNED
+            return ZONES_CUSTOM
+        return ZONES_TEMPLATE
+
+    def _has_start(self, entry: VideoEntry) -> bool:
+        if entry.trial is not None and entry.trial.start_set:
+            return True
+        # A legacy copy made before trials existed: a start other than 0 was
+        # chosen by hand.
+        return (
+            self._is_full_copy(entry)
+            and _is_number(entry.settings.start_time)
+            and entry.settings.start_time > 0
+        )
+
+    def trial_problem(self, key: Union[str, VideoEntry]) -> Optional[str]:
+        """Why the video's effective times cannot be analysed (None if fine)."""
+        entry = self._entry_of(key)
+        start, end, windows = self._composed_times(entry)
+        if not _is_number(start) or start < 0:
+            return "the start time must be 0 or more"
+        if end is not None and (not _is_number(end) or end <= start):
+            return "the end time must be after the start time"
+        for name, (a, b) in windows.items():
+            if not _is_number(a) or not _is_number(b) or a < 0 or b <= a:
+                return f"the window of {name} is not a valid interval"
+        if entry.duration_s is not None and start >= entry.duration_s:
+            return (
+                f"the start time is beyond the end of the video "
+                f"({entry.duration_s:g} s)"
+            )
+        return None
+
+    def trial_status(self, key: Union[str, VideoEntry]) -> str:
+        """``ok``, ``needs_start`` or ``invalid`` for the video's trial.
+
+        ``needs_start``: the protocol gives every video its own start and
+        this one has none yet. ``invalid``: the times cannot be analysed
+        (see :meth:`trial_problem`).
+        """
+        entry = self._entry_of(key)
+        if self.trial_problem(entry) is not None:
+            return TRIAL_INVALID
+        if (
+            self.trial_protocol.start_mode == START_PER_VIDEO
+            and not self._has_start(entry)
+        ):
+            return TRIAL_NEEDS_START
+        return TRIAL_OK
+
+    def _effective_json(self, entry: VideoEntry) -> Optional[str]:
+        return _settings_to_json(self.effective_settings(entry))
+
+    def _mark_changed_settings(
+        self, entry: VideoEntry, before: Optional[str], reset_verified: bool
+    ) -> bool:
+        """Effective settings changed: results are stale, verification may be."""
+        if entry.settings is None or self._effective_json(entry) == before:
+            return False
+        if reset_verified:
+            entry.verified = False
+        entry.last_status = STATUS_CONFIGURED
+        return True
+
+    def set_trial(
+        self,
+        key: str,
+        start: Union[float, None, _Unset] = None,
+        end: Union[float, None, _Unset] = None,
+        per_roi_times: Union[
+            Mapping[str, Tuple[float, float]], None, _Unset
+        ] = None,
+    ) -> Optional[TrialWindow]:
+        """Set when the trial of one video starts and ends (seconds).
+
+        Each argument that is None is left as it is; :data:`UNSET` clears it
+        (the start goes back to the template's, the end to the protocol or
+        template, the windows to the template's). Setting a start counts as
+        the user having chosen it, also when it is 0. Only finite numbers
+        are accepted; whether the times make sense is reported by
+        :meth:`trial_status`, so a value being typed can be kept. Returns
+        the video's trial (None when nothing is left of it).
+        """
+        entry = self.entry(key)
+        before = self._effective_json(entry)
+        trial = entry.trial.copy() if entry.trial is not None else TrialWindow()
+        if start is UNSET:
+            trial.start_time, trial.start_set = 0.0, False
+        elif start is not None:
+            trial.start_time = _check_number(start, "start")
+            trial.start_set = True
+        if end is UNSET:
+            trial.end_time = None
+        elif end is not None:
+            trial.end_time = _check_number(end, "end")
+        if per_roi_times is UNSET:
+            trial.per_roi_times = {}
+        elif per_roi_times is not None:
+            trial.per_roi_times = {
+                str(name): _interval(value, str(name))
+                for name, value in per_roi_times.items()
+            }
+        entry.trial = None if trial.is_empty() else trial
+        self._mark_changed_settings(entry, before, reset_verified=False)
+        self._changed()
+        return entry.trial
+
+    def clear_trial(self, key: str) -> bool:
+        """Drop the video's own trial times; True if it had any."""
+        entry = self.entry(key)
+        if entry.trial is None:
+            return False
+        before = self._effective_json(entry)
+        entry.trial = None
+        self._mark_changed_settings(entry, before, reset_verified=False)
+        self._changed()
+        return True
+
+    def set_trial_protocol(
+        self,
+        duration_s: Optional[float] = None,
+        start_mode: str = START_VIDEO,
+    ) -> List[str]:
+        """Set the project's trial protocol.
+
+        ``duration_s`` None means "until the video ends"; otherwise a video
+        without an explicit end of its own ends that long after its start.
+        ``start_mode`` ``per_video`` makes every video need its own start.
+        Returns the keys of the videos whose effective settings changed.
+        """
+        protocol = TrialProtocol(duration_s, start_mode)   # validates
+        before = {v.key: self._effective_json(v) for v in self.videos}
+        self.trial_protocol = protocol
+        changed = [
+            v.key for v in self.videos
+            if self._mark_changed_settings(v, before[v.key], reset_verified=False)
+        ]
+        self._changed()
+        return changed
+
+    def apply_protocol_to_all(self) -> List[str]:
+        """Make every video follow the protocol again.
+
+        Explicit ends are dropped, so each trial ends at its start plus the
+        protocol duration (or at the template's end); in ``video_start``
+        mode the explicit starts go too. Per-mouse windows are kept.
+        Returns the keys that changed.
+        """
+        before = {v.key: self._effective_json(v) for v in self.videos}
+        reset_start = self.trial_protocol.start_mode == START_VIDEO
+        changed: List[str] = []
+        for entry in self.videos:
+            trial = entry.trial
+            if trial is None:
+                continue
+            trial = trial.copy()
+            trial.end_time = None
+            if reset_start:
+                trial.start_time, trial.start_set = 0.0, False
+            entry.trial = None if trial.is_empty() else trial
+            if self._mark_changed_settings(entry, before[entry.key], False):
+                changed.append(entry.key)
+        self._changed()
+        return changed
+
+    def set_video_info(
+        self,
+        key: str,
+        duration_s: Optional[float] = None,
+        frame_size: Optional[Tuple[int, int]] = None,
+    ) -> None:
+        """Record what is known about a video file (None leaves a value).
+
+        ``duration_s`` caps a protocol-computed end and rejects a start
+        beyond the video; ``frame_size`` (width, height) lets
+        :meth:`validate` check the regions were drawn on that size.
+        """
+        entry = self.entry(key)
+        before = self._effective_json(entry)
+        if duration_s is not None:
+            if _check_number(duration_s, "duration_s") <= 0:
+                raise ProjectError("duration_s must be above 0")
+            entry.duration_s = duration_s
+        if frame_size is not None:
+            try:
+                width, height = (int(v) for v in frame_size)
+            except (TypeError, ValueError) as exc:
+                raise ProjectError("frame_size must be (width, height)") from exc
+            if width <= 0 or height <= 0:
+                raise ProjectError("frame_size must be positive")
+            entry.frame_size = (width, height)
+        self._mark_changed_settings(entry, before, reset_verified=False)
+        self._changed()
+
+    def set_zone_override(
+        self,
+        key: str,
+        roi_manager: Any,
+        source: str = ZONE_ADJUSTED,
+        transform: Optional[Any] = None,
+        scale_factor: Optional[float] = None,
+    ) -> ZoneOverride:
+        """Give one video its own regions; everything else follows the template.
+
+        ``roi_manager`` is copied. ``source`` is ``adjusted`` (edited) or
+        ``aligned`` (the template's regions moved by ``transform``, a 3x3
+        matrix from template pixels to this video's). ``scale_factor`` is the
+        video's calibration when it differs from the template's; for an
+        aligned override it defaults to the template's rescaled to the
+        moved reference line, as an alignment does. The video loses its
+        verification (the regions changed) and any earlier result.
+        """
+        if source not in ZONE_SOURCES:
+            raise ProjectError(f"Unknown zone source {source!r}")
+        if scale_factor is not None:
+            if _check_number(scale_factor, "scale_factor") < 0:
+                raise ProjectError("scale_factor cannot be negative")
+        entry = self.entry(key)
+        before = self._effective_json(entry)
+        template = self.template_settings
+        manager = copy.deepcopy(roi_manager)
+        if source == ZONE_ALIGNED and scale_factor is None and template is not None:
+            from core.roi_alignment import scale_factor_after_alignment
+            scale_factor = scale_factor_after_alignment(
+                template.scale_factor, template.roi_manager, manager
+            )
+            if scale_factor == template.scale_factor:
+                scale_factor = None
+        entry.zones = ZoneOverride(
+            roi_manager=manager,
+            source=source,
+            transform=_check_transform(transform),
+            reference=self.zones_reference(),
+            scale_factor=scale_factor,
+        )
+        self._mark_changed_settings(entry, before, reset_verified=True)
+        entry.verified = False
+        self._changed()
+        return entry.zones
+
+    def clear_zone_override(self, key: str) -> bool:
+        """Back to the template's regions; True if there was an override."""
+        entry = self.entry(key)
+        if entry.zones is None:
+            return False
+        before = self._effective_json(entry)
+        entry.zones = None
+        self._mark_changed_settings(entry, before, reset_verified=True)
+        entry.verified = False
+        self._changed()
+        return True
 
     def analysis_plan(
         self,
@@ -991,17 +1617,66 @@ class Project:
             if not exists:
                 result.missing.append(video.path)
             if exists or include_missing:
-                result.plan[video.path] = self._effective_settings(video)
+                result.plan[video.path] = self.effective_settings(video)
                 result.keys[video.path] = video.key
         return result
+
+    def _override_issues(
+        self, video: VideoEntry, zones_now: Optional[str]
+    ) -> List[ProjectIssue]:
+        """Problems of a video's trial window and zone override."""
+        issues: List[ProjectIssue] = []
+        problem = self.trial_problem(video)
+        if problem is not None:
+            issues.append(ProjectIssue(
+                SEVERITY_ERROR, "trial_invalid",
+                f"{video.name}: {problem}", video.key,
+            ))
+        elif self.trial_status(video) == TRIAL_NEEDS_START:
+            issues.append(ProjectIssue(
+                SEVERITY_ERROR, "trial_needs_start",
+                f"{video.name} needs its start time (each video has its own "
+                "start in this project)", video.key,
+            ))
+        if video.settings is None:
+            return issues
+        manager = (
+            video.zones.roi_manager if video.zones is not None
+            else video.settings.roi_manager
+        )
+        drawn = getattr(manager, "source_dimensions", None)
+        if (
+            video.frame_size is not None and drawn is not None
+            and tuple(drawn) != tuple(video.frame_size)
+        ):
+            kind = "adjusted regions" if video.zones is not None else "regions"
+            issues.append(ProjectIssue(
+                SEVERITY_ERROR, "zones_size_mismatch",
+                f"{video.name} is {video.frame_size[0]}x{video.frame_size[1]} "
+                f"but its {kind} were drawn on {drawn[0]}x{drawn[1]} frames",
+                video.key,
+            ))
+        if (
+            video.zones is not None and video.zones.reference is not None
+            and zones_now is not None and video.zones.reference != zones_now
+        ):
+            issues.append(ProjectIssue(
+                SEVERITY_INFO, "zones_outdated",
+                f"The template regions changed since {video.name} was "
+                f"{video.zones.source}; check its regions", video.key,
+            ))
+        return issues
 
     def validate(self) -> List[ProjectIssue]:
         """Problems that would hurt a run, one issue each.
 
         Checks, per video: the file exists, it is unchanged since it was
         configured (fingerprint), it has settings, and the settings' paradigm
-        matches the project's; plus the template's paradigm, the sample sheet
-        and the results folder of earlier runs.
+        matches the project's; its trial (``trial_invalid``,
+        ``trial_needs_start``) and regions (``zones_size_mismatch`` against
+        a known frame size, ``zones_outdated`` when the template's regions
+        changed after an override was made); plus the template's paradigm,
+        the sample sheet and the results folder of earlier runs.
         """
         issues: List[ProjectIssue] = []
         paradigm = self.effective_paradigm()
@@ -1021,6 +1696,7 @@ class Project:
                 SEVERITY_WARNING, "sample_sheet_missing",
                 f"Sample sheet not found: {sheet}", None,
             ))
+        zones_now = self.zones_reference()
         for video in self.videos:
             exists = video.path.is_file()
             if not exists:
@@ -1050,6 +1726,7 @@ class Project:
                     f"{video.settings.paradigm_id}, the project is {paradigm}",
                     video.key,
                 ))
+            issues.extend(self._override_issues(video, zones_now))
             if video.last_run_dir is not None and not video.last_run_dir.is_dir():
                 issues.append(ProjectIssue(
                     SEVERITY_INFO, "run_folder_missing",

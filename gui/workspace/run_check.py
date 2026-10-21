@@ -48,7 +48,10 @@ SCOPE_LABELS = {
 # Project issue codes the pre-run check repeats (the others are about
 # results folders or unconfigured videos, which it reports itself).
 _PROJECT_ISSUE_CODES = frozenset(
-    {"paradigm_mismatch", "sample_sheet_missing", "video_changed"}
+    {
+        "paradigm_mismatch", "sample_sheet_missing", "video_changed",
+        "trial_invalid", "trial_needs_start", "zones_size_mismatch",
+    }
 )
 MAX_LISTED = 6
 
