@@ -1302,9 +1302,13 @@ class LifecycleTests(ArenaFixture):
         stage.pick_video(self.keys[0])
         self.assertEqual(stage.stack.currentIndex(), PAGE_EDITOR)
 
-    def test_the_old_setup_tab_still_runs_for_the_other_stages(self):
+    def test_the_detection_stage_is_its_own_stage(self):
+        # The old setup tab is no longer hosted: Detection is a real stage.
+        from gui.workspace.stages.detection_stage import DetectionStage
         self.window.go_to_stage("detection")
-        self.assertEqual(self.window.setup_tab.step, "detection_tuning")
+        self.assertIsInstance(self.window.stage("detection"), DetectionStage)
+        self.assertIsNot(self.window.setup_tab.parentWidget(),
+                         self.window.stage("detection").content)
 
 
 if __name__ == "__main__":
