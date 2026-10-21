@@ -17,7 +17,9 @@ sys.path.insert(0, str(project_root))
 
 from PyQt6.QtWidgets import QApplication, QMessageBox
 
+from gui.app_settings import AppSettings
 from gui.main_window import MainWindow
+from gui.workspace import theme
 from gui.workspace.window import WorkspaceWindow
 
 logger = logging.getLogger(__name__)
@@ -56,6 +58,18 @@ def _handle_uncaught_exception(exc_type, exc_value, exc_traceback):
     box.exec()
 
 
+def _apply_workspace_theme(app):
+    """Give the workspace its look (the classic window keeps the platform's).
+
+    The mode is the user's saved choice ("auto" follows the OS light/dark
+    setting). A theme problem must never keep the application from opening.
+    """
+    try:
+        theme.apply_theme(app, AppSettings().theme_mode())
+    except Exception:
+        logger.warning("The workspace theme could not be applied", exc_info=True)
+
+
 def main(arguments=None):
     """Launch the GUI or perform a packaged dependency/startup check."""
     arguments = list(sys.argv if arguments is None else arguments)
@@ -80,16 +94,20 @@ def main(arguments=None):
     logging.getLogger().setLevel(logging.INFO)
     app = QApplication(qt_arguments)
     if startup_check:
-        # Both interfaces must construct and close cleanly in a packaged build.
+        # Both interfaces must construct and close cleanly in a packaged build
+        # (the workspace themed, the classic window with the platform look).
+        _apply_workspace_theme(app)
         for window_class in (WorkspaceWindow, MainWindow):
             window = window_class()
             window.close()
             app.processEvents()
+            theme.reset_theme(app)
         return 0
     if classic:
         main_win = MainWindow()
         main_win.show()
         return app.exec()
+    _apply_workspace_theme(app)
     workspace = WorkspaceWindow()
     workspace.show()
     workspace.schedule_start(project_argument)

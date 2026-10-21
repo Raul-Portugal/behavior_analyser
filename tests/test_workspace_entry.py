@@ -17,9 +17,12 @@ except ModuleNotFoundError:
 
 class FakeWindow:
     instances = []
+    order = None        # a list to which every construction is appended
 
     def __init__(self, *args):
         type(self).instances.append(self)
+        if FakeWindow.order is not None:
+            FakeWindow.order.append(type(self).__name__)
         self.calls = []
 
     def show(self):
@@ -51,6 +54,8 @@ class EntryPointTests(unittest.TestCase):
             patch.object(gui_main, "QApplication", return_value=self.app),
             patch.object(gui_main, "WorkspaceWindow", FakeWorkspace),
             patch.object(gui_main, "MainWindow", FakeClassic),
+            patch.object(gui_main, "theme"),
+            patch.object(gui_main, "AppSettings"),
             patch.object(sys, "excepthook", sys.excepthook),
         ]
         for item in patches:
@@ -101,6 +106,30 @@ class EntryPointTests(unittest.TestCase):
         self.assertEqual(self.run_main("--startup-check", "--classic"), 0)
         self.assertEqual(len(FakeWorkspace.instances), 1)
         self.assertEqual(len(FakeClassic.instances), 1)
+
+    def test_the_workspace_is_themed_with_the_saved_mode(self):
+        gui_main.AppSettings.return_value.theme_mode.return_value = "dark"
+        self.run_main()
+        gui_main.theme.apply_theme.assert_called_once_with(self.app, "dark")
+
+    def test_the_classic_window_keeps_the_platform_look(self):
+        self.run_main("--classic")
+        gui_main.theme.apply_theme.assert_not_called()
+
+    def test_startup_check_themes_only_the_workspace(self):
+        calls = []
+        gui_main.theme.apply_theme.side_effect = lambda *a: calls.append("theme")
+        gui_main.theme.reset_theme.side_effect = lambda *a: calls.append("reset")
+        FakeWindow.order = calls
+        self.addCleanup(setattr, FakeWindow, "order", None)
+        self.run_main("--startup-check")
+        self.assertEqual(calls[:3], ["theme", "FakeWorkspace", "reset"])
+        self.assertLess(calls.index("reset"), calls.index("FakeClassic"))
+
+    def test_a_theme_failure_does_not_stop_the_application(self):
+        gui_main.theme.apply_theme.side_effect = RuntimeError("no svg")
+        self.assertEqual(self.run_main(), 7)
+        self.assertEqual(len(FakeWorkspace.instances), 1)
 
     def test_path_argument_helper(self):
         self.assertIsNone(gui_main._path_argument(["-platform", "offscreen"]))

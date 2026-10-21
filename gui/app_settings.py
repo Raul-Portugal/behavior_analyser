@@ -49,6 +49,8 @@ class AppSettings:
     KEY_RECURSIVE = "videos/add_folder_recursive"
     KEY_WORKERS = "run/parallel_workers"
     KEY_SAMPLE_SHEET = "run/sample_sheet"
+    KEY_THEME_MODE = "ui/theme_mode"
+    KEY_UI_FLAG_PREFIX = "ui/flags/"
 
     def __init__(self, qsettings: Optional[QSettings] = None):
         self._qs = qsettings if qsettings is not None else self._default_qsettings()
@@ -217,6 +219,33 @@ class AppSettings:
             self._qs.remove(self.KEY_SAMPLE_SHEET)
         else:
             self._qs.setValue(self.KEY_SAMPLE_SHEET, str(path))
+
+    # ------------------------------------------------------------------
+    # Look and feel (workspace theme, remembered section states)
+    # ------------------------------------------------------------------
+    THEME_MODES = ("auto", "light", "dark")
+
+    def theme_mode(self) -> str:
+        """"auto" (follow the OS), "light" or "dark"; "auto" if unset."""
+        value = self._qs.value(self.KEY_THEME_MODE, "auto")
+        return value if isinstance(value, str) and value in self.THEME_MODES else "auto"
+
+    def set_theme_mode(self, mode: str) -> None:
+        if mode not in self.THEME_MODES:
+            raise ValueError(f"Unknown theme mode: {mode!r}")
+        self._qs.setValue(self.KEY_THEME_MODE, mode)
+
+    def ui_flag(self, key: str, default: bool = False) -> bool:
+        """A remembered on/off interface state (e.g. a collapsed section)."""
+        raw = self._qs.value(self.KEY_UI_FLAG_PREFIX + key, None)
+        if raw is None:
+            return default
+        return str(raw).lower() == "true"
+
+    def set_ui_flag(self, key: str, value: bool) -> None:
+        self._qs.setValue(
+            self.KEY_UI_FLAG_PREFIX + key, "true" if value else "false"
+        )
 
     # ------------------------------------------------------------------
     # Recent templates and plans
