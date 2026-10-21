@@ -461,9 +461,15 @@ def render_gallery(out_dir, dark: bool = False,
 WORKSPACE_SIZES = ((1366, 768), (1920, 1080))
 
 
-def _write_clip(path: Path, frames: int = 150, fps: float = 10.0, seed: int = 0) -> Path:
-    """A short clip of a mouse-like dot walking in a box (real first frame)."""
-    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, (320, 180))
+def _write_clip(path: Path, frames: int = 150, fps: float = 10.0, seed: int = 0,
+                scale: float = 1.0) -> Path:
+    """A short clip of a mouse-like dot walking in a box (real first frame).
+
+    ``scale`` makes the same scene bigger or smaller (another camera
+    resolution); everything is drawn 320x180 and scaled.
+    """
+    size = (round(320 * scale), round(180 * scale))
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, size)
     for index in range(frames):
         frame = np.full((180, 320, 3), 205, np.uint8)
         cv2.rectangle(frame, (30, 15), (290, 165), (150, 150, 150), 2)
@@ -471,6 +477,8 @@ def _write_clip(path: Path, frames: int = 150, fps: float = 10.0, seed: int = 0)
         x = int(160 + 90 * np.cos(angle))
         y = int(90 + 50 * np.sin(angle * 1.3))
         cv2.circle(frame, (x, y), 8, (35, 35, 35), -1)
+        if scale != 1.0:
+            frame = cv2.resize(frame, size, interpolation=cv2.INTER_LINEAR)
         writer.write(frame)
     writer.release()
     return path
@@ -732,6 +740,72 @@ def ws_trials_empty(demo: WorkspaceDemo) -> None:
     demo.window.go_to_stage("trials", force=True)
 
 
+def _arena_stage(demo: WorkspaceDemo, extra_clips: Sequence[Path] = ()):
+    """Open the study on the Arena & zones stage and let the video facts in."""
+    ws_videos(demo)
+    if extra_clips:
+        demo.window.project.add_videos(extra_clips)
+    demo.window.go_to_stage("arena", force=True)
+    demo.settle()
+    return demo.window.stage("arena")
+
+
+def ws_arena_following(demo: WorkspaceDemo) -> None:
+    """One video, template zones read-only over its own frame."""
+    stage = _arena_stage(demo)
+    stage.set_mode("video")
+    stage.pick_video(demo.window.project.keys()[1])
+
+
+def ws_arena_adjusted(demo: WorkspaceDemo) -> None:
+    """A video with zones of its own, editable on its frame."""
+    stage = _arena_stage(demo)
+    stage.set_mode("video")
+    stage.pick_video(demo.window.project.keys()[2])
+    stage.adjust_video()
+
+
+def ws_arena_check(demo: WorkspaceDemo) -> None:
+    """A video with another resolution: "Check alignment"."""
+    wide = _write_clip(demo.root / "videos" / "mouse_07_other_camera.avi", frames=90,
+                       seed=6, scale=1.5)
+    stage = _arena_stage(demo, [wide])
+    stage.set_mode("video")
+    stage.pick_video(demo.window.project.keys()[-1])
+
+
+def ws_arena_options(demo: WorkspaceDemo) -> None:
+    """The paradigm options and the calibration, opened."""
+    stage = _arena_stage(demo)
+    stage.params_section.set_expanded(True)
+    demo.settle()
+    stage.side.verticalScrollBar().setValue(stage.side.verticalScrollBar().maximum())
+
+
+def ws_arena_openfield(demo: WorkspaceDemo) -> None:
+    """The open field: its wider option panel, opened."""
+    from core.project import Project
+    from core.project_io import save_project
+    study = Project(name="Open field cohort", paradigm="Freestyle / Open Field")
+    study.set_template(_demo_settings("Freestyle / Open Field"))
+    study.add_videos(demo.clips[:3])
+    path = save_project(study, demo.root / "Open field cohort.bmaproj")
+    demo.window.open_path(path)
+    demo.window.go_to_stage("arena", force=True)
+    demo.settle()
+    stage = demo.window.stage("arena")
+    stage.params_section.set_expanded(True)
+    demo.settle()
+    stage.side.verticalScrollBar().setValue(stage.side.verticalScrollBar().maximum())
+
+
+def ws_arena_blank(demo: WorkspaceDemo) -> None:
+    """A study whose template is not drawn yet."""
+    ws_videos(demo)
+    demo.window.project.set_template(None)
+    demo.window.go_to_stage("arena", force=True)
+
+
 WORKSPACE_PAGES: Dict[str, Callable[[WorkspaceDemo], None]] = {
     "welcome": ws_welcome,
     "paradigm": ws_paradigm,
@@ -741,6 +815,12 @@ WORKSPACE_PAGES: Dict[str, Callable[[WorkspaceDemo], None]] = {
     "videos_hover": ws_videos_hover,
     "videos_change": ws_videos_change,
     "arena": _stage_page("arena"),
+    "arena_following": ws_arena_following,
+    "arena_adjusted": ws_arena_adjusted,
+    "arena_check": ws_arena_check,
+    "arena_options": ws_arena_options,
+    "arena_openfield": ws_arena_openfield,
+    "arena_blank": ws_arena_blank,
     "detection": _stage_page("detection"),
     "trials": _stage_page("trials"),
     "trials_protocol": ws_trials_protocol,

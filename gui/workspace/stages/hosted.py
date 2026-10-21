@@ -22,7 +22,6 @@ from PyQt6.QtWidgets import QWidget
 from gui.workspace.stages import status as stage_status
 from gui.workspace.stages.base import Stage
 from gui.workspace.tabs import TAB_RESULTS, TAB_RUN, TAB_SETUP, WorkspaceTab
-from mazes.base_maze import STEP_ROIS
 
 
 class HostedStage(Stage):
@@ -90,16 +89,6 @@ class HostedSetupStage(HostedStage):
         return bool(resolve(rebuild=False))
 
 
-class ArenaStage(HostedSetupStage):
-    stage_id = stage_status.STAGE_ARENA
-    title = "Arena & zones"
-    subtitle = "Mark the arena and its zones once on a reference frame."
-    icon_name = "zones"
-
-    def setup_step(self) -> str:
-        return STEP_ROIS
-
-
 class DetectionStage(HostedSetupStage):
     stage_id = stage_status.STAGE_DETECTION
     title = stage_status.DETECTION_TITLE
@@ -156,6 +145,6 @@ class ResultsStage(HostedStage):
 
 
 __all__ = [
-    "ArenaStage", "DetectionStage", "HostedSetupStage", "HostedStage",
+    "DetectionStage", "HostedSetupStage", "HostedStage",
     "ResultsStage", "ReviewStage",
 ]
