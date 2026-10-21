@@ -3,10 +3,11 @@ gui/workspace/stages/hosted.py
 Stages 2 to 6 in their temporary form: the old Setup, Run and Results tabs
 hosted inside a stage, so nothing breaks while the real stages are written.
 
-* Arena & zones, Detection (Motion tuning for the Tail Suspension Test) and
-  Trials all show the **same** ``SetupTab``, jumped to the matching step
-  (``go_to_step``: regions, detection or TST tuning, time window). The tab
-  is moved into whichever of the three stages is current.
+* Arena & zones and Detection (Motion tuning for the Tail Suspension Test)
+  both show the **same** ``SetupTab``, jumped to the matching step
+  (``go_to_step``: regions, detection or TST tuning). The tab is moved into
+  whichever of the two stages is current. (Trials is a real stage now:
+  ``trials_stage.py``.)
 * Review & run hosts the ``RunTab``; Results hosts the ``ResultsTab``.
 
 The tabs keep working through their ``WorkspaceTab`` hooks (the window still
@@ -21,7 +22,7 @@ from PyQt6.QtWidgets import QWidget
 from gui.workspace.stages import status as stage_status
 from gui.workspace.stages.base import Stage
 from gui.workspace.tabs import TAB_RESULTS, TAB_RUN, TAB_SETUP, WorkspaceTab
-from mazes.base_maze import STEP_ROIS, STEP_TIME_WINDOW
+from mazes.base_maze import STEP_ROIS
 
 
 class HostedStage(Stage):
@@ -128,16 +129,6 @@ class DetectionStage(HostedSetupStage):
         self.update_for_paradigm()
 
 
-class TrialsStage(HostedSetupStage):
-    stage_id = stage_status.STAGE_TRIALS
-    title = "Trials"
-    subtitle = "Choose when each trial starts and ends."
-    icon_name = "clock"
-
-    def setup_step(self) -> str:
-        return STEP_TIME_WINDOW
-
-
 class ReviewStage(HostedStage):
     """Review & run: the old Run tab."""
 
@@ -166,5 +157,5 @@ class ResultsStage(HostedStage):
 
 __all__ = [
     "ArenaStage", "DetectionStage", "HostedSetupStage", "HostedStage",
-    "ResultsStage", "ReviewStage", "TrialsStage",
+    "ResultsStage", "ReviewStage",
 ]

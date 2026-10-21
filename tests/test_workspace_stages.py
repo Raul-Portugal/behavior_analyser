@@ -940,8 +940,7 @@ class HostedStageTests(StageFixture):
         self.ready()
         window = self.window
         tab = window.setup_tab
-        for stage_id, step in (("arena", "rois"), ("detection", "detection_tuning"),
-                               ("trials", "time_window")):
+        for stage_id, step in (("arena", "rois"), ("detection", "detection_tuning")):
             window.go_to_stage(stage_id)
             self.assertEqual(tab.step, step, stage_id)
             self.assertIs(tab.parentWidget(), window.stage(stage_id).content)
@@ -955,7 +954,7 @@ class HostedStageTests(StageFixture):
         self.assertEqual(self.window.setup_tab.step, "tst_tuning")
 
     def test_the_setup_stages_are_hosted_stages(self):
-        for stage_id in ("arena", "detection", "trials"):
+        for stage_id in ("arena", "detection"):
             self.assertIsInstance(self.window.stage(stage_id), HostedSetupStage)
 
     def test_run_and_results_host_their_tabs(self):
