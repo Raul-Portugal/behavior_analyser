@@ -4,6 +4,12 @@ Visual QA for the workspace design system: renders every ``ui_kit`` widget in
 representative states and saves one PNG per group.
 
     python tools/ui_gallery.py --out DIR [--dark]
+    python tools/ui_gallery.py --workspace --out DIR [--dark] [--size 1366x768 ...]
+
+The first form renders the design-system widgets; ``--workspace`` renders the
+whole workspace window instead: every stage (the Videos stage in each of its
+states, the details drawer, the stages hosting the old tabs) at each size,
+as ``ws_<page>_<W>x<H>[_dark].png``.
 
 Nothing appears on screen: every page is a top-level widget with
 ``WA_DontShowOnScreen``, which Qt still lays out and paints, so ``grab()``
@@ -15,8 +21,9 @@ gives the real rendering. Run it with the platform's default Qt plugin (the
 import argparse
 import sys
 import tempfile
+import traceback
 from pathlib import Path
-from typing import Callable, Dict, List, Optional
+from typing import Callable, Dict, List, Optional, Sequence, Tuple
 
 PROJECT_ROOT = Path(__file__).resolve().parent.parent
 if str(PROJECT_ROOT) not in sys.path:
@@ -448,14 +455,300 @@ def render_gallery(out_dir, dark: bool = False,
     return written
 
 
+# ----------------------------------------------------------------------
+# The whole workspace (--workspace)
+# ----------------------------------------------------------------------
+WORKSPACE_SIZES = ((1366, 768), (1920, 1080))
+
+
+def _write_clip(path: Path, frames: int = 150, fps: float = 10.0, seed: int = 0) -> Path:
+    """A short clip of a mouse-like dot walking in a box (real first frame)."""
+    writer = cv2.VideoWriter(str(path), cv2.VideoWriter_fourcc(*"MJPG"), fps, (320, 180))
+    for index in range(frames):
+        frame = np.full((180, 320, 3), 205, np.uint8)
+        cv2.rectangle(frame, (30, 15), (290, 165), (150, 150, 150), 2)
+        angle = (index + seed * 40) / 14.0
+        x = int(160 + 90 * np.cos(angle))
+        y = int(90 + 50 * np.sin(angle * 1.3))
+        cv2.circle(frame, (x, y), 8, (35, 35, 35), -1)
+        writer.write(frame)
+    writer.release()
+    return path
+
+
+def _demo_settings(paradigm: str = "Y-Maze"):
+    """Valid settings for the demo clips: three arms and a centre."""
+    from core.models import AppConfig, BatchSettings
+    from mazes import create_maze
+    from roi_manager import ROIManager
+    manager = ROIManager(source_dimensions=(320, 180))
+    boxes = {
+        "arm_a": [[40, 25], [140, 25], [140, 70], [40, 70]],
+        "arm_b": [[180, 25], [280, 25], [280, 70], [180, 70]],
+        "arm_c": [[100, 110], [220, 110], [220, 160], [100, 160]],
+        "center": [[130, 75], [190, 75], [190, 105], [130, 105]],
+    }
+    for name, _label in create_maze(paradigm).get_roi_definitions():
+        manager.add_roi(name, np.array(boxes.get(name, boxes["center"])))
+    return BatchSettings(
+        manager, AppConfig().detection, 0.0, paradigm_id=paradigm,
+        algorithm_parameters=create_maze(paradigm).get_algorithm_parameters(),
+    )
+
+
+def _quiet_prompts():
+    """A ``Prompts`` that never opens a dialog (the gallery must not block)."""
+    from gui.workspace.prompts import DISCARD, Prompts
+
+    class QuietPrompts(Prompts):
+        def info(self, title, text):
+            pass
+
+        def warn(self, title, text):
+            pass
+
+        def error(self, title, text):
+            pass
+
+        def about(self, title, text):
+            pass
+
+        def confirm(self, *args, **kwargs):
+            return True
+
+        def ask_save_changes(self, project_name):
+            return DISCARD
+
+        def ask_recovery(self, project_name, autosave):
+            return "saved"
+
+        def ask_text(self, *args, **kwargs):
+            return None
+
+        def ask_item(self, *args, **kwargs):
+            return None
+
+        def open_file(self, *args, **kwargs):
+            return None
+
+        def open_files(self, *args, **kwargs):
+            return []
+
+        def save_file(self, *args, **kwargs):
+            return None
+
+        def choose_folder(self, *args, **kwargs):
+            return None
+
+        def open_folder(self, path):
+            return True
+
+        def reveal(self, path):
+            return True
+
+        def open_url(self, url):
+            return True
+
+        def copy_text(self, text):
+            pass
+
+    return QuietPrompts(None)
+
+
+class WorkspaceDemo:
+    """A throw-away folder with clips, projects and settings, and the window."""
+
+    def __init__(self, root: Path, size: Tuple[int, int]):
+        from core.project import Project
+        from core.project_io import save_project
+        from gui.app_settings import AppSettings
+        from gui.workspace.window import WorkspaceWindow
+        self.root = root
+        self.size = size
+        folder = root / "videos"
+        folder.mkdir(exist_ok=True)
+        names = ["mouse_01_trial1.avi", "mouse_02_trial1.avi", "mouse_03_trial1.avi",
+                 "mouse_04_trial1.avi", "mouse_05_trial1.avi", "mouse_06_trial1.avi"]
+        self.clips = [_write_clip(folder / n, frames=120 + 30 * i, seed=i)
+                      for i, n in enumerate(names)]
+        self.settings = AppSettings.for_file(root / "settings.ini")
+        # A study with videos, a template, trial times and one missing file.
+        study = Project(name="Y-maze cohort 1", paradigm="Y-Maze")
+        study.set_template(_demo_settings())
+        study.add_videos(self.clips)
+        study.add_metadata_column("Group")
+        for index, entry in enumerate(study.videos):
+            study.set_metadata_value(
+                entry.key, "Group", "Control" if index % 2 == 0 else "Treated")
+        study.set_trial_protocol(300.0, "per_video")
+        for index, entry in enumerate(study.videos[:4]):
+            study.set_trial(entry.key, start=4.0 + 2 * index)
+        study.set_verified([study.videos[0].key, study.videos[1].key], True)
+        study.videos[0].last_status = "done"
+        study.videos[2].last_status = "warning"
+        self.study_path = save_project(study, root / "Y-maze cohort 1.bmaproj")
+        self.clips[5].unlink()
+        # Two more projects so the start page has recent projects to show.
+        for name in ("Open field pilot", "Tail suspension March"):
+            other = Project(name=name, paradigm="Freestyle / Open Field")
+            self.settings.add_recent_project(save_project(other, root / f"{name}.bmaproj"))
+        self.settings.add_recent_project(self.study_path)
+        self.settings.clear_last_project()
+        template = root / "my_old_template.json"
+        _demo_settings().save_to_file(template)
+        self.settings.add_recent_file(template)
+        self.window = WorkspaceWindow(self.settings, _quiet_prompts())
+        self.window.drawer.animation_ms = 0
+        self.window.setAttribute(Qt.WidgetAttribute.WA_DontShowOnScreen)
+        self.window.resize(*size)
+        self.window.show()
+        self.settle()
+
+    def settle(self) -> None:
+        for _ in range(3):
+            QCoreApplication.processEvents()
+            self.window.thumbnails.wait_idle()
+        QCoreApplication.processEvents()
+        self.window.refresh_navigation()
+
+    def grab(self, target: Path) -> Path:
+        self.settle()
+        if not self.window.grab().save(str(target), "PNG"):
+            raise OSError(f"Could not write {target}")
+        return target
+
+    def close(self) -> None:
+        self.window._skip_close_prompt = True
+        self.window.close()
+        self.window.deleteLater()
+        QCoreApplication.processEvents()
+
+
+def ws_welcome(demo: WorkspaceDemo) -> None:
+    demo.window.start()
+
+
+def ws_paradigm(demo: WorkspaceDemo) -> None:
+    from core.project import Project
+    from core.project_io import save_project
+    path = save_project(Project(name="New study"), demo.root / "New study.bmaproj")
+    demo.window.open_path(path)
+
+
+def ws_videos_empty(demo: WorkspaceDemo) -> None:
+    ws_paradigm(demo)
+    demo.window.change_paradigm("Y-Maze")
+
+
+def ws_videos(demo: WorkspaceDemo) -> None:
+    demo.window.open_path(demo.study_path)
+    window = demo.window
+    window.go_to_stage("videos", force=True)
+    keys = window.project.keys()
+    window.video_panel.select_keys(keys[1:2])
+    window.video_panel.flush_selection()
+
+
+def ws_videos_drawer(demo: WorkspaceDemo) -> None:
+    ws_videos(demo)
+    keys = demo.window.project.keys()
+    demo.window.show_details(keys[2:3])
+
+
+def ws_videos_hover(demo: WorkspaceDemo) -> None:
+    """The buttons that float over the row under the mouse."""
+    ws_videos(demo)
+    demo.settle()
+    view = demo.window.video_panel.view
+    view.show_row_actions(view.model().index(5, 0))      # the missing video
+
+
+def ws_videos_change(demo: WorkspaceDemo) -> None:
+    ws_videos(demo)
+    demo.window.videos_stage.change_paradigm()
+
+
+def _stage_page(stage_id: str):
+    def render(demo: WorkspaceDemo) -> None:
+        ws_videos(demo)
+        demo.window.go_to_stage(stage_id, force=True)
+    return render
+
+
+WORKSPACE_PAGES: Dict[str, Callable[[WorkspaceDemo], None]] = {
+    "welcome": ws_welcome,
+    "paradigm": ws_paradigm,
+    "videos_empty": ws_videos_empty,
+    "videos": ws_videos,
+    "videos_drawer": ws_videos_drawer,
+    "videos_hover": ws_videos_hover,
+    "videos_change": ws_videos_change,
+    "arena": _stage_page("arena"),
+    "detection": _stage_page("detection"),
+    "trials": _stage_page("trials"),
+    "review": _stage_page("review"),
+    "results": _stage_page("results"),
+}
+
+
+def render_workspace(out_dir, dark: bool = False,
+                     sizes: Sequence[Tuple[int, int]] = WORKSPACE_SIZES,
+                     pages: Optional[Sequence[str]] = None,
+                     app: Optional[QApplication] = None) -> List[Path]:
+    """Render the workspace window, page by page and size by size.
+
+    Each page is a fresh window in the demo state that page needs; the PNG is
+    ``ws_<page>_<W>x<H>[_dark].png``. Returns the written paths.
+    """
+    out = Path(out_dir)
+    out.mkdir(parents=True, exist_ok=True)
+    app = app or QApplication.instance() or QApplication(sys.argv[:1])
+    theme.apply_theme(app, "dark" if dark else "light")
+    suffix = "_dark" if dark else ""
+    written: List[Path] = []
+    for width, height in sizes:
+        for name in (pages or WORKSPACE_PAGES):
+            with tempfile.TemporaryDirectory(ignore_cleanup_errors=True) as tmp:
+                demo = WorkspaceDemo(Path(tmp), (width, height))
+                try:
+                    WORKSPACE_PAGES[name](demo)
+                    written.append(demo.grab(out / f"ws_{name}_{width}x{height}{suffix}.png"))
+                finally:
+                    demo.close()
+    return written
+
+
+def _parse_size(text: str) -> Tuple[int, int]:
+    try:
+        width, height = text.lower().split("x")
+        return int(width), int(height)
+    except ValueError as exc:
+        raise argparse.ArgumentTypeError(f"{text!r} is not WIDTHxHEIGHT") from exc
+
+
 def main(argv: Optional[List[str]] = None) -> int:
     parser = argparse.ArgumentParser(description="Render the workspace UI kit to PNG files.")
     parser.add_argument("--out", required=True, help="folder for the PNGs")
     parser.add_argument("--dark", action="store_true", help="render the dark theme")
+    parser.add_argument("--workspace", action="store_true",
+                        help="render the whole workspace window instead of the kit")
+    parser.add_argument("--size", action="append", type=_parse_size, metavar="WxH",
+                        help="window size for --workspace (repeatable; "
+                             "default 1366x768 and 1920x1080)")
+    parser.add_argument("--page", action="append", choices=sorted(WORKSPACE_PAGES),
+                        help="only this --workspace page (repeatable)")
     options = parser.parse_args(argv)
+    # PyQt aborts silently on an exception in a paint event or slot unless an
+    # excepthook is installed; a QA run must say what went wrong instead.
+    sys.excepthook = lambda *error: traceback.print_exception(*error)
     app = QApplication.instance() or QApplication(sys.argv[:1])
     try:
-        paths = render_gallery(options.out, dark=options.dark, app=app)
+        if options.workspace:
+            paths = render_workspace(options.out, dark=options.dark,
+                                     sizes=options.size or WORKSPACE_SIZES,
+                                     pages=options.page, app=app)
+        else:
+            paths = render_gallery(options.out, dark=options.dark, app=app)
     finally:
         theme.reset_theme(app)
     for path in paths:

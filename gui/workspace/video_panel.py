@@ -1,14 +1,21 @@
 """
 gui/workspace/video_panel.py
-The left pane of the workspace: the videos of the project as a table with a
-search box, a status filter, a summary footer and all the editing actions.
+The video table of the Videos stage: a drop zone while the project is empty,
+otherwise a compact add bar (Add videos, Add folder, search, status filter,
+Details) above a full-width table, with a summary line below.
 
 Everything the user does here goes through the Qt-free ``Project``:
 
 * adding, removing and moving videos use ``ProjectTableModel`` (proper row
   signals, so the selection survives),
 * metadata columns and notes are edited in place,
-* the context menu offers the per-video actions.
+* the context menu and the buttons that appear on the hovered row offer the
+  per-video actions (Details, Reveal, Relink, Remove).
+
+The table shows a status chip, the video name, its duration, the trial
+window, where its zones come from and the metadata columns. The other model
+columns (last run, notes, issues, settings source) are hidden; the header's
+context menu shows them again.
 
 The panel never asks the operating system or the user anything itself; it
 uses the shared :class:`~gui.workspace.prompts.Prompts` object, so the same
@@ -18,6 +25,8 @@ Public surface for the rest of the workspace:
 
 * ``selection_changed(list)`` - the keys of the selected videos, in table
   order, every time the selection (or the rows under it) changes;
+* ``details_requested(list)`` - the user asked for the details of videos
+  (the window opens the drawer);
 * ``selected_keys()``, ``select_keys(keys)``, ``clear_selection()``;
 * the actions as methods: ``add_videos_dialog``, ``add_folder_dialog``,
   ``add_paths``, ``remove_selected``, ``move_selected``, ``mark_verified``,
@@ -26,30 +35,40 @@ Public surface for the rest of the workspace:
 """
 import logging
 from pathlib import Path
-from typing import Iterable, List, Optional, Sequence
+from typing import Callable, Dict, Iterable, List, Optional, Sequence, Tuple
 
-from PyQt6.QtCore import (QItemSelectionModel, QModelIndex, QPoint, Qt, QTimer,
-                          pyqtSignal)
-from PyQt6.QtGui import QAction, QBrush, QColor, QKeyEvent
+from PyQt6.QtCore import (QItemSelectionModel, QModelIndex, QPoint, QRectF,
+                          QSize, Qt, QTimer, pyqtSignal)
+from PyQt6.QtGui import QAction, QBrush, QColor, QKeyEvent, QPainter
 from PyQt6.QtWidgets import (QAbstractItemView, QCheckBox, QComboBox,
-                             QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                             QMenu, QPushButton, QTableView, QVBoxLayout,
-                             QWidget)
+                             QHBoxLayout, QHeaderView, QLineEdit, QMenu,
+                             QStyle, QStyledItemDelegate, QStyleOptionViewItem,
+                             QTableView, QVBoxLayout, QWidget)
 
-from core.project import (SEVERITY_ERROR, SEVERITY_INFO, STATUSES,
-                          AddVideosResult, Project, ProjectError)
+from core.project import (SEVERITY_ERROR, SEVERITY_INFO, STATUS_DONE,
+                          STATUS_FAILED, STATUS_INTERRUPTED, STATUS_WARNING,
+                          STATUSES, TRIAL_INVALID, AddVideosResult, Project,
+                          ProjectError)
 from core.sample_sheet import SampleSheetError, describe_match
 from gui.app_settings import AppSettings
-from gui.project_table_model import (LEADING_COLUMNS, KeyRole,
+from gui.project_table_model import (COL_CONFIGURED, COL_SETTINGS, COL_STATUS,
+                                     COL_TRIAL, COL_VIDEO, COL_ZONES,
+                                     LEADING_COLUMNS, KeyRole,
                                      ProjectFilterProxyModel,
                                      ProjectTableModel)
+from gui.ux_helpers import format_duration
 from gui.video_list import collect_video_files
 from gui.workspace.prompts import SHEET_FILTER, VIDEO_FILTER, Prompts
+from gui.workspace.theme import (Radius, Spacing, current_palette,
+                                 style_table_view)
+from gui.workspace.thumbnails import ThumbnailLoader
+from gui.workspace.ui_kit import (DropZone, GhostButton, Label,
+                                  SecondaryButton, _chip_size, _font,
+                                  _paint_chip, _rounded)
 
 logger = logging.getLogger(__name__)
 
 MISSING_FILE = "missing_file"
-ERROR_COLOR = QColor("#d1242f")
 
 FILTER_ALL = "All statuses"
 _FILTER_LABELS = {
@@ -61,28 +80,222 @@ _FILTER_LABELS = {
     "interrupted": "Interrupted",
 }
 
+ChipRole = Qt.ItemDataRole.UserRole + 10      # (chip kind, chip text)
+HEADER_STATUS_SHOWN = "Status"
+HEADER_DURATION = "Duration"
+NO_DURATION = "—"
+# Model columns the header menu cannot hide.
+_ALWAYS_SHOWN = {COL_VIDEO}
+_COLUMN_WIDTHS = {COL_CONFIGURED: 150, COL_SETTINGS: 92, COL_TRIAL: 160,
+                  COL_ZONES: 104, COL_STATUS: 100}
+METADATA_WIDTH = 124
+
+ACTION_DETAILS = "details"
+ACTION_REVEAL = "reveal"
+ACTION_RELINK = "relink"
+ACTION_REMOVE = "remove"
+
+
+def format_video_duration(seconds: Optional[float]) -> str:
+    """``m:ss`` for a duration in seconds; a dash when it is not known."""
+    if seconds is None or seconds <= 0:
+        return NO_DURATION
+    return format_duration(seconds)
+
 
 class WorkspaceProxyModel(ProjectFilterProxyModel):
-    """The filter proxy, plus red text for videos whose file is missing."""
+    """The filter proxy, as the workspace table shows it.
+
+    On top of sorting and filtering it
+
+    * draws videos whose file is missing in red,
+    * answers ``ChipRole`` for the status column (``(kind, text)``, from
+      the missing file, the last run, the setup and the trial) and calls
+      that column "Status",
+    * shows the duration of the video in the table model's "Settings"
+      column (which the workspace does not need: "Zones" already says where
+      the settings come from), sorted by the real number of seconds,
+    * colours trial windows that need attention.
+
+    ``duration_of(key)`` supplies the duration in seconds (None = unknown).
+    """
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.duration_of: Callable[[str], Optional[float]] = lambda key: None
+
+    # -- helpers ---------------------------------------------------------
+    def _key(self, index) -> Optional[str]:
+        model = self.sourceModel()
+        if not isinstance(model, ProjectTableModel) or not index.isValid():
+            return None
+        source = self.mapToSource(index)
+        return model.index(source.row(), 0).data(KeyRole)
+
+    def _is_missing(self, key: Optional[str]) -> bool:
+        model = self.sourceModel()
+        return key is not None and isinstance(model, ProjectTableModel) and any(
+            issue.code == MISSING_FILE for issue in model.issues_for(key)
+        )
+
+    def chip_for(self, key: str) -> Tuple[str, str]:
+        """``(kind, text)`` of a video's status chip."""
+        project = self.sourceModel().project()
+        entry = project.entry(key)
+        if self._is_missing(key):
+            return "error", "Missing file"
+        if entry.last_status == STATUS_FAILED:
+            return "error", "Failed"
+        if entry.last_status == STATUS_INTERRUPTED:
+            return "warning", "Interrupted"
+        if entry.settings is None:
+            return "neutral", "Not set up"
+        trial = project.trial_status(entry)
+        if trial == TRIAL_INVALID:
+            return "error", "Invalid trial"
+        if trial != "ok":
+            return "warning", "Needs start"
+        if entry.last_status == STATUS_DONE:
+            return "ok", "Analysed"
+        if entry.last_status == STATUS_WARNING:
+            return "warning", "Check results"
+        if entry.verified:
+            return "ok", "Verified"
+        return "info", "Set up"
+
+    # -- model interface -------------------------------------------------
+    def headerData(self, section, orientation, role=Qt.ItemDataRole.DisplayRole):
+        if (role == Qt.ItemDataRole.DisplayRole
+                and orientation == Qt.Orientation.Horizontal):
+            if section == COL_CONFIGURED:
+                return HEADER_STATUS_SHOWN
+            if section == COL_SETTINGS:
+                return HEADER_DURATION
+        return super().headerData(section, orientation, role)
 
     def data(self, index, role=Qt.ItemDataRole.DisplayRole):
-        if role == Qt.ItemDataRole.ForegroundRole and index.isValid():
-            model = self.sourceModel()
-            if isinstance(model, ProjectTableModel):
-                source = self.mapToSource(index)
-                key = model.index(source.row(), 0).data(KeyRole)
-                if key is not None and any(
-                    issue.code == MISSING_FILE for issue in model.issues_for(key)
-                ):
-                    return QBrush(ERROR_COLOR)
+        if index.isValid():
+            column = index.column()
+            key = self._key(index)
+            if role == Qt.ItemDataRole.ForegroundRole:
+                if self._is_missing(key):
+                    return QBrush(QColor(current_palette().danger))
+                if column == COL_TRIAL:
+                    text = super().data(index, Qt.ItemDataRole.DisplayRole) or ""
+                    if str(text).startswith("⚠"):
+                        palette = current_palette()
+                        invalid = "invalid" in str(text)
+                        return QBrush(QColor(palette.danger if invalid else palette.warning))
+            elif column == COL_SETTINGS and key is not None:
+                if role in (Qt.ItemDataRole.DisplayRole, Qt.ItemDataRole.EditRole):
+                    return format_video_duration(self.duration_of(key))
+                if role == Qt.ItemDataRole.ToolTipRole:
+                    return None
+            elif column == COL_CONFIGURED and key is not None:
+                if role == ChipRole:
+                    return self.chip_for(key)
+                if role == Qt.ItemDataRole.ToolTipRole:
+                    model = self.sourceModel()
+                    lines = [issue.message for issue in model.issues_for(key)]
+                    return "\n".join(lines) or None
         return super().data(index, role)
+
+    def lessThan(self, left, right) -> bool:
+        if left.column() == COL_SETTINGS:
+            model = self.sourceModel()
+            keys = [model.index(i.row(), 0).data(KeyRole) for i in (left, right)]
+            values = [self.duration_of(k) or 0.0 for k in keys]
+            return values[0] < values[1]
+        return super().lessThan(left, right)
+
+
+class ChipDelegate(QStyledItemDelegate):
+    """Draws the status column as a pill (``ChipRole``) on a plain row."""
+
+    def paint(self, painter: QPainter, option: QStyleOptionViewItem, index) -> None:
+        chip = index.data(ChipRole)
+        base = QStyleOptionViewItem(option)
+        self.initStyleOption(base, index)
+        base.text = ""
+        widget = option.widget
+        style = widget.style() if widget is not None else None
+        if style is not None:
+            style.drawControl(QStyle.ControlElement.CE_ItemViewItem, base, painter, widget)
+        if not chip:
+            return
+        kind, text = chip
+        font = _font(option.font, 11, True)
+        size = _chip_size(text, font, kind in ("ok", "warning", "error", "info"))
+        rect = QRectF(option.rect.left() + 8,
+                      option.rect.center().y() - size.height() / 2.0 + 0.5,
+                      min(size.width(), option.rect.width() - 12), size.height())
+        painter.save()
+        painter.setRenderHint(QPainter.RenderHint.Antialiasing)
+        _paint_chip(painter, widget, rect, text, kind, font)
+        painter.restore()
+
+    def sizeHint(self, option, index) -> QSize:
+        hint = super().sizeHint(option, index)
+        return QSize(hint.width(), max(hint.height(), 32))
+
+
+class _RowActions(QWidget):
+    """Small icon buttons floating over the hovered row of the table."""
+
+    action = pyqtSignal(str)
+
+    _SPECS = (
+        (ACTION_DETAILS, "eye", "Show the details of this video"),
+        (ACTION_REVEAL, "folder", "Show the file in its folder"),
+        (ACTION_RELINK, "reset", "Point the project at the folder where this video is now"),
+        (ACTION_REMOVE, "trash", "Remove this video from the project"),
+    )
+
+    def __init__(self, parent: QWidget):
+        super().__init__(parent)
+        self.buttons: Dict[str, GhostButton] = {}
+        row = QHBoxLayout(self)
+        row.setContentsMargins(4, 2, 4, 2)
+        row.setSpacing(2)
+        for name, icon_name, tip in self._SPECS:
+            button = GhostButton("", icon_name)
+            button.setFixedSize(28, 28)
+            button.setToolTip(tip)
+            button.setAccessibleName(tip)
+            button.clicked.connect(lambda _c=False, n=name: self.action.emit(n))
+            row.addWidget(button)
+            self.buttons[name] = button
+        self.hide()
+
+    def paintEvent(self, event) -> None:
+        palette = current_palette()
+        painter = QPainter(self)
+        _rounded(painter, QRectF(self.rect()), Radius.MD, palette.surface,
+                 palette.border_strong)
 
 
 class VideoTableView(QTableView):
-    """The table, with Delete and Alt+Up/Down turned into signals."""
+    """The table, with Delete and Alt+Up/Down turned into signals and the
+    row action buttons that follow the mouse."""
 
     remove_requested = pyqtSignal()
     move_requested = pyqtSignal(int)    # -1 up, +1 down
+    row_action = pyqtSignal(str, str)   # (action, key of the row)
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self.missing_of: Callable[[str], bool] = lambda key: False
+        self.can_edit: Callable[[], bool] = lambda: True
+        self._actions = _RowActions(self.viewport())
+        self._actions.action.connect(self._on_action)
+        self._hover_key: Optional[str] = None
+        self.setMouseTracking(True)
+        self.viewport().setMouseTracking(True)
+        self.verticalScrollBar().valueChanged.connect(self.hide_row_actions)
+
+    @property
+    def row_actions(self) -> _RowActions:
+        return self._actions
 
     def keyPressEvent(self, event: QKeyEvent) -> None:
         alt = bool(event.modifiers() & Qt.KeyboardModifier.AltModifier)
@@ -98,11 +311,59 @@ class VideoTableView(QTableView):
         else:
             super().keyPressEvent(event)
 
+    # -- hover actions -----------------------------------------------------
+    def hide_row_actions(self, *_args) -> None:
+        self._hover_key = None
+        self._actions.hide()
+
+    def show_row_actions(self, index: QModelIndex) -> None:
+        """Float the action buttons over the row of ``index``."""
+        key = index.data(KeyRole) if index.isValid() else None
+        if key is None:
+            self.hide_row_actions()
+            return
+        self._hover_key = key
+        editable = self.can_edit()
+        self._actions.buttons[ACTION_RELINK].setVisible(self.missing_of(key))
+        self._actions.buttons[ACTION_RELINK].setEnabled(editable)
+        self._actions.buttons[ACTION_REMOVE].setEnabled(editable)
+        self._actions.adjustSize()
+        rect = self.visualRect(self.model().index(index.row(), COL_VIDEO))
+        height = self._actions.height()
+        x = max(0, self.viewport().width() - self._actions.width() - 8)
+        y = rect.top() + (rect.height() - height) // 2
+        self._actions.move(x, y)
+        self._actions.show()
+        self._actions.raise_()
+
+    def mouseMoveEvent(self, event) -> None:
+        super().mouseMoveEvent(event)
+        index = self.indexAt(event.position().toPoint())
+        if index.isValid():
+            if index.data(KeyRole) != self._hover_key or not self._actions.isVisible():
+                self.show_row_actions(index)
+        elif not self._actions.underMouse():
+            self.hide_row_actions()
+
+    def leaveEvent(self, event) -> None:
+        super().leaveEvent(event)
+        if not self._actions.underMouse():
+            self.hide_row_actions()
+
+    def _on_action(self, name: str) -> None:
+        key = self._hover_key
+        self.hide_row_actions()
+        if key is not None:
+            self.row_action.emit(name, key)
+
 
 class VideoPanel(QWidget):
-    """Search, filter, table, footer and actions for the project's videos."""
+    """Add bar, filters, table, footer and actions for the project's videos."""
 
     selection_changed = pyqtSignal(list)    # keys of the selected videos
+    # The user asked for the details of these videos (a row's button, a
+    # double click, the add bar's Details button, the context menu).
+    details_requested = pyqtSignal(list)
     # Local paths dropped on the panel (files, folders, anything); whoever
     # owns the workspace decides what each one means.
     paths_dropped = pyqtSignal(list)
@@ -114,16 +375,20 @@ class VideoPanel(QWidget):
         app_settings: Optional[AppSettings] = None,
         prompts: Optional[Prompts] = None,
         parent: Optional[QWidget] = None,
+        loader: Optional[ThumbnailLoader] = None,
     ):
         super().__init__(parent)
         self.app_settings = app_settings or AppSettings()
         self.prompts = prompts or Prompts(self)
+        self.loader = loader        # reads the durations (shared, not owned)
         self._project: Optional[Project] = None
         self._read_only = False
         self._last_keys: List[str] = []
+        self._user_shown: set = set()
         self.model = ProjectTableModel(parent=self)
         self.proxy = WorkspaceProxyModel(self)
         self.proxy.setSourceModel(self.model)
+        self.proxy.duration_of = self.duration_of
         self._build_ui()
         self.setAcceptDrops(True)
         # Coalesces the burst of model signals one edit produces.
@@ -134,9 +399,14 @@ class VideoPanel(QWidget):
         self.model.projectChanged.connect(self._on_model_changed)
         self.model.modelReset.connect(self._on_model_reset)
         self.model.rowsRemoved.connect(self._schedule_selection)
+        self.model.rowsInserted.connect(self._on_rows_inserted)
+        self.model.columnsInserted.connect(self._apply_view_layout)
+        self.model.columnsRemoved.connect(self._apply_view_layout)
         self.view.selectionModel().selectionChanged.connect(
             self._schedule_selection
         )
+        if loader is not None:
+            loader.loaded.connect(self._on_preview_loaded)
         self.set_project(None)
 
     # ------------------------------------------------------------------
@@ -144,47 +414,97 @@ class VideoPanel(QWidget):
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(4, 4, 4, 4)
+        layout.setContentsMargins(0, 0, 0, 0)
+        layout.setSpacing(Spacing.XS)
 
-        top = QHBoxLayout()
+        # -- the add bar ----------------------------------------------------
+        self.add_bar = QWidget()
+        bar = QHBoxLayout(self.add_bar)
+        bar.setContentsMargins(0, 0, 0, 0)
+        bar.setSpacing(Spacing.XS)
+        self.add_videos_button = SecondaryButton("Add videos", "video")
+        self.add_videos_button.setToolTip("Add video files to the project")
+        self.add_videos_button.clicked.connect(
+            lambda _checked=False: self.add_videos_dialog()
+        )
+        self.add_folder_button = SecondaryButton("Add folder", "folder")
+        self.add_folder_button.setToolTip("Add all the videos of a folder")
+        self.add_folder_button.clicked.connect(
+            lambda _checked=False: self.add_folder_dialog()
+        )
+        self.drop_hint = Label("or drop videos and folders anywhere", "muted")
         self.search_box = QLineEdit()
         self.search_box.setPlaceholderText("Search videos, metadata, notes...")
         self.search_box.setClearButtonEnabled(True)
+        self.search_box.setMinimumWidth(220)
         self.search_box.textChanged.connect(self._on_filter_changed)
-        top.addWidget(self.search_box, 1)
         self.status_combo = QComboBox()
         self.status_combo.addItem(FILTER_ALL, "")
         for status in STATUSES:
             self.status_combo.addItem(_FILTER_LABELS.get(status, status), status)
         self.status_combo.currentIndexChanged.connect(self._on_filter_changed)
-        top.addWidget(self.status_combo)
-        layout.addLayout(top)
+        self.details_button = GhostButton("Details", "eye")
+        self.details_button.setToolTip(
+            "Show the details of the selected video (Ctrl+I)"
+        )
+        self.details_button.clicked.connect(
+            lambda _checked=False: self.request_details()
+        )
+        bar.addWidget(self.add_videos_button)
+        bar.addWidget(self.add_folder_button)
+        bar.addSpacing(Spacing.XS)
+        bar.addWidget(self.drop_hint)
+        bar.addStretch(1)
+        bar.addWidget(self.search_box)
+        bar.addWidget(self.status_combo)
+        bar.addWidget(self.details_button)
+        layout.addWidget(self.add_bar)
 
+        # -- the empty state -------------------------------------------------
+        self.drop_zone = DropZone()
+        self.drop_zone.setAcceptDrops(False)    # the panel takes the drops
+        self.drop_zone.browse_requested.connect(
+            lambda: self.add_videos_dialog()
+        )
+        self.drop_zone.folder_requested.connect(
+            lambda: self.add_folder_dialog()
+        )
+        layout.addWidget(self.drop_zone, 1)
+
+        # -- the table --------------------------------------------------------
         self.view = VideoTableView()
         self.view.setModel(self.proxy)
-        self.view.setSelectionBehavior(QAbstractItemView.SelectionBehavior.SelectRows)
+        style_table_view(self.view)
         self.view.setSelectionMode(QAbstractItemView.SelectionMode.ExtendedSelection)
         self.view.setEditTriggers(
             QAbstractItemView.EditTrigger.DoubleClicked
             | QAbstractItemView.EditTrigger.EditKeyPressed
         )
-        self.view.setAlternatingRowColors(True)
-        self.view.setWordWrap(False)
         self.view.setSortingEnabled(True)
         self.view.sortByColumn(-1, Qt.SortOrder.AscendingOrder)
-        self.view.verticalHeader().setVisible(False)
         header = self.view.horizontalHeader()
-        header.setStretchLastSection(True)
+        header.setStretchLastSection(False)
         header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
         header.setMinimumSectionSize(40)
+        header.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        header.customContextMenuRequested.connect(self._show_header_menu)
+        self.view.setItemDelegateForColumn(COL_CONFIGURED, ChipDelegate(self.view))
         self.view.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.view.customContextMenuRequested.connect(self._show_context_menu)
         self.view.remove_requested.connect(self.remove_selected)
         self.view.move_requested.connect(self.move_selected)
+        self.view.row_action.connect(self._on_row_action)
+        self.view.doubleClicked.connect(self._on_double_clicked)
+        self.view.missing_of = lambda key: self.has_missing([key])
+        self.view.can_edit = lambda: not self._blocked()
         layout.addWidget(self.view, 1)
 
-        buttons = QHBoxLayout()
-        self.add_column_button = QPushButton("Add column")
+        # -- the bottom row ----------------------------------------------------
+        self.bottom_bar = QWidget()
+        buttons = QHBoxLayout(self.bottom_bar)
+        buttons.setContentsMargins(0, 0, 0, 0)
+        buttons.setSpacing(Spacing.SM)
+        self.add_column_button = GhostButton("Add column", "plus")
         self.add_column_button.setToolTip(
             "Add a metadata column (group, dose, session...) to every video"
         )
@@ -197,21 +517,124 @@ class VideoPanel(QWidget):
         )
         self.recursive_check.setChecked(self.app_settings.add_folder_recursive())
         self.recursive_check.toggled.connect(self._on_recursive_toggled)
+        self.drop_zone.set_recursive(self.recursive_check.isChecked())
         buttons.addWidget(self.recursive_check)
         buttons.addStretch(1)
-        layout.addLayout(buttons)
-
-        self.empty_label = QLabel(
-            "Drop videos or a folder here,\nor use Add videos / Add folder."
-        )
-        self.empty_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
-        self.empty_label.setEnabled(False)
-        layout.addWidget(self.empty_label)
-
-        self.footer = QLabel()
+        self.footer = Label("", "muted")
         self.footer.setTextFormat(Qt.TextFormat.RichText)
         self.footer.setWordWrap(True)
-        layout.addWidget(self.footer)
+        buttons.addWidget(self.footer, 4)
+        layout.addWidget(self.bottom_bar)
+
+    @property
+    def empty_state_visible(self) -> bool:
+        """True while the drop zone stands in for the (empty) table."""
+        return not self.drop_zone.isHidden()
+
+    # -- table layout --------------------------------------------------------
+    def _apply_view_layout(self, *_args) -> None:
+        """Hide the secondary columns, order and size the rest."""
+        view = self.view
+        header = view.horizontalHeader()
+        columns = self.model.columnCount()
+        shown = {COL_CONFIGURED, COL_VIDEO, COL_SETTINGS, COL_TRIAL, COL_ZONES}
+        shown.update(range(
+            LEADING_COLUMNS, LEADING_COLUMNS + len(self.model.metadata_columns())
+        ))
+        for column in range(columns):
+            visible = column in shown or column in self._user_shown
+            view.setColumnHidden(column, not visible)
+        # The status chip leads, then the name.
+        if columns > max(COL_CONFIGURED, COL_VIDEO):
+            header.moveSection(header.visualIndex(COL_CONFIGURED), 0)
+            header.moveSection(header.visualIndex(COL_VIDEO), 1)
+        for column in range(columns):
+            if column == COL_VIDEO:
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Stretch)
+            else:
+                header.setSectionResizeMode(column, QHeaderView.ResizeMode.Interactive)
+                header.resizeSection(column, _COLUMN_WIDTHS.get(column, METADATA_WIDTH))
+
+    def _show_header_menu(self, position: QPoint) -> None:
+        menu = self.build_header_menu()
+        if menu.actions():
+            menu.exec(self.view.horizontalHeader().mapToGlobal(position))
+        menu.deleteLater()
+
+    def build_header_menu(self) -> QMenu:
+        """Checkable list of the columns (the name always stays)."""
+        menu = QMenu(self)
+        for column in range(self.model.columnCount()):
+            if column in _ALWAYS_SHOWN:
+                continue
+            label = self.proxy.headerData(column, Qt.Orientation.Horizontal)
+            action = QAction(str(label), menu)
+            action.setCheckable(True)
+            action.setChecked(not self.view.isColumnHidden(column))
+            action.toggled.connect(
+                lambda checked, c=column: self.set_column_visible(c, checked)
+            )
+            menu.addAction(action)
+        return menu
+
+    def set_column_visible(self, column: int, visible: bool) -> None:
+        if visible:
+            self._user_shown.add(column)
+        else:
+            self._user_shown.discard(column)
+        self.view.setColumnHidden(column, not visible)
+        if visible:
+            self.view.horizontalHeader().resizeSection(
+                column, _COLUMN_WIDTHS.get(column, METADATA_WIDTH)
+            )
+
+    # ------------------------------------------------------------------
+    # Durations
+    # ------------------------------------------------------------------
+    def duration_of(self, key: str) -> Optional[float]:
+        """Seconds: what the project knows, else what the loader has read."""
+        project = self._project
+        if project is None:
+            return None
+        try:
+            entry = project.entry(key)
+        except KeyError:
+            return None
+        if entry.duration_s:
+            return entry.duration_s
+        if self.loader is not None:
+            preview = self.loader.get(entry.path)
+            if preview is not None and preview.duration > 0:
+                return preview.duration
+        return None
+
+    def request_durations(self) -> int:
+        """Ask the loader to read every video not read yet; returns how many."""
+        if self.loader is None or self._project is None:
+            return 0
+        started = 0
+        for entry in self._project.videos:
+            if not entry.duration_s and self.loader.get(entry.path) is None:
+                started += int(self.loader.request(entry.path))
+        return started
+
+    def _on_preview_loaded(self, path_text: str) -> None:
+        project = self._project
+        if project is None:
+            return
+        for row, entry in enumerate(project.videos):
+            if str(entry.path) == path_text and row < self.model.rowCount():
+                index = self.model.index(row, COL_SETTINGS)
+                self.model.dataChanged.emit(index, index)
+
+    def showEvent(self, event) -> None:
+        super().showEvent(event)
+        self.request_durations()
+
+    def _on_rows_inserted(self, *_args) -> None:
+        self._schedule_selection()
+        if self.isVisible():
+            self.request_durations()
 
     # ------------------------------------------------------------------
     # The project
@@ -230,6 +653,7 @@ class VideoPanel(QWidget):
         self.add_column_button.setEnabled(
             self._project is not None and not read_only
         )
+        self._refresh_chrome()
 
     def is_read_only(self) -> bool:
         return self._read_only
@@ -241,6 +665,8 @@ class VideoPanel(QWidget):
     def set_project(self, project: Optional[Project]) -> None:
         self._project = project
         self.model.recursive_drop = self.recursive_check.isChecked()
+        self.view.hide_row_actions()
+        self._user_shown = set()
         self.model.set_project(project)
         enabled = project is not None
         self.search_box.setEnabled(enabled)
@@ -250,19 +676,32 @@ class VideoPanel(QWidget):
         self.proxy.clear_filters()
         self.search_box.clear()
         self.status_combo.setCurrentIndex(0)
+        self._apply_view_layout()
         self._refresh_chrome()
 
     def _on_model_changed(self) -> None:
         self._refresh_chrome()
 
     def _on_model_reset(self) -> None:
+        self.view.hide_row_actions()
+        self._apply_view_layout()
         self._refresh_chrome()
         self._schedule_selection()
+        if self.isVisible():
+            self.request_durations()
 
     def _refresh_chrome(self) -> None:
-        """Footer and empty-state label."""
+        """Add bar, empty state and footer follow the project."""
         project = self._project
-        self.empty_label.setVisible(project is not None and not project.videos)
+        empty = project is not None and not project.videos
+        editable = not self._blocked()
+        self.drop_zone.setVisible(empty)
+        self.view.setVisible(not empty)
+        self.add_bar.setVisible(not empty)
+        self.add_videos_button.setEnabled(editable)
+        self.add_folder_button.setEnabled(editable)
+        self.drop_zone.setEnabled(editable)
+        self.details_button.setEnabled(bool(self.selected_keys()))
         self.footer.setText(self.footer_text())
 
     def footer_text(self) -> str:
@@ -290,7 +729,7 @@ class VideoPanel(QWidget):
             count_text += f" ({shown} shown)"
         if errors:
             issue_text = (
-                f'<span style="color:{ERROR_COLOR.name()}">'
+                f'<span style="color:{QColor(current_palette().danger).name()}">'
                 f"{errors + warnings} issue{'s' if errors + warnings != 1 else ''}"
                 "</span>"
             )
@@ -341,6 +780,7 @@ class VideoPanel(QWidget):
         keys = self.selected_keys()
         if keys != self._last_keys:
             self._last_keys = keys
+            self.details_button.setEnabled(bool(keys))
             self.selection_changed.emit(keys)
 
     def flush_selection(self) -> None:
@@ -361,6 +801,7 @@ class VideoPanel(QWidget):
     def _on_recursive_toggled(self, checked: bool) -> None:
         self.app_settings.set_add_folder_recursive(checked)
         self.model.recursive_drop = checked
+        self.drop_zone.set_recursive(checked)
 
     # ------------------------------------------------------------------
     # Adding
@@ -504,7 +945,7 @@ class VideoPanel(QWidget):
             self.prompts.info(
                 "No template",
                 "The project has no template settings yet. Configure them "
-                "in the Setup tab first.",
+                "in the Arena & zones stage first.",
             )
             return []
         custom = [
@@ -676,6 +1117,38 @@ class VideoPanel(QWidget):
         )
 
     # ------------------------------------------------------------------
+    # Details and the hovered row's buttons
+    # ------------------------------------------------------------------
+    def request_details(self, keys: Optional[Sequence[str]] = None) -> None:
+        """Ask the window to show the details of ``keys`` (default: selection)."""
+        wanted = list(keys) if keys is not None else self.selected_keys()
+        if wanted:
+            self.details_requested.emit(wanted)
+
+    def _on_row_action(self, action: str, key: str) -> None:
+        if action == ACTION_DETAILS:
+            if self.selected_keys() != [key]:
+                self.select_keys([key])
+                self.flush_selection()
+            self.request_details()
+        elif action == ACTION_REVEAL:
+            self.reveal(key)
+        elif action == ACTION_RELINK:
+            self.relink(key)
+        elif action == ACTION_REMOVE:
+            self.remove_keys([key])
+
+    def _on_double_clicked(self, index: QModelIndex) -> None:
+        """A double click on a cell that cannot be edited opens the details."""
+        if not index.isValid():
+            return
+        if self.proxy.flags(index) & Qt.ItemFlag.ItemIsEditable:
+            return
+        key = index.data(KeyRole)
+        if key is not None:
+            self.request_details([key])
+
+    # ------------------------------------------------------------------
     # Context menu
     # ------------------------------------------------------------------
     def _show_context_menu(self, position: QPoint) -> None:
@@ -711,6 +1184,7 @@ class VideoPanel(QWidget):
             menu.addAction(action)
             return action
 
+        add("Details", lambda: self.request_details(keys), has_selection)
         add("Remove", lambda: self.remove_keys(self.selected_keys()), has_selection)
         add("Reveal in folder", lambda: self.reveal(keys[0]), len(keys) == 1)
         add("Copy path", lambda: self.copy_paths(keys), has_selection)
@@ -751,6 +1225,7 @@ class VideoPanel(QWidget):
     def dragEnterEvent(self, event) -> None:
         if not self._blocked() and event.mimeData().hasUrls():
             event.acceptProposedAction()
+            self.drop_zone.set_highlight(True)
         else:
             event.ignore()
 
@@ -760,7 +1235,12 @@ class VideoPanel(QWidget):
         else:
             event.ignore()
 
+    def dragLeaveEvent(self, event) -> None:
+        self.drop_zone.set_highlight(False)
+        event.accept()
+
     def dropEvent(self, event) -> None:
+        self.drop_zone.set_highlight(False)
         paths = [
             Path(url.toLocalFile()) for url in event.mimeData().urls()
             if url.isLocalFile() and url.toLocalFile()
@@ -771,5 +1251,11 @@ class VideoPanel(QWidget):
         event.acceptProposedAction()
         self.paths_dropped.emit(paths)
 
+    def shutdown(self) -> None:
+        """Stop what the panel started (the selection timer)."""
+        self._selection_timer.stop()
+        self.view.hide_row_actions()
 
-__all__ = ["VideoPanel", "VideoTableView", "WorkspaceProxyModel"]
+
+__all__ = ["VideoPanel", "VideoTableView", "WorkspaceProxyModel", "ChipDelegate",
+           "ChipRole"]

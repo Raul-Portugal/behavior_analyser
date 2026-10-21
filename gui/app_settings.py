@@ -353,6 +353,34 @@ class AppSettings:
         )
 
     # ------------------------------------------------------------------
+    # Where the user was in each project (workspace stage)
+    # ------------------------------------------------------------------
+    KEY_STAGES = "workspace/project_stages"
+
+    def _stage_map(self) -> dict:
+        raw = self._qs.value(self.KEY_STAGES, "")
+        try:
+            data = json.loads(raw) if isinstance(raw, str) and raw else {}
+        except ValueError:
+            return {}
+        return data if isinstance(data, dict) else {}
+
+    def workspace_stage(self, project_file: PathLike) -> Optional[str]:
+        """The stage the user left a project at (None if never recorded)."""
+        found = self._stage_map().get(os.path.normcase(os.path.abspath(project_file)))
+        return found if isinstance(found, str) and found else None
+
+    def set_workspace_stage(self, project_file: PathLike, stage: Optional[str]) -> None:
+        """Remember (or, with None, forget) the stage a project was left at."""
+        mapping = self._stage_map()
+        key = os.path.normcase(os.path.abspath(project_file))
+        if not stage:
+            mapping.pop(key, None)
+        else:
+            mapping[key] = str(stage)
+        self._qs.setValue(self.KEY_STAGES, json.dumps(mapping))
+
+    # ------------------------------------------------------------------
     # Run output folder of each project (workspace Run tab)
     # ------------------------------------------------------------------
     KEY_RUN_OUTPUTS = "run/project_output_dirs"

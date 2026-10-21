@@ -23,6 +23,7 @@ class ContextFixture(WorkspaceFixture):
         self.project = self.window.project
         self.panel = self.window.context_panel
         self.table = self.window.video_panel
+        self.window.drawer.open(animated=False)   # a closed drawer does not redraw
 
     def add(self, *paths):
         self.table.add_paths(list(paths) or self.videos)
@@ -44,51 +45,20 @@ class ContextFixture(WorkspaceFixture):
         self.app.processEvents()
 
 
-class EmptyAndProjectBoxTests(ContextFixture):
+class EmptyTests(ContextFixture):
     def test_hint_without_a_selection(self):
         self.assertEqual(self.panel.pages.currentIndex(), ContextPanel.PAGE_EMPTY)
         self.assertIn("Select a video", self.panel.empty_label.text())
 
-    def test_project_box(self):
-        self.assertEqual(self.panel.project_name_label.text(), "study")
-        self.assertEqual(
-            self.panel.project_file_label.toolTip(), str(self.project.file_path)
-        )
-        self.assertEqual(
-            self.plain(self.panel.project_file_label.text()),
-            str(self.project.file_path),
-        )
-
     def test_without_a_project(self):
         self.window.close_project()
-        self.assertFalse(self.panel.project_box.isEnabled())
         self.assertEqual(self.panel.pages.currentIndex(), ContextPanel.PAGE_EMPTY)
         self.assertIn("No project", self.panel.empty_label.text())
 
-    def test_paradigm_combo_lists_the_known_paradigms(self):
-        from mazes import AVAILABLE_MAZES
-        combo = self.panel.paradigm_combo
-        items = [combo.itemText(i) for i in range(combo.count())]
-        self.assertEqual(items[1:], list(AVAILABLE_MAZES))
-        self.project.set_paradigm("Y-Maze")
-        self.assertEqual(combo.currentText(), "Y-Maze")
-        self.assertNotIn("(choose a paradigm)", [
-            combo.itemText(i) for i in range(combo.count())
-        ])
-
-    def test_an_unknown_paradigm_is_kept_visible(self):
-        self.project.set_paradigm("Future Maze")
-        self.assertEqual(self.panel.paradigm_combo.currentText(), "Future Maze")
-
-    def test_paradigm_chosen_is_emitted_only_by_the_user(self):
-        got = []
-        self.panel.paradigm_chosen.connect(got.append)
-        self.project.set_paradigm("Y-Maze")
-        self.assertEqual(got, [])
-        combo = self.panel.paradigm_combo
-        index = combo.findData("Elevated Plus Maze")
-        self.panel._on_paradigm_activated(index)
-        self.assertEqual(got, ["Elevated Plus Maze"])
+    def test_the_panel_has_no_project_box_any_more(self):
+        # Name, file and paradigm moved to the Videos stage.
+        for attribute in ("project_box", "paradigm_combo", "paradigm_chosen"):
+            self.assertFalse(hasattr(self.panel, attribute), attribute)
 
 
 class SingleVideoTests(ContextFixture):
@@ -105,6 +75,36 @@ class SingleVideoTests(ContextFixture):
         self.assertEqual(panel.source_label.text(), "Project template")
         self.project.set_verified([self.project.videos[1].key], True)
         self.assertEqual(panel.configured_label.text(), "Configured and verified")
+
+    def test_shows_the_chip_trial_and_zones(self):
+        self.project.set_template(make_settings())
+        self.add()
+        self.select("m2.mp4")
+        panel = self.panel
+        self.assertEqual(panel.status_chip.text(), "Set up")
+        self.assertEqual(panel.trial_label.text(), "whole video")
+        self.assertEqual(panel.zones_label.text(), "The project template's")
+        self.project.set_verified([self.project.videos[1].key], True)
+        self.assertEqual(panel.status_chip.text(), "Verified")
+        self.assertEqual(panel.verify_button.text(), "Mark unverified")
+
+    def test_the_actions_announce_themselves(self):
+        self.project.set_template(make_settings())
+        self.add()
+        self.select("m2.mp4")
+        got = []
+        self.panel.action_requested.connect(got.append)
+        self.panel.verify_button.click()
+        self.panel.reveal_button.click()
+        self.assertEqual(got, ["verify", "reveal"])
+        self.assertEqual(self.prompts.called("reveal"), [(self.videos[1],)])
+        self.assertEqual(
+            [v.verified for v in self.project.videos], [False, True, False]
+        )
+        self.panel.verify_button.click()
+        self.assertEqual(
+            [v.verified for v in self.project.videos], [False, False, False]
+        )
 
     def test_updates_when_the_project_changes(self):
         self.add()
@@ -416,7 +416,14 @@ class ShutdownTests(ContextFixture):
         self.panel.notes_edit.setPlainText("saved on exit")
         self.panel.shutdown()
         self.assertEqual(self.project.videos[0].notes, "saved on exit")
-        self.assertFalse(self.panel.loader.request(self.real))
+        # The window's loader is shared and stopped by the window itself.
+        self.assertTrue(self.panel.loader.request(self.real))
+
+    def test_a_panel_with_its_own_reader_stops_it(self):
+        alone = ContextPanel(self.prompts)
+        self.addCleanup(alone.deleteLater)
+        alone.shutdown()
+        self.assertFalse(alone.loader.request(self.real))
 
     def test_closing_the_window_shuts_the_panel_down(self):
         self.window.close()

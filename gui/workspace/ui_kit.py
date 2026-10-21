@@ -1308,6 +1308,11 @@ class DropZone(_Themed, QWidget):
             self._dragging = dragging
             self.update()
 
+    def set_highlight(self, highlighted: bool) -> None:
+        """Draw the "drop here" state, for an owner that receives the drops
+        itself (drop anywhere) but wants the zone to answer the drag."""
+        self._set_dragging(bool(highlighted))
+
     def dragEnterEvent(self, event) -> None:
         if self._has_local_files(event.mimeData()):
             event.acceptProposedAction()
@@ -1413,8 +1418,10 @@ class ParadigmCard(_Themed, QAbstractButton):
         self.setCheckable(True)
         self.setCursor(Qt.CursorShape.PointingHandCursor)
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
-        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Fixed)
-        self.setMinimumSize(120, 124)    # the picker reflows long before this
+        policy = QSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        policy.setHeightForWidth(True)    # the text wraps, so the card grows
+        self.setSizePolicy(policy)
+        self.setMinimumWidth(120)    # the picker reflows long before this
         self.setAccessibleName(name)
         self.setAccessibleDescription(description)
         self.setToolTip(description)
@@ -1426,8 +1433,41 @@ class ParadigmCard(_Themed, QAbstractButton):
     def description(self) -> str:
         return self._description
 
+    # -- geometry: the title and the description wrap ----------------------
+    _PAD = 16
+    _TILE = 40
+    _CHECK = 26          # room kept for the check badge of the selected card
+    MIN_HEIGHT = 124
+
+    def _title_font(self) -> QFont:
+        return _font(self.font(), TypeScale.SUBTITLE, True)
+
+    def _body_font(self) -> QFont:
+        return _font(self.font(), TypeScale.BODY)
+
+    def _wrapped_height(self, font: QFont, width: float, text: str) -> int:
+        if width < 1 or not text:
+            return 0
+        rect = QFontMetrics(font).boundingRect(
+            QRect(0, 0, int(width), 10000),
+            int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
+            | int(Qt.TextFlag.TextWordWrap), text)
+        return rect.height()
+
+    def hasHeightForWidth(self) -> bool:
+        return True
+
+    def heightForWidth(self, width: int) -> int:
+        inner = width - 2 * self._PAD
+        body = self._wrapped_height(self._body_font(), inner, self._description)
+        needed = self._PAD + self._TILE + 10 + body + self._PAD + 2
+        return max(self.MIN_HEIGHT, needed)
+
     def sizeHint(self) -> QSize:
-        return QSize(260, 124)
+        return QSize(260, self.heightForWidth(260))
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(120, self.heightForWidth(120))
 
     def enterEvent(self, event) -> None:
         self._hover = True
@@ -1470,26 +1510,30 @@ class ParadigmCard(_Themed, QAbstractButton):
                      palette.border_strong if self._hover else palette.border, 1.0)
         if self.hasFocus():
             _focus_ring(painter, rect, Radius.LG, palette)
-        pad = 16.0
-        tile = QRectF(rect.left() + pad, rect.top() + pad, 40, 40)
+        pad = float(self._PAD)
+        tile = QRectF(rect.left() + pad, rect.top() + pad, self._TILE, self._TILE)
         _rounded(painter, tile, 11, palette.tint("primary", 0.12))
         _draw_icon(painter, self, self._icon_name, palette.primary, tile.adjusted(9, 9, -9, -9))
-        title_font = _font(self.font(), TypeScale.SUBTITLE, True)
+        title_font = self._title_font()
         text_left = tile.right() + 12
-        right_limit = rect.right() - pad - (26 if selected else 0)
+        right_limit = rect.right() - pad - (self._CHECK if selected else 0)
         painter.setFont(title_font)
         painter.setPen(QColor(palette.primary if selected else palette.text))
+        title_area = QRectF(text_left, tile.top(), max(1.0, right_limit - text_left), tile.height())
+        painter.save()
+        painter.setClipRect(title_area)
         painter.drawText(
-            QRectF(text_left, tile.top(), right_limit - text_left, tile.height()),
-            Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft,
-            _elide(self._name, title_font, right_limit - text_left),
+            title_area,
+            int(Qt.AlignmentFlag.AlignVCenter | Qt.AlignmentFlag.AlignLeft)
+            | int(Qt.TextFlag.TextWordWrap),
+            self._name,
         )
-        body_font = _font(self.font(), TypeScale.BODY)
-        painter.setFont(body_font)
+        painter.restore()
+        painter.setFont(self._body_font())
         painter.setPen(QColor(palette.text_muted))
         painter.drawText(
             QRectF(rect.left() + pad, tile.bottom() + 10, rect.width() - 2 * pad,
-                   rect.bottom() - tile.bottom() - 10 - 10),
+                   max(1.0, rect.bottom() - tile.bottom() - 10 - 4)),
             int(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignTop)
             | int(Qt.TextFlag.TextWordWrap),
             self._description,
@@ -1576,6 +1620,7 @@ class ParadigmPicker(_Themed, QWidget):
             self._grid.addWidget(card, index // columns, index % columns)
         for column in range(columns):
             self._grid.setColumnStretch(column, 1)
+        self.updateGeometry()
 
     def resizeEvent(self, event) -> None:
         super().resizeEvent(event)
