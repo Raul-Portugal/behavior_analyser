@@ -208,6 +208,8 @@ class ContextPanel(QWidget):
         form.setVerticalSpacing(Spacing.XXS)
         form.setFieldGrowthPolicy(QFormLayout.FieldGrowthPolicy.AllNonFixedFieldsGrow)
         self.path_label = _selectable(QLabel())
+        self.path_label.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Minimum)
+        self.path_label.setMinimumWidth(40)
         self.resolution_label = QLabel()
         self.fps_label = QLabel()
         self.duration_label = QLabel()
@@ -223,11 +225,14 @@ class ContextPanel(QWidget):
             ("Zones", self.zones_label),
             ("State", self.configured_label),
             ("Settings", self.source_label),
-            ("Path", self.path_label),
         ):
             caption = Label(text, "muted")
             form.addRow(caption, label)
         box.addLayout(form)
+        # The path is long: it gets the full width, under its caption.
+        box.addSpacing(Spacing.XXS)
+        box.addWidget(Label("Path", "muted"))
+        box.addWidget(self.path_label)
 
         box.addSpacing(Spacing.XS)
         box.addWidget(_caption("Issues"))
