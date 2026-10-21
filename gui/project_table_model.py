@@ -8,8 +8,13 @@ stays in the Qt-free ``Project``; the model only turns its data into table
 cells, forwards the few edits a table allows (metadata and notes) and tells
 views about row/column changes with proper signals, so selections survive.
 
-Columns, left to right: Status, Video, Configured, Settings, one column per
-metadata key of the project (dynamic), Last run, Notes, Issues.
+Columns, left to right: Status, Video, Configured, Settings, Trial, Zones,
+one column per metadata key of the project (dynamic), Last run, Notes,
+Issues. "Configured" is the composed state of the video: its settings, its
+trial (a missing start or invalid times show up there) and its verification.
+"Trial" is when the analysed part starts and ends ("0:12 - 5:12", "whole
+video" or "! set start"); "Zones" says where its regions come from (Template,
+Adjusted, Aligned or Custom).
 
 Use ``ProjectFilterProxyModel`` on top for sorting and for filtering by text
 or status. Both models answer ``KeyRole`` with the video's stable project
@@ -26,7 +31,8 @@ from PyQt6.QtGui import QIcon
 
 from core.project import (STATUS_CONFIGURED, STATUS_DONE, STATUS_FAILED,
                           STATUS_INTERRUPTED, STATUS_NEW, STATUS_WARNING,
-                          STATUSES, SEVERITY_ERROR, AddVideosResult,
+                          STATUSES, SEVERITY_ERROR, TRIAL_INVALID,
+                          TRIAL_NEEDS_START, TRIAL_OK, AddVideosResult,
                           Project, ProjectIssue, VideoEntry)
 from gui.video_list import collect_video_files, status_icon
 
@@ -38,11 +44,15 @@ COL_STATUS = 0
 COL_VIDEO = 1
 COL_CONFIGURED = 2
 COL_SETTINGS = 3
-LEADING_COLUMNS = 4                          # metadata columns start here
+COL_TRIAL = 4
+COL_ZONES = 5
+LEADING_COLUMNS = 6                          # metadata columns start here
 HEADER_STATUS = "Status"
 HEADER_VIDEO = "Video"
 HEADER_CONFIGURED = "Configured"
 HEADER_SETTINGS = "Settings"
+HEADER_TRIAL = "Trial"
+HEADER_ZONES = "Zones"
 HEADER_LAST_RUN = "Last run"
 HEADER_NOTES = "Notes"
 HEADER_ISSUES = "Issues"
@@ -64,6 +74,36 @@ _ICON_STATUS = {
     STATUS_WARNING: "warning",
     STATUS_INTERRUPTED: "warning",
 }
+
+
+TEXT_WHOLE_VIDEO = "whole video"
+TEXT_NEEDS_START = "⚠ set start"
+TEXT_INVALID_TRIAL = "⚠ invalid times"
+_DASH = "–"
+
+
+def format_clock(seconds) -> str:
+    """``m:ss`` (``h:mm:ss`` from an hour), with decimals only if present."""
+    try:
+        total = round(abs(float(seconds)), 1)
+    except (TypeError, ValueError, OverflowError):
+        return str(seconds)
+    sign = "-" if float(seconds) < 0 else ""
+    hours, rest = divmod(total, 3600)
+    minutes, secs = divmod(rest, 60)
+    tail = f"{int(secs):02d}" if secs == int(secs) else f"{secs:04.1f}"
+    if hours:
+        return f"{sign}{int(hours)}:{int(minutes):02d}:{tail}"
+    return f"{sign}{int(minutes)}:{tail}"
+
+
+def format_trial(start, end) -> str:
+    """``0:12 - 5:12``; ``whole video``; ``0:12 - end`` for an open end."""
+    if end is None:
+        if not start:
+            return TEXT_WHOLE_VIDEO
+        return f"{format_clock(start)} {_DASH} end"
+    return f"{format_clock(start)} {_DASH} {format_clock(end)}"
 
 
 def selected_keys(indexes: Iterable[QModelIndex]) -> List[str]:
@@ -236,7 +276,8 @@ class ProjectTableModel(QAbstractTableModel):
 
     def headers(self) -> List[str]:
         return (
-            [HEADER_STATUS, HEADER_VIDEO, HEADER_CONFIGURED, HEADER_SETTINGS]
+            [HEADER_STATUS, HEADER_VIDEO, HEADER_CONFIGURED, HEADER_SETTINGS,
+             HEADER_TRIAL, HEADER_ZONES]
             + list(self._metadata_columns)
             + [HEADER_LAST_RUN, HEADER_NOTES, HEADER_ISSUES]
         )
@@ -260,17 +301,58 @@ class ProjectTableModel(QAbstractTableModel):
     # ------------------------------------------------------------------
     # Cells
     # ------------------------------------------------------------------
-    @staticmethod
-    def _configured_text(entry: VideoEntry) -> str:
+    def _trial_state(self, entry: VideoEntry) -> str:
+        if self._project is None:
+            return TRIAL_OK
+        return self._project.trial_status(entry)
+
+    def _configured_text(self, entry: VideoEntry) -> str:
+        """The composed state: settings, then trial, then verification."""
         if entry.settings is None:
             return "Not configured"
+        state = self._trial_state(entry)
+        if state == TRIAL_NEEDS_START:
+            return "Needs start"
+        if state == TRIAL_INVALID:
+            return "Invalid trial"
         return "Verified" if entry.verified else "Configured"
 
-    @staticmethod
-    def _configured_rank(entry: VideoEntry) -> int:
+    def _configured_rank(self, entry: VideoEntry) -> int:
         if entry.settings is None:
             return 0
-        return 2 if entry.verified else 1
+        if self._trial_state(entry) != TRIAL_OK:
+            return 1
+        return 3 if entry.verified else 2
+
+    def _trial_text(self, entry: VideoEntry) -> str:
+        project = self._project
+        if project is None or entry.settings is None:
+            return ""
+        state = project.trial_status(entry)
+        if state == TRIAL_NEEDS_START:
+            return TEXT_NEEDS_START
+        if state == TRIAL_INVALID:
+            return TEXT_INVALID_TRIAL
+        span = project.trial_span(entry)
+        return "" if span is None else format_trial(*span)
+
+    def _zones_text(self, entry: VideoEntry) -> str:
+        if self._project is None or entry.settings is None:
+            return ""
+        return self._project.zone_status(entry).capitalize()
+
+    def _trial_sort(self, entry: VideoEntry):
+        """Invalid first, then videos without a start, then by start time."""
+        project = self._project
+        if project is None or entry.settings is None:
+            return (3, 0.0)
+        state = project.trial_status(entry)
+        if state == TRIAL_INVALID:
+            return (0, 0.0)
+        if state == TRIAL_NEEDS_START:
+            return (1, 0.0)
+        span = project.trial_span(entry)
+        return (2, float(span[0]) if span is not None else 0.0)
 
     def issues_for(self, key: str) -> List[ProjectIssue]:
         return list(self._issues.get(key, []))
@@ -287,6 +369,10 @@ class ProjectTableModel(QAbstractTableModel):
             return self._configured_text(entry)
         if column == COL_SETTINGS:
             return entry.settings_source.capitalize() if entry.settings else ""
+        if column == COL_TRIAL:
+            return self._trial_text(entry)
+        if column == COL_ZONES:
+            return self._zones_text(entry)
         name = self._metadata_name(column)
         if name is not None:
             return entry.metadata.get(name, "")
@@ -305,6 +391,8 @@ class ProjectTableModel(QAbstractTableModel):
             return entry.name.casefold()
         if column == COL_CONFIGURED:
             return self._configured_rank(entry)
+        if column == COL_TRIAL:
+            return self._trial_sort(entry)
         if column == self._issues_column():
             issues = self._issues.get(entry.key, [])
             errors = sum(1 for i in issues if i.severity == SEVERITY_ERROR)
@@ -339,6 +427,21 @@ class ProjectTableModel(QAbstractTableModel):
     def _tooltip(self, entry: VideoEntry, column: int) -> Optional[str]:
         if column == COL_VIDEO:
             return str(entry.path)
+        project = self._project
+        if column == COL_TRIAL and project is not None and entry.settings:
+            problem = project.trial_problem(entry)
+            if problem is not None:
+                return problem[:1].upper() + problem[1:]
+            if project.trial_status(entry) == TRIAL_NEEDS_START:
+                return "This project gives every video its own start time"
+            return "When the analysed part of the video starts and ends"
+        if column == COL_ZONES and project is not None and entry.settings:
+            return {
+                "template": "The regions of the project template",
+                "adjusted": "Regions adjusted for this video",
+                "aligned": "The template regions moved onto this video",
+                "custom": "This video has its own full copy of the settings",
+            }.get(project.zone_status(entry))
         if column == self._issues_column():
             lines = [issue.message for issue in self._issues.get(entry.key, [])]
             return "\n".join(lines) or None
@@ -646,4 +749,5 @@ class ProjectFilterProxyModel(QSortFilterProxyModel):
 __all__: Sequence[str] = (
     "KeyRole", "SortRole", "PathRole", "ProjectTableModel",
     "ProjectFilterProxyModel", "selected_keys", "paths_from_mime",
+    "format_clock", "format_trial",
 )

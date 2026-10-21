@@ -1526,6 +1526,26 @@ class Project:
             return ZONES_CUSTOM
         return ZONES_TEMPLATE
 
+    def trial_span(
+        self, key: Union[str, VideoEntry]
+    ) -> Optional[Tuple[Any, Optional[Any]]]:
+        """``(start, end)`` in seconds of what is analysed; None if unconfigured.
+
+        ``end`` None means "until the video ends". With per-mouse windows
+        (Tail Suspension Test) it is the span from the earliest start to the
+        latest end. The values may be invalid; see :meth:`trial_status`.
+        """
+        entry = self._entry_of(key)
+        if entry.settings is None:
+            return None
+        start, end, windows = self._composed_times(entry)
+        if windows:
+            return (
+                min(a for a, _ in windows.values()),
+                max(b for _, b in windows.values()),
+            )
+        return start, end
+
     def _has_start(self, entry: VideoEntry) -> bool:
         if entry.trial is not None and entry.trial.start_set:
             return True
