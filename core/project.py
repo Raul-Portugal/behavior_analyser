@@ -1328,6 +1328,24 @@ class Project:
             entry.notes = notes
             self._changed()
 
+    def set_name(self, name: str) -> bool:
+        """Rename the project (blank names are refused); True if it changed."""
+        name = str(name).strip()
+        if not name or name == self.name:
+            return False
+        self.name = name
+        self._changed()
+        return True
+
+    def set_notes(self, notes: str) -> bool:
+        """Set the project's own notes; True if they changed."""
+        notes = str(notes)
+        if notes == self.notes:
+            return False
+        self.notes = notes
+        self._changed()
+        return True
+
     def set_metadata_from_sheet(self, sheet_path: os.PathLike) -> SampleSheetMatch:
         """Fill metadata from a sample sheet CSV.
 

@@ -13,27 +13,43 @@ from tests.workspace_support import HAS_RUNTIME, WorkspaceFixture
 
 if HAS_RUNTIME:
     from PyQt6.QtCore import QCoreApplication, QEvent, Qt
-    from PyQt6.QtWidgets import QSplitter, QTabWidget, QWidget
+    from PyQt6.QtWidgets import QMainWindow, QWidget
+    from gui.workspace.stages.base import Stage
+    from gui.workspace.stages.hosted import HostedStage
     from gui.workspace.tabs import (WorkspaceTab, TAB_RESULTS,
                                     TAB_RUN, TAB_SETUP)
 
 
 class LayoutTests(WorkspaceFixture):
-    def test_three_panes_and_three_tabs(self):
+    def test_six_stages_and_the_old_tabs_inside_them(self):
         window = self.window
-        self.assertEqual(window.splitter.count(), 3)
-        self.assertIs(window.splitter.widget(0), window.video_panel)
-        self.assertIs(window.splitter.widget(2), window.context_panel)
-        tabs = window.splitter.widget(1)
-        self.assertIsInstance(tabs, QTabWidget)
         self.assertEqual(
-            [tabs.tabText(i) for i in range(tabs.count())],
-            ["Setup", "Run", "Results"],
+            window.stage_ids(),
+            ["videos", "arena", "detection", "trials", "review", "results"],
         )
+        for stage in window.stages.values():
+            self.assertIsInstance(stage, Stage)
+            self.assertIs(stage.workspace, window)
+            self.assertIs(window.stack.indexOf(stage) >= 0, True)
+        self.assertIs(window.video_panel, window.videos_stage.video_panel)
+        # The old tabs are hosted by the stages that stand in for them.
         for attribute in ("setup_tab", "run_tab", "results_tab"):
             self.assertIsInstance(getattr(window, attribute), QWidget)
+        for stage_id, tab in (("arena", "setup"), ("detection", "setup"),
+                              ("trials", "setup"), ("review", "run"),
+                              ("results", "results")):
+            hosted = window.stage(stage_id)
+            self.assertIsInstance(hosted, HostedStage)
+            self.assertEqual(hosted.tab_name, tab)
 
-    def test_menus_and_toolbar(self):
+    def test_the_old_chrome_is_gone(self):
+        window = self.window
+        for attribute in ("splitter", "toolbar", "tabs", "welcome_card"):
+            self.assertFalse(hasattr(window, attribute), attribute)
+        self.assertEqual(window.drawer.parentWidget(), window.body)
+        self.assertFalse(window.drawer.isVisibleTo(window))
+
+    def test_menus_are_lean_and_complete(self):
         window = self.window
         menus = {a.text(): a.menu() for a in window.menuBar().actions()}
         self.assertEqual(
@@ -56,12 +72,28 @@ class LayoutTests(WorkspaceFixture):
             ["&Score a video manually...", "Tracking s&pot-check...",
              "&Build validation report..."],
         )
-        toolbar_texts = [a.text() for a in window.toolbar.actions() if a.text()]
-        self.assertEqual(
-            toolbar_texts,
-            ["&New project...", "&Open project...", "&Save", "Add &videos...",
-             "Add &folder...", "&Remove", "&Run", "&Cancel"],
-        )
+        tools = [a.text() for a in window.tools_menu.actions() if a.text()]
+        for expected in ("&Align template to videos...", "Go to Review && &run",
+                         "&Next stage", "&Previous stage", "Video &details",
+                         "&Run analysis", "&Cancel run"):
+            self.assertIn(expected, tools)
+
+    def test_the_actions_the_toolbar_had_still_exist(self):
+        window = self.window
+        for action in ("new_action", "open_action", "save_action",
+                       "add_videos_action", "add_folder_action",
+                       "remove_action", "run_action", "cancel_action"):
+            self.assertTrue(hasattr(window, action), action)
+        self.assertTrue(window.new_action.isEnabled())
+        self.assertTrue(window.open_action.isEnabled())
+        self.assertFalse(window.add_videos_action.isEnabled())
+
+    def test_the_menu_button_of_the_app_bar_lists_the_everyday_actions(self):
+        texts = [a.text() for a in self.window.more_menu.actions() if a.text()]
+        for expected in ("&New project...", "&Open project...", "&Save",
+                         "Save &as...", "Video &details",
+                         "Switch to &classic interface"):
+            self.assertIn(expected, texts)
 
     def test_title_without_a_project(self):
         self.assertEqual(self.window.windowTitle(), APP_NAME)
@@ -110,30 +142,31 @@ class LayoutTests(WorkspaceFixture):
         self.assertEqual(fired, ["run", "cancel"])
 
 
-class SplitterAndGeometryTests(WorkspaceFixture):
-    def test_splitter_sizes_are_saved_on_close_and_restored(self):
+class GeometryTests(WorkspaceFixture):
+    def test_the_geometry_is_saved_on_close_and_restored(self):
         window = self.window
-        window.resize(1500, 800)
+        window.resize(1180, 700)
         window.show()
-        window.splitter.setSizes([300, 900, 250])
         self.app.processEvents()
-        expected = window.splitter.sizes()
         window.close()
-        self.assertEqual(self.settings.workspace_splitter_sizes(), expected)
-        self.assertIsNotNone(self.settings.workspace_geometry())
-        applied = []
+        saved = self.settings.workspace_geometry()
+        self.assertIsNotNone(saved)
+        restored = []
         with patch.object(
-            QSplitter, "setSizes",
-            new=lambda splitter, sizes: applied.append(list(sizes)),
+            QMainWindow, "restoreGeometry",
+            new=lambda widget, geometry: restored.append(geometry) or True,
         ):
             other = type(window)(self.settings, self.prompts)
         self.addCleanup(other.deleteLater)
-        self.assertEqual(applied, [expected])
+        self.assertEqual(restored, [saved])
 
     def test_a_window_that_was_never_shown_saves_nothing(self):
         self.window.close()
-        self.assertEqual(self.settings.workspace_splitter_sizes(), [])
         self.assertIsNone(self.settings.workspace_geometry())
+
+    def test_the_default_size_fits_a_1366_by_768_screen(self):
+        self.assertLessEqual(self.window.width(), 1366)
+        self.assertLessEqual(self.window.height(), 768)
 
 
 class NewOpenSaveTests(WorkspaceFixture):
@@ -646,29 +679,35 @@ class DropTests(WorkspaceFixture):
 
 
 class ParadigmTests(WorkspaceFixture):
-    def test_chooser_shows_a_placeholder_until_a_paradigm_is_chosen(self):
+    def picker(self):
+        return self.window.videos_stage.picker
+
+    def test_the_picker_comes_first_until_a_paradigm_is_chosen(self):
+        from gui.workspace.stages.videos_stage import PAGE_PARADIGM
         self.new_project_at()
-        combo = self.window.context_panel.paradigm_combo
-        self.assertEqual(combo.itemText(0), "(choose a paradigm)")
-        self.assertEqual(combo.currentIndex(), 0)
-        self.assertTrue(combo.isEnabled())
+        stage = self.window.videos_stage
+        self.assertEqual(stage.page, PAGE_PARADIGM)
+        self.assertIsNone(self.picker().selected())
+        self.assertEqual(stage.header.title(), "What test are these videos from?")
+        self.assertTrue(self.picker().isEnabled())
 
     def test_choosing_a_paradigm_sets_it_without_asking(self):
+        from gui.workspace.stages.videos_stage import PAGE_VIDEOS
         self.new_project_at()
         self.add_videos()
         self.assertTrue(self.window.change_paradigm("Elevated Plus Maze"))
         self.assertEqual(self.window.project.paradigm, "Elevated Plus Maze")
         self.assertEqual(self.prompts.called("confirm"), [])
-        combo = self.window.context_panel.paradigm_combo
-        self.assertEqual(combo.currentText(), "Elevated Plus Maze")
+        self.assertEqual(self.window.videos_stage.page, PAGE_VIDEOS)
+        self.assertEqual(
+            self.window.videos_stage.summary.name_label.text(),
+            "Elevated Plus Maze",
+        )
         self.assertEqual(self.settings.last_paradigm(), "Elevated Plus Maze")
 
-    def test_the_combo_triggers_the_change(self):
+    def test_clicking_a_card_triggers_the_change(self):
         self.new_project_at()
-        combo = self.window.context_panel.paradigm_combo
-        index = combo.findData("Y-Maze")
-        combo.setCurrentIndex(index)
-        self.window.context_panel._on_paradigm_activated(index)
+        self.picker().card("Y-Maze").click()
         self.assertEqual(self.window.project.paradigm, "Y-Maze")
 
     def test_changing_with_configured_videos_confirms_and_clears(self):
@@ -686,7 +725,7 @@ class ParadigmTests(WorkspaceFixture):
         text = self.prompts.called("confirm")[0][1]
         self.assertIn("Elevated Plus Maze", text)
 
-    def test_declining_keeps_everything_and_resets_the_combo(self):
+    def test_declining_keeps_everything_and_resets_the_picker(self):
         self.new_project_at()
         window = self.window
         window.project.set_template(make_settings())
@@ -695,9 +734,7 @@ class ParadigmTests(WorkspaceFixture):
         self.assertFalse(window.change_paradigm("Elevated Plus Maze"))
         self.assertEqual(window.project.paradigm, "Y-Maze")
         self.assertTrue(all(v.settings for v in window.project.videos))
-        self.assertEqual(
-            window.context_panel.paradigm_combo.currentText(), "Y-Maze"
-        )
+        self.assertEqual(self.picker().selected(), "Y-Maze")
 
     def test_choosing_the_same_paradigm_asks_nothing(self):
         self.new_project_at()
@@ -706,6 +743,29 @@ class ParadigmTests(WorkspaceFixture):
         self.assertTrue(window.change_paradigm("Y-Maze"))
         self.assertEqual(self.prompts.called("confirm"), [])
         self.assertIsNotNone(window.project.template_settings)
+
+    def test_the_change_button_shows_the_picker_again(self):
+        from gui.workspace.stages.videos_stage import PAGE_PARADIGM, PAGE_VIDEOS
+        self.new_project_at()
+        window = self.window
+        window.change_paradigm("Y-Maze")
+        stage = window.videos_stage
+        self.assertEqual(stage.page, PAGE_VIDEOS)
+        stage.summary.change_button.click()
+        self.assertEqual(stage.page, PAGE_PARADIGM)
+        self.assertEqual(self.picker().selected(), "Y-Maze")
+        stage.keep_button.click()
+        self.assertEqual(stage.page, PAGE_VIDEOS)
+
+    def test_the_change_button_is_locked_while_a_run_is_in_progress(self):
+        self.new_project_at()
+        window = self.window
+        window.change_paradigm("Y-Maze")
+        window.set_busy(True, "Running")
+        self.assertFalse(window.videos_stage.summary.change_button.isEnabled())
+        self.assertFalse(window.change_paradigm("Elevated Plus Maze"))
+        window.set_busy(False)
+        self.assertTrue(window.videos_stage.summary.change_button.isEnabled())
 
 
 class ProjectSetParadigmTests(unittest.TestCase):
@@ -776,7 +836,7 @@ class TabExtensionTests(WorkspaceFixture):
         old = self.window.install_tab(TAB_SETUP, tab)
         self.assertIsInstance(old, WorkspaceTab)
         self.assertIs(self.window.setup_tab, tab)
-        self.assertIs(self.window.tabs.widget(0), tab)
+        self.assertIs(self.window.tab_widget(TAB_SETUP), tab)
         self.assertIs(tab.workspace, self.window)
         self.assertEqual(tab.events[:2], [("project", None), ("selection", [])])
 
@@ -786,10 +846,12 @@ class TabExtensionTests(WorkspaceFixture):
         tab.events.clear()
         self.new_project_at()
         self.add_videos()
+        self.window.change_paradigm("Y-Maze")
         panel = self.window.video_panel
         panel.select_keys([panel.project().keys()[0]])
         panel.flush_selection()
         self.window.show_tab(TAB_RUN)
+        self.assertEqual(self.window.current_stage_id, "review")
         kinds = [event[0] for event in tab.events]
         self.assertIn("project", kinds)
         self.assertIn("modified", kinds)
@@ -873,6 +935,9 @@ class NoTimersAfterDeletionTests(WorkspaceFixture):
         window.close()
         self.assertFalse(window._autosave_timer.isActive())
         self.assertFalse(window.context_panel._notes_timer.isActive())
+        self.assertFalse(window.videos_stage._notes_timer.isActive())
+        self.assertFalse(window._nav_timer.isActive())
+        self.assertFalse(window._message_timer.isActive())
 
     def test_late_autosave_poll_after_close_is_harmless(self):
         self.new_project_at()

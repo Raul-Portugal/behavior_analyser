@@ -9,6 +9,7 @@ if HAS_RUNTIME:
     from PyQt6.QtGui import QDropEvent
     from PyQt6.QtTest import QTest
     from gui.project_table_model import KeyRole
+    from gui.workspace.theme import current_palette
 
 
 class PanelFixture(WorkspaceFixture):
@@ -274,10 +275,19 @@ class FooterTests(PanelFixture):
         self.assertIn("4 issues", self.panel.footer.text())
         self.assertIn("color", self.panel.footer.text())
 
-    def test_empty_hint_is_visible_until_a_video_is_added(self):
-        self.assertTrue(self.panel.empty_label.isVisibleTo(self.panel))
-        self.panel.add_paths(self.videos[:1])
-        self.assertFalse(self.panel.empty_label.isVisibleTo(self.panel))
+    def test_the_drop_zone_stands_in_for_an_empty_table(self):
+        panel = self.panel
+        self.assertTrue(panel.drop_zone.isVisibleTo(panel))
+        self.assertFalse(panel.view.isVisibleTo(panel))
+        self.assertFalse(panel.add_bar.isVisibleTo(panel))
+        self.assertTrue(panel.empty_state_visible)
+        panel.add_paths(self.videos[:1])
+        self.assertFalse(panel.drop_zone.isVisibleTo(panel))
+        self.assertTrue(panel.view.isVisibleTo(panel))
+        self.assertTrue(panel.add_bar.isVisibleTo(panel))
+        self.assertFalse(panel.empty_state_visible)
+        panel.remove_keys(self.project.keys(), confirm=False)
+        self.assertTrue(panel.drop_zone.isVisibleTo(panel))
 
 
 class MetadataTests(PanelFixture):
@@ -382,7 +392,7 @@ class ContextMenuTests(PanelFixture):
         menu = self.menu("m1.mp4")
         texts = [a.text() for a in menu.actions() if a.text()]
         self.assertEqual(texts, [
-            "Remove", "Reveal in folder", "Copy path", "Mark verified",
+            "Details", "Remove", "Reveal in folder", "Copy path", "Mark verified",
             "Mark unverified", "Apply template settings",
             "Edit metadata column...", "Load sample sheet...",
         ])
@@ -493,7 +503,7 @@ class MissingFileTests(PanelFixture):
         self.moved.unlink()
         self.panel.model.refresh()
         brush = proxy.index(0, 1).data(role)
-        self.assertEqual(brush.color().name(), "#d1242f")
+        self.assertEqual(brush.color().name(), current_palette().danger.lower())
         self.assertIsNone(proxy.index(1, 1).data(role))
 
     def test_menu_offers_relink_only_for_missing_files(self):

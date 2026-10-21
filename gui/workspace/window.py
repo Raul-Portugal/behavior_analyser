@@ -1,36 +1,58 @@
 """
 gui/workspace/window.py
-``WorkspaceWindow``: the 4.0 single-window workspace.
+``WorkspaceWindow``: the 4.0 single-window workspace, a guided flow of six
+stages::
 
-::
+    +----------------------------------------------------------------+
+    | app bar:  Behavioral Maze Analyzer | project name  [Saved]   ... |
+    +----------------------------------------------------------------+
+    | stepper:  1 Videos > 2 Arena & zones > 3 Detection > 4 Trials   |
+    |           > 5 Review & run > 6 Results                          |
+    +----------------------------------------------------------------+
+    |                                                                |
+    |   the current stage, filling the whole area        [details    |
+    |   (see gui.workspace.stages)                        drawer,    |
+    |                                                     hidden by  |
+    |                                                     default]   |
+    +----------------------------------------------------------------+
+    | footer:  < Back      status              Next: <stage> >       |
+    +----------------------------------------------------------------+
 
-    +--------------+-------------------------------+----------------+
-    | video panel  |  Setup | Run | Results        | context panel  |
-    | (table)      |  (tabs, installed by pieces   | (selected      |
-    |              |   2 and 3)                    |  video)        |
-    +--------------+-------------------------------+----------------+
+The stepper shows each stage's status (todo, current, done, needs
+attention); every stage is clickable, so the flow is not linear. Stages are
+:class:`~gui.workspace.stages.base.Stage` objects; the window calls their
+hooks and draws the shared footer from them. The details of the selected
+video live in a drawer that slides over the right edge (Ctrl+I, or the
+"Details" button of a video row).
 
 The window owns the *project session*: the open ``Project``, its autosaver,
 the unsaved-changes flag and everything around them (new / open / recent /
 save / save as / recovery / imports / export / close). It does not analyse
-anything; the Setup and Run tabs do, and talk to the window through the
-signals and methods below.
+anything; the Run stage does, and talks to the window through the signals
+and methods below.
 
-For the tabs (see also :mod:`gui.workspace.tabs`)
--------------------------------------------------
+For the stages and the old tabs (see also :mod:`gui.workspace.tabs`)
+--------------------------------------------------------------------
 Signals
     ``project_changed(project)``  a project was opened or closed (``None``);
     ``project_modified()``        the open project was edited (by anyone);
     ``selection_changed(keys)``   the table selection changed;
+    ``stage_changed(stage_id)``   another stage became current;
     ``run_requested()``           the Run action was triggered;
     ``cancel_requested()``        the Cancel action was triggered.
 State
     ``window.project`` (read-only property), ``selected_keys()``,
     ``selected_entries()``, ``video_panel``, ``context_panel``, ``prompts``,
-    ``app_settings``.
+    ``app_settings``, ``current_stage_id``, ``stage(stage_id)``,
+    ``thumbnails`` (one shared ``ThumbnailLoader``).
+Navigation
+    ``go_to_stage(stage_id)``, ``next_stage()``, ``previous_stage()``,
+    ``refresh_navigation()`` (stepper), ``refresh_footer()``,
+    ``show_details(keys)``, ``show_message(text)`` (a sentence in the footer).
 Control
-    ``install_tab(name, widget)``   replace the Setup / Run / Results tab;
-    ``show_tab(name)``;
+    ``install_tab(name, widget)``   replace the Setup / Run / Results tab
+                                    hosted by the temporary stages;
+    ``show_tab(name)``              go to the stage that hosts that tab;
     ``set_run_enabled(bool)``       enable the Run action;
     ``set_busy(bool, reason)``      a run is in progress: lock project
                                     editing, enable Cancel, block closing
@@ -42,16 +64,16 @@ Control
 import logging
 import os
 from pathlib import Path
-from typing import Callable, List, Optional
+from typing import Callable, Dict, List, Optional, Tuple
 
-from PyQt6.QtCore import QTimer, QUrl, Qt, pyqtSignal
-from PyQt6.QtGui import QAction, QKeySequence
-from PyQt6.QtWidgets import (QMainWindow, QSplitter, QTabWidget, QToolBar,
-                             QWidget)
+from PyQt6.QtCore import QEvent, QTimer, QUrl, Qt, pyqtSignal
+from PyQt6.QtGui import QAction, QColor, QKeySequence, QPainter
+from PyQt6.QtWidgets import (QMainWindow, QMenu, QStackedWidget, QVBoxLayout,
+                             QHBoxLayout, QWidget)
 
 from core.models import BatchSettings
 from core.project import (PROJECT_EXTENSION, Project, ProjectError,
-                          VideoEntry)
+                          ProjectIssue, VideoEntry)
 from core.project_io import (ProjectAutosaver, autosave_path_for,
                              export_batch_plan, load_project,
                              project_from_batch_plan, project_from_run_folder,
@@ -61,15 +83,24 @@ from core.version import APP_NAME, APP_VERSION
 from gui.app_settings import AppSettings
 from gui.video_list import is_video_file
 from gui.workspace.context_panel import (ACTION_APPLY_TEMPLATE, ACTION_RELINK,
-                                         ACTION_REMOVE, ACTION_UNVERIFY,
-                                         ACTION_VERIFY, ContextPanel)
+                                         ACTION_REMOVE, ACTION_REVEAL,
+                                         ACTION_UNVERIFY, ACTION_VERIFY,
+                                         ContextPanel, DetailsDrawer)
 from gui.workspace.prompts import (DISCARD, OPEN_FILTER, PROJECT_FILTER,
                                    SAVE, SOURCE_FILTER, Prompts)
 from gui.workspace.setup_tab import SetupTab  # Setup tab (X2b-2)
+from gui.workspace.stages import status as stage_status
+from gui.workspace.stages.base import Stage
+from gui.workspace.stages.hosted import (ArenaStage, DetectionStage,
+                                         HostedStage, ResultsStage,
+                                         ReviewStage, TrialsStage)
+from gui.workspace.stages.videos_stage import VideosStage
 from gui.workspace.tabs import (TAB_NAMES, TAB_RESULTS, TAB_RUN, TAB_SETUP,
-                                TAB_TITLES, PlaceholderTab, WorkspaceTab)
-from gui.workspace.video_panel import VideoPanel
-from gui.workspace.welcome import WelcomeCard
+                                PlaceholderTab, WorkspaceTab)
+from gui.workspace.theme import Spacing, current_palette
+from gui.workspace.thumbnails import ThumbnailLoader
+from gui.workspace.ui_kit import (FooterBar, GhostButton, Label, StatusChip,
+                                  StepInfo, Stepper, _IconBadge)
 
 logger = logging.getLogger(__name__)
 
@@ -77,7 +108,10 @@ TITLE_SEPARATOR = "—"
 QUICKSTART_URL = (
     "https://github.com/Raul-Portugal/behavior_analyser/blob/main/quickstart.md"
 )
-DEFAULT_SPLITTER_SIZES = (400, 640, 360)
+DEFAULT_SIZE = (1280, 680)
+MINIMUM_SIZE = (960, 600)
+MESSAGE_MS = 8000
+APP_BAR_HEIGHT = 48
 
 IMPORT_TEMPLATE = "template"
 IMPORT_PLAN = "batch_plan"
@@ -86,6 +120,20 @@ _IMPORT_LABELS = {
     IMPORT_TEMPLATE: "a saved template",
     IMPORT_PLAN: "a batch plan",
     IMPORT_RUN: "a previous run folder",
+}
+
+# The old tabs live inside the stages that host them (see stages/hosted.py).
+_TAB_STAGES = {
+    TAB_SETUP: stage_status.STAGE_ARENA,
+    TAB_RUN: stage_status.STAGE_REVIEW,
+    TAB_RESULTS: stage_status.STAGE_RESULTS,
+}
+_STAGE_TABS = {
+    stage_status.STAGE_ARENA: TAB_SETUP,
+    stage_status.STAGE_DETECTION: TAB_SETUP,
+    stage_status.STAGE_TRIALS: TAB_SETUP,
+    stage_status.STAGE_REVIEW: TAB_RUN,
+    stage_status.STAGE_RESULTS: TAB_RESULTS,
 }
 
 # Classic windows opened by "Switch to classic interface" must outlive the
@@ -101,12 +149,80 @@ def quickstart_target() -> str:
     return QUICKSTART_URL
 
 
+class _Surface(QWidget):
+    """A bar that paints the theme's surface colour and one hairline border."""
+
+    def __init__(self, border: str = "bottom", parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._border = border
+
+    def paintEvent(self, event) -> None:
+        palette = current_palette()
+        painter = QPainter(self)
+        painter.fillRect(self.rect(), QColor(palette.surface))
+        line = QColor(palette.border)
+        if self._border == "bottom":
+            painter.fillRect(0, self.height() - 1, self.width(), 1, line)
+        elif self._border == "top":
+            painter.fillRect(0, 0, self.width(), 1, line)
+
+    def changeEvent(self, event) -> None:
+        super().changeEvent(event)
+        if event.type() in (QEvent.Type.PaletteChange, QEvent.Type.StyleChange):
+            self.update()
+
+
+class AppBar(_Surface):
+    """The slim bar on top: the app name, the project and its save state."""
+
+    def __init__(self, parent: Optional[QWidget] = None):
+        super().__init__("bottom", parent)
+        self.setFixedHeight(APP_BAR_HEIGHT)
+        self.logo = _IconBadge("maze-field", 28, shape="rounded")
+        self.app_label = Label(APP_NAME, "subtitle")
+        self.divider = Label("/", "muted")
+        self.project_label = Label("", "body")
+        self.save_chip = StatusChip("neutral", "")
+        self.more_button = GhostButton("···")
+        self.more_button.setFixedSize(44, 32)
+        self.more_button.setStyleSheet("QPushButton { padding: 0px; font-size: 22px; font-weight: 700; }")
+        self.more_button.setToolTip("More actions")
+        self.more_button.setAccessibleName("More actions")
+        row = QHBoxLayout(self)
+        row.setContentsMargins(Spacing.LG, 0, Spacing.SM, 0)
+        row.setSpacing(Spacing.SM)
+        row.addWidget(self.logo)
+        row.addWidget(self.app_label)
+        row.addWidget(self.divider)
+        row.addWidget(self.project_label)
+        row.addWidget(self.save_chip)
+        row.addStretch(1)
+        row.addWidget(self.more_button)
+        self.set_project(None, False)
+
+    def set_project(self, project: Optional[Project], unsaved: bool) -> None:
+        has = project is not None
+        self.divider.setVisible(has)
+        self.project_label.setVisible(has)
+        self.save_chip.setVisible(has)
+        if has:
+            self.project_label.setText(project.name)
+            self.project_label.setToolTip(
+                str(project.file_path) if project.file_path else project.name
+            )
+            if unsaved:
+                self.save_chip.set_status("warning", "Unsaved changes")
+            else:
+                self.save_chip.set_status("ok", "Saved")
+
+
 class WorkspaceWindow(QMainWindow):
-    """Single-window workspace: video table, tabs and context panel."""
+    """Single-window workspace: app bar, stepper, stages, footer, drawer."""
 
     project_changed = pyqtSignal(object)    # Project or None
     project_modified = pyqtSignal()
     selection_changed = pyqtSignal(list)    # keys of the selected videos
+    stage_changed = pyqtSignal(str)         # id of the stage now showing
     run_requested = pyqtSignal()
     cancel_requested = pyqtSignal()
 
@@ -129,14 +245,18 @@ class WorkspaceWindow(QMainWindow):
         self._close_guards: List[Callable[[], bool]] = []
         self._skip_close_prompt = False
         self._closed = False
+        self._issues_cache: Optional[List[ProjectIssue]] = None
+        self._current_stage = stage_status.STAGE_VIDEOS
+        self._stepper_signature: Optional[Tuple] = None
+        self._message_active = False
 
         self.setAcceptDrops(True)
-        self.resize(1400, 850)
+        self.resize(*DEFAULT_SIZE)
+        self.setMinimumSize(*MINIMUM_SIZE)
         self._build_ui()
-        self.welcome_card = WelcomeCard(self)   # first-run migration helper
         self._build_actions()
         self._build_menus()
-        self._build_toolbar()
+        self._build_shortcuts()
         self.install_tab(TAB_SETUP, SetupTab())  # Setup tab (X2b-2); also enables align_action
         self._restore_layout()
 
@@ -149,6 +269,15 @@ class WorkspaceWindow(QMainWindow):
         self._start_timer.setInterval(0)
         self._pending_start: Optional[Path] = None
         self._start_timer.timeout.connect(self._run_scheduled_start)
+        # Coalesces the stepper refreshes one edit causes.
+        self._nav_timer = QTimer(self)
+        self._nav_timer.setSingleShot(True)
+        self._nav_timer.setInterval(0)
+        self._nav_timer.timeout.connect(self.refresh_navigation)
+        self._message_timer = QTimer(self)
+        self._message_timer.setSingleShot(True)
+        self._message_timer.setInterval(MESSAGE_MS)
+        self._message_timer.timeout.connect(self._message_done)
 
         self._update_title()
         self._update_ui_state()
@@ -159,16 +288,26 @@ class WorkspaceWindow(QMainWindow):
         self.install_tab(TAB_RESULTS, ResultsTab())
         self.install_tab(TAB_RUN, RunTab())
         # ---------------------------------------------------------------
+        for stage in self.stages.values():
+            stage.attach(self)
+        self.refresh_navigation()
 
     # ------------------------------------------------------------------
     # Construction
     # ------------------------------------------------------------------
     def _build_ui(self) -> None:
-        self.video_panel = VideoPanel(self.app_settings, self.prompts)
-        self.context_panel = ContextPanel(
-            self.prompts, self.video_panel.model.issues_for
+        self.thumbnails = ThumbnailLoader(self)
+        self.videos_stage = VideosStage(
+            self.app_settings, self.prompts, self.thumbnails
         )
-        self.tabs = QTabWidget()
+        self.video_panel = self.videos_stage.video_panel
+        self.context_panel = ContextPanel(
+            self.prompts, self.video_panel.model.issues_for,
+            loader=self.thumbnails, chip_for=self.video_panel.proxy.chip_for,
+        )
+        # Where the old tabs wait while no stage shows them.
+        self._tab_parking = QWidget(self)
+        self._tab_parking.hide()
         self.setup_tab: QWidget = PlaceholderTab(
             "Setup", "Setup: choose the paradigm and configure the regions "
                      "of interest, detection and calibration."
@@ -179,34 +318,77 @@ class WorkspaceWindow(QMainWindow):
         self.results_tab: QWidget = PlaceholderTab(
             "Results", "Results: open and review the output of earlier runs."
         )
-        for name in TAB_NAMES:
-            self.tabs.addTab(self._tab_widget(name), TAB_TITLES[name])
-        self.tabs.currentChanged.connect(self._on_tab_changed)
+        self._tab_widgets: Dict[str, QWidget] = {
+            TAB_SETUP: self.setup_tab, TAB_RUN: self.run_tab,
+            TAB_RESULTS: self.results_tab,
+        }
+        for widget in self._tab_widgets.values():
+            widget.setParent(self._tab_parking)
 
-        self.splitter = QSplitter(Qt.Orientation.Horizontal)
-        self.splitter.setChildrenCollapsible(False)
-        self.splitter.addWidget(self.video_panel)
-        self.splitter.addWidget(self.tabs)
-        self.splitter.addWidget(self.context_panel)
-        self.splitter.setStretchFactor(0, 0)
-        self.splitter.setStretchFactor(1, 1)
-        self.splitter.setStretchFactor(2, 0)
-        self.setCentralWidget(self.splitter)
+        self.stages: Dict[str, Stage] = self._make_stages()
+        central = QWidget()
+        outer = QVBoxLayout(central)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.setSpacing(0)
 
+        self.app_bar = AppBar()
+        outer.addWidget(self.app_bar)
+
+        self.stepper = Stepper(self._stepper_steps())
+        holder = _Surface("bottom")
+        holder_layout = QHBoxLayout(holder)
+        holder_layout.setContentsMargins(Spacing.LG, Spacing.XS, Spacing.LG, Spacing.XS)
+        holder_layout.addWidget(self.stepper)
+        outer.addWidget(holder)
+        self.stepper_holder = holder
+
+        self.stack = QStackedWidget()
+        for stage in self.stages.values():
+            self.stack.addWidget(stage)
+        # The drawer slides over this area, so the stages keep all of it.
+        self.body = QWidget()
+        body_layout = QVBoxLayout(self.body)
+        body_layout.setContentsMargins(0, 0, 0, 0)
+        body_layout.addWidget(self.stack)
+        outer.addWidget(self.body, 1)
+        self.drawer = DetailsDrawer(self.context_panel, self.body)
+
+        self.footer = FooterBar()
+        outer.addWidget(self.footer)
+        self.setCentralWidget(central)
+
+        self.stack.setCurrentWidget(self.videos_stage)
+        self.stepper.set_current(stage_status.STAGE_VIDEOS)
+
+        self.stepper.step_clicked.connect(self._on_step_clicked)
+        self.footer.back_clicked.connect(self.previous_stage)
+        self.footer.next_clicked.connect(self.next_stage)
         self.video_panel.selection_changed.connect(self._on_selection_changed)
         self.video_panel.paths_dropped.connect(self.handle_dropped_paths)
-        self.video_panel.status_message.connect(self._show_status)
+        self.video_panel.status_message.connect(self.show_message)
+        self.video_panel.details_requested.connect(self.show_details)
         self.video_panel.model.projectChanged.connect(self._on_model_changed)
-        self.context_panel.paradigm_chosen.connect(self.change_paradigm)
         self.context_panel.action_requested.connect(self._on_context_action)
-        self.statusBar()
+        self.statusBar().hide()      # messages show in the footer instead
 
-    def _tab_widget(self, name: str) -> QWidget:
-        return {
-            TAB_SETUP: self.setup_tab,
-            TAB_RUN: self.run_tab,
-            TAB_RESULTS: self.results_tab,
-        }[name]
+    def _make_stages(self) -> Dict[str, Stage]:
+        """The stages in flow order.
+
+        To replace a hosted stage by a real one, put the new class here
+        (see :mod:`gui.workspace.stages`).
+        """
+        ordered = [
+            self.videos_stage, ArenaStage(), DetectionStage(), TrialsStage(),
+            ReviewStage(), ResultsStage(),
+        ]
+        assert [s.stage_id for s in ordered] == list(stage_status.STAGE_ORDER)
+        return {stage.stage_id: stage for stage in ordered}
+
+    def _stepper_steps(self) -> List[StepInfo]:
+        return [
+            StepInfo(stage.stage_id, stage.title, stage.icon_name, "todo", "")
+            for stage in self.stages.values()
+        ]
 
     def _build_actions(self) -> None:
         def make(text, slot, shortcut=None, tip="", enabled=True):
@@ -259,10 +441,23 @@ class WorkspaceWindow(QMainWindow):
         self.remove_action = make(
             "&Remove", self.video_panel.remove_selected, None,
             "Remove the selected videos from the project (Del)", enabled=False)
-        self.run_action = make("&Run", self.run_requested.emit, "F5",
+        self.run_action = make("&Run analysis", self.run_requested.emit, None,
                                "Run the analysis", enabled=False)
-        self.cancel_action = make("&Cancel", self.cancel_requested.emit, None,
+        self.cancel_action = make("&Cancel run", self.cancel_requested.emit, None,
                                   "Stop the analysis", enabled=False)
+
+        self.next_stage_action = make(
+            "&Next stage", self.next_stage, "Ctrl+PgDown",
+            "Go to the next stage")
+        self.previous_stage_action = make(
+            "&Previous stage", self.previous_stage, "Ctrl+PgUp",
+            "Go back to the previous stage")
+        self.review_action = make(
+            "Go to Review && &run", self.go_to_review, "F5",
+            "Review the study and run the analysis")
+        self.details_action = make(
+            "Video &details", self.toggle_details, "Ctrl+I",
+            "Show or hide the details of the selected video")
 
         self.manual_scoring_action = make(
             "&Score a video manually...", self.open_manual_scoring,
@@ -279,7 +474,7 @@ class WorkspaceWindow(QMainWindow):
         self.align_action = make(
             "&Align template to videos...", lambda: None,
             tip="Carry the template's regions onto videos whose camera "
-                "moved. Available from the Setup tab.", enabled=False)
+                "moved. Available from the Arena & zones stage.", enabled=False)
         self.quickstart_action = make("&Quickstart guide", self.open_quickstart)
         self.about_action = make(f"&About {APP_NAME}", self.show_about)
 
@@ -308,6 +503,14 @@ class WorkspaceWindow(QMainWindow):
 
         self.tools_menu = bar.addMenu("&Tools")
         self.tools_menu.addAction(self.align_action)
+        self.tools_menu.addSeparator()
+        self.tools_menu.addAction(self.review_action)
+        self.tools_menu.addAction(self.next_stage_action)
+        self.tools_menu.addAction(self.previous_stage_action)
+        self.tools_menu.addAction(self.details_action)
+        self.tools_menu.addSeparator()
+        self.tools_menu.addAction(self.run_action)
+        self.tools_menu.addAction(self.cancel_action)
 
         self.validation_menu = bar.addMenu("&Validation")
         self.validation_menu.addAction(self.manual_scoring_action)
@@ -318,24 +521,37 @@ class WorkspaceWindow(QMainWindow):
         self.help_menu.addAction(self.quickstart_action)
         self.help_menu.addAction(self.about_action)
 
-    def _build_toolbar(self) -> None:
-        toolbar = QToolBar("Main", self)
-        toolbar.setObjectName("workspace_toolbar")
-        toolbar.setMovable(False)
-        for action in (self.new_action, self.open_action, self.save_action):
-            toolbar.addAction(action)
-        toolbar.addSeparator()
-        for action in (self.add_videos_action, self.add_folder_action,
-                       self.remove_action):
-            toolbar.addAction(action)
-        toolbar.addSeparator()
-        toolbar.addAction(self.run_action)
-        toolbar.addAction(self.cancel_action)
-        self.toolbar = toolbar
-        self.addToolBar(toolbar)
+        # The app bar's "⋯" button: the everyday actions in one place.
+        self.more_menu = QMenu(self)
+        for action in (self.new_action, self.open_action, self.save_action,
+                       self.save_as_action):
+            self.more_menu.addAction(action)
+        self.more_menu.addSeparator()
+        self.more_menu.addAction(self.details_action)
+        self.more_menu.addAction(self.classic_action)
+        self.more_menu.addSeparator()
+        self.more_menu.addAction(self.quickstart_action)
+        self.more_menu.addAction(self.about_action)
+        self.app_bar.more_button.clicked.connect(
+            lambda _checked=False: self.show_more_menu()
+        )
+
+    def _build_shortcuts(self) -> None:
+        """Shortcuts work wherever the focus is inside the window."""
+        for action in (self.next_stage_action, self.previous_stage_action,
+                       self.review_action, self.details_action):
+            action.setShortcutContext(Qt.ShortcutContext.WindowShortcut)
+            self.addAction(action)
+
+    def show_more_menu(self) -> None:
+        """Pop the "⋯" menu up under its button (does not block)."""
+        button = self.app_bar.more_button
+        point = button.mapToGlobal(button.rect().bottomRight())
+        point.setX(point.x() - self.more_menu.sizeHint().width())
+        self.more_menu.popup(point)
 
     # ------------------------------------------------------------------
-    # Public state for the tabs
+    # Public state for the stages and tabs
     # ------------------------------------------------------------------
     @property
     def project(self) -> Optional[Project]:
@@ -353,6 +569,11 @@ class WorkspaceWindow(QMainWindow):
     def autosaver(self) -> Optional[ProjectAutosaver]:
         return self._autosaver
 
+    @property
+    def welcome(self):
+        """The no-project page of the Videos stage (recent projects, import)."""
+        return self.videos_stage.welcome
+
     def selected_keys(self) -> List[str]:
         return self.video_panel.selected_keys()
 
@@ -363,41 +584,55 @@ class WorkspaceWindow(QMainWindow):
         keys = self.selected_keys()
         return project.entries_for(keys) if keys else []
 
+    def project_issues(self) -> List[ProjectIssue]:
+        """``project.validate()``, computed once until something changes."""
+        project = self._project
+        if project is None:
+            return []
+        if self._issues_cache is None:
+            self._issues_cache = list(project.validate())
+        return list(self._issues_cache)
+
+    def invalidate_issues(self) -> None:
+        self._issues_cache = None
+
+    # -- the old tabs ------------------------------------------------------
+    def tab_widget(self, name: str) -> QWidget:
+        return self._tab_widgets[name]
+
     def install_tab(self, name: str, widget: QWidget) -> QWidget:
         """Replace the Setup, Run or Results tab; returns the old widget.
 
-        A :class:`WorkspaceTab` is attached to the window (it then receives
+        The tab is hosted by the temporary stages (Setup by Arena & zones,
+        Detection and Trials, Run by Review & run, Results by Results). A
+        :class:`WorkspaceTab` is attached to the window (it then receives
         the project and selection hooks); any other widget is just shown.
         """
         if name not in TAB_NAMES:
             raise ValueError(f"Unknown tab {name!r}; use one of {TAB_NAMES}")
-        index = TAB_NAMES.index(name)
-        old = self._tab_widget(name)
-        was_current = self.tabs.currentIndex() == index
-        self.tabs.removeTab(index)
-        self.tabs.insertTab(index, widget, TAB_TITLES[name])
+        old = self._tab_widgets[name]
+        self._tab_widgets[name] = widget
         setattr(self, f"{name}_tab", widget)
-        old.setParent(None)
-        old.deleteLater()
+        widget.setParent(self._tab_parking)
         if isinstance(widget, WorkspaceTab):
             widget.attach_workspace(self)
-        if was_current:
-            self.tabs.setCurrentIndex(index)
+        for stage in self.stages.values():
+            if isinstance(stage, HostedStage) and stage.tab_name == name:
+                stage.on_tab_replaced(widget)
+        old.setParent(None)
+        old.deleteLater()
         return old
 
     def show_tab(self, name: str) -> None:
-        self.tabs.setCurrentIndex(TAB_NAMES.index(name))
+        """Go to the stage that hosts the Setup, Run or Results tab."""
+        self.go_to_stage(_TAB_STAGES[name])
 
     def current_tab_name(self) -> str:
-        return TAB_NAMES[self.tabs.currentIndex()]
-
-    def _on_tab_changed(self, index: int) -> None:
-        widget = self.tabs.widget(index)
-        if isinstance(widget, WorkspaceTab):
-            widget.on_tab_activated()
+        """The old tab the current stage shows (``videos`` for stage 1)."""
+        return _STAGE_TABS.get(self._current_stage, self._current_stage)
 
     def set_run_enabled(self, enabled: bool) -> None:
-        """Piece 3 calls this when a run can be started."""
+        """The Run stage calls this when a run can be started."""
         self._run_enabled = bool(enabled)
         self._update_ui_state()
 
@@ -405,9 +640,10 @@ class WorkspaceWindow(QMainWindow):
         """A run is in progress (or over): lock or unlock project editing."""
         self._busy = bool(busy)
         self.video_panel.set_read_only(self._busy)
+        self.videos_stage.set_busy(self._busy)
         self._update_ui_state()
         if busy and reason:
-            self._show_status(reason)
+            self.show_message(reason)
 
     def register_close_guard(self, guard: Callable[[], bool]) -> None:
         """``guard()`` returns False to veto closing the window or project.
@@ -415,6 +651,173 @@ class WorkspaceWindow(QMainWindow):
         The guard explains the veto itself (it usually asks the user).
         """
         self._close_guards.append(guard)
+
+    # ------------------------------------------------------------------
+    # Stages
+    # ------------------------------------------------------------------
+    @property
+    def current_stage_id(self) -> str:
+        return self._current_stage
+
+    @property
+    def current_stage(self) -> Stage:
+        return self.stages[self._current_stage]
+
+    def stage(self, stage_id: str) -> Stage:
+        return self.stages[stage_id]
+
+    def stage_ids(self) -> List[str]:
+        return list(self.stages)
+
+    def stage_available(self, stage_id: str) -> Tuple[bool, str]:
+        """Whether the user can go to ``stage_id`` now, and why not."""
+        status, reason = self.stages[stage_id].status()
+        return status != stage_status.STATUS_DISABLED, reason
+
+    def go_to_stage(self, stage_id: str, force: bool = False) -> bool:
+        """Show ``stage_id``. False when the current stage vetoed leaving it
+        (it asked the user) or the stage is not available yet.
+
+        ``force`` skips both checks (used when the project changes).
+        """
+        if stage_id not in self.stages:
+            raise KeyError(stage_id)
+        if stage_id == self._current_stage:
+            return True
+        self.invalidate_issues()
+        if not force:
+            if not self.stage_available(stage_id)[0]:
+                return False
+            if not self.current_stage.on_leave():
+                return False
+        self._current_stage = stage_id
+        stage = self.stages[stage_id]
+        self.stack.setCurrentWidget(stage)
+        self.refresh_navigation()
+        stage.on_enter()
+        self.refresh_navigation()
+        self._remember_stage()
+        self.stage_changed.emit(stage_id)
+        return True
+
+    def next_stage(self) -> bool:
+        """Go to the following stage if the current one allows it."""
+        order = self.stage_ids()
+        index = order.index(self._current_stage)
+        if index + 1 >= len(order):
+            return False
+        allowed, reason = self.current_stage.can_advance()
+        if not allowed:
+            if reason:
+                self.show_message(reason)
+            return False
+        return self.go_to_stage(order[index + 1])
+
+    def previous_stage(self) -> bool:
+        order = self.stage_ids()
+        index = order.index(self._current_stage)
+        if index == 0:
+            return False
+        return self.go_to_stage(order[index - 1])
+
+    def go_to_review(self) -> bool:
+        """F5: the place where the analysis is started."""
+        return self.go_to_stage(stage_status.STAGE_REVIEW)
+
+    def _on_step_clicked(self, stage_id: str) -> None:
+        self.go_to_stage(stage_id)
+
+    def _remember_stage(self) -> None:
+        project = self._project
+        if project is not None and project.file_path is not None:
+            self.app_settings.set_workspace_stage(
+                project.file_path, self._current_stage
+            )
+
+    def _stage_for_project(self) -> str:
+        """Where to land after a project was installed: where the user left
+        off in it, else the first stage."""
+        project = self._project
+        if project is None or project.file_path is None:
+            return stage_status.STAGE_VIDEOS
+        saved = self.app_settings.workspace_stage(project.file_path)
+        if saved in self.stages and self.stage_available(saved)[0]:
+            return saved
+        return stage_status.STAGE_VIDEOS
+
+    # -- the stepper and the footer ---------------------------------------------
+    def schedule_navigation_refresh(self) -> None:
+        """Refresh the stepper and footer once the current burst of
+        notifications is over."""
+        if not self._closed:
+            self._nav_timer.start()
+
+    def refresh_navigation(self) -> None:
+        """Redraw the stepper (statuses, titles) and the footer."""
+        self._nav_timer.stop()
+        if self._closed:
+            return
+        self.invalidate_issues()       # files may have changed on disk
+        infos: List[StepInfo] = []
+        for stage_id, stage in self.stages.items():
+            status, reason = stage.status()
+            if stage_id == self._current_stage:
+                status = "current"
+            infos.append(StepInfo(stage_id, stage.title, stage.icon_name, status, reason))
+        signature = tuple((i.id, i.label, i.icon) for i in infos)
+        if signature != self._stepper_signature:
+            self._stepper_signature = signature
+            self.stepper.set_steps(infos)
+        else:
+            for info in infos:
+                self.stepper.set_status(info.id, info.status, info.reason)
+        self.refresh_footer()
+
+    def refresh_footer(self) -> None:
+        """Draw the footer for the current stage."""
+        if self._closed:
+            return
+        order = self.stage_ids()
+        index = order.index(self._current_stage)
+        stage = self.current_stage
+        following = self.stages[order[index + 1]] if index + 1 < len(order) else None
+        stage.next_stage_title = None if following is None else following.title
+        label = stage.next_label()
+        allowed, reason = stage.can_advance()
+        if allowed and following is not None and label is not None:
+            allowed, reason = self.stage_available(following.stage_id)
+        self.footer.set_next(label, allowed, reason)
+        self.footer.set_back(index > 0)
+        if not self._message_active:
+            text, chip = stage.footer_text()
+            self.footer.set_status(text, chip)
+
+    def show_message(self, text: str) -> None:
+        """A sentence in the footer for a few seconds (then the stage's own)."""
+        if self._closed:
+            return
+        self.statusBar().showMessage(text, MESSAGE_MS)
+        self._message_active = True
+        self.footer.set_status(text)
+        self._message_timer.start()
+
+    def _message_done(self) -> None:
+        self._message_active = False
+        self.refresh_footer()
+
+    # -- the details drawer -----------------------------------------------------------
+    def show_details(self, keys: Optional[List[str]] = None) -> None:
+        """Open the drawer on the details of ``keys`` (default: the selection)."""
+        if keys:
+            self.video_panel.select_keys(keys)
+            self.video_panel.flush_selection()
+        self.drawer.open()
+
+    def toggle_details(self) -> None:
+        if self.drawer.is_open():
+            self.drawer.close_drawer()
+        else:
+            self.show_details()
 
     # ------------------------------------------------------------------
     # UI state
@@ -427,6 +830,7 @@ class WorkspaceWindow(QMainWindow):
         else:
             self.setWindowTitle(f"{project.name}[*] {TITLE_SEPARATOR} {APP_NAME}")
             self.setWindowModified(self._unsaved)
+        self.app_bar.set_project(project, self._unsaved)
 
     def _update_ui_state(self) -> None:
         has_project = self._project is not None
@@ -445,10 +849,11 @@ class WorkspaceWindow(QMainWindow):
         self.remove_action.setEnabled(editable and bool(self.selected_keys()))
         self.run_action.setEnabled(has_project and idle and self._run_enabled)
         self.cancel_action.setEnabled(self._busy)
-        self.context_panel.paradigm_combo.setEnabled(editable)
+        self.review_action.setEnabled(has_project)
+        self.details_action.setEnabled(has_project)
 
     def _show_status(self, text: str) -> None:
-        self.statusBar().showMessage(text, 8000)
+        self.show_message(text)
 
     def _rebuild_recent_menu(self) -> None:
         self.recent_menu.clear()
@@ -470,6 +875,11 @@ class WorkspaceWindow(QMainWindow):
     def _clear_recent(self) -> None:
         self.app_settings.clear_recent_projects()
         self._rebuild_recent_menu()
+        self._refresh_welcome()
+
+    def _refresh_welcome(self) -> None:
+        if self.welcome is not None:
+            self.welcome.refresh()
 
     # ------------------------------------------------------------------
     # Signals from the panels and the project
@@ -478,17 +888,25 @@ class WorkspaceWindow(QMainWindow):
         self.context_panel.set_selection(keys)
         self._update_ui_state()
         self.selection_changed.emit(list(keys))
+        for stage in self.stages.values():
+            stage.on_selection_changed(list(keys))
 
     def _on_model_changed(self) -> None:
+        self.invalidate_issues()
         self.context_panel.refresh()
+        self.schedule_navigation_refresh()
 
     def _on_project_edited(self) -> None:
         """Project listener: any change marks the project unsaved."""
         if self._closed:
             return
         self._unsaved = True
-        self.setWindowModified(True)
+        self._update_title()    # a rename shows at once; also sets the flag
+        self.invalidate_issues()
         self.project_modified.emit()
+        for stage in self.stages.values():
+            stage.on_project_modified()
+        self.schedule_navigation_refresh()
 
     def _poll_autosave(self) -> None:
         autosaver = self._autosaver
@@ -510,11 +928,27 @@ class WorkspaceWindow(QMainWindow):
             project.add_listener(self._on_project_edited)
             if project.file_path is not None:
                 self._autosaver = ProjectAutosaver(project, project.file_path)
+        self.invalidate_issues()
         self.video_panel.set_project(project)
         self.context_panel.set_project(project)
+        if project is None:
+            self.drawer.close_drawer(animated=False)
         self._update_title()
         self._update_ui_state()
         self.project_changed.emit(project)
+        for stage in self.stages.values():
+            stage.on_project_changed(project)
+        self._switch_after_project_change()
+
+    def _switch_after_project_change(self) -> None:
+        """Show the stage the user left off at in this project (stage 1 for a
+        new one, or when no project is open)."""
+        target = self._stage_for_project()
+        if target != self._current_stage:
+            self.go_to_stage(target, force=True)
+        else:
+            self.current_stage.on_enter()
+        self.refresh_navigation()
 
     def _detach_project(self) -> None:
         if self._project is not None:
@@ -613,6 +1047,7 @@ class WorkspaceWindow(QMainWindow):
             self.prompts.error("Open", f"The file was not found:\n{path}")
             self.app_settings.remove_recent_project(path)
             self._rebuild_recent_menu()
+            self._refresh_welcome()
             return False
         if path.suffix.lower() == PROJECT_EXTENSION:
             return self._open_project_file(path)
@@ -704,6 +1139,7 @@ class WorkspaceWindow(QMainWindow):
         if project is None:
             return False
         self.context_panel.commit_notes()
+        self.videos_stage.commit_pending()
         try:
             target = save_project(project, path)
         except (OSError, ValueError, TypeError) as exc:
@@ -816,7 +1252,7 @@ class WorkspaceWindow(QMainWindow):
         """Choose the project's paradigm; confirms before clearing settings."""
         project = self._project
         if project is None or self._busy:
-            self.context_panel.refresh()
+            self.videos_stage.refresh()
             return False
         if name == project.effective_paradigm():
             return True
@@ -833,7 +1269,7 @@ class WorkspaceWindow(QMainWindow):
                 ),
                 destructive=True,
             ):
-                self.context_panel.refresh()    # put the combo back
+                self.videos_stage.refresh()    # put the picker back
                 return False
         project.set_paradigm(name)
         self.app_settings.set_last_paradigm(name)
@@ -851,6 +1287,8 @@ class WorkspaceWindow(QMainWindow):
             panel.mark_verified(keys, False)
         elif action == ACTION_APPLY_TEMPLATE:
             panel.apply_template(keys)
+        elif action == ACTION_REVEAL:
+            panel.reveal(keys[0])
         elif action == ACTION_REMOVE:
             panel.remove_keys(keys)
         elif action == ACTION_RELINK:
@@ -983,8 +1421,8 @@ class WorkspaceWindow(QMainWindow):
             informative=str(last),
         ):
             return self.open_path(last)
-        if last is None:
-            self.welcome_card.show_if_needed()
+        if last is None and self._project is None:
+            self.welcome.refresh()     # offer the 3.x import on a first start
         return False
 
     def schedule_start(self, path: Optional[os.PathLike] = None) -> None:
@@ -1002,13 +1440,6 @@ class WorkspaceWindow(QMainWindow):
         geometry = self.app_settings.workspace_geometry()
         if geometry is not None:
             self.restoreGeometry(geometry)
-        state = self.app_settings.workspace_state()
-        if state is not None:
-            self.restoreState(state)
-        sizes = self.app_settings.workspace_splitter_sizes()
-        if len(sizes) != self.splitter.count() or not any(sizes):
-            sizes = list(DEFAULT_SPLITTER_SIZES)
-        self.splitter.setSizes(sizes)
 
     def _save_layout(self) -> None:
         # A window that was never shown (e.g. --startup-check) has no layout
@@ -1018,7 +1449,6 @@ class WorkspaceWindow(QMainWindow):
         self.app_settings.save_workspace_window(
             self.saveGeometry(), self.saveState()
         )
-        self.app_settings.set_workspace_splitter_sizes(self.splitter.sizes())
         self.app_settings.sync()
 
     def closeEvent(self, event) -> None:
@@ -1033,13 +1463,19 @@ class WorkspaceWindow(QMainWindow):
         if self._closed:
             return
         self.context_panel.commit_notes()
+        self.videos_stage.commit_pending()
         if self._autosaver is not None:
             self._autosaver.flush()
         self._save_layout()
         self._closed = True
         self._autosave_timer.stop()
         self._start_timer.stop()
+        self._nav_timer.stop()
+        self._message_timer.stop()
+        self.drawer.close_drawer(animated=False)
+        self.videos_stage.shutdown()
         self.context_panel.shutdown()
+        self.thumbnails.shutdown()
         self._detach_project()
         self.video_panel.set_project(None)
 
