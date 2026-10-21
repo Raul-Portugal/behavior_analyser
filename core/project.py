@@ -9,6 +9,20 @@ Nothing here touches Qt. Reading and writing ``.bmaproj`` files (and the
 importers for templates, batch plans and 3.x run folders) lives in
 :mod:`core.project_io`.
 
+Template and overrides
+----------------------
+Every video follows the project template. What is different about one video
+is stored as a layer over it, never as a copy of every setting: a
+:class:`TrialWindow` (when its trial starts and ends, or one window per
+mouse) and a :class:`ZoneOverride` (its own regions, adjusted or aligned).
+:meth:`Project.effective_settings` composes template, zones and trial into
+the exact ``BatchSettings`` a run uses, identical (``to_dict`` and settings
+hash) to a full copy with those values, so analysis outputs and checkpoints
+do not depend on how a difference is stored. A full copy per video
+(``customize``) remains for anything the layers cannot express. Project
+files of schema 1 (full copies only) are migrated on load where that is
+exact.
+
 Paths
 -----
 In memory every path is absolute. In the file, a path is stored relative to
@@ -39,7 +53,7 @@ from core.version import APP_VERSION
 
 logger = logging.getLogger(__name__)
 
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 FILE_TYPE = "project"
 PROJECT_EXTENSION = ".bmaproj"
 
@@ -415,6 +429,66 @@ class TrialProtocol:
         )
 
 
+_TIME_KEYS = ("start_time", "end_time", "per_roi_times")
+# What a trial and a zone override can express. ``schema_version`` is a
+# function of the regions (an arena raises it), so it follows them.
+_LAYERED_KEYS = frozenset(
+    _TIME_KEYS + ("roi_manager", "scale_factor", "schema_version")
+)
+
+
+def _differs(left: Mapping[str, Any], right: Mapping[str, Any], key: str) -> bool:
+    return canonical_json(left.get(key)) != canonical_json(right.get(key))
+
+
+def decompose_settings(
+    template: BatchSettings,
+    settings: BatchSettings,
+    source: str = SOURCE_CUSTOM,
+) -> Optional[Tuple[Optional[TrialWindow], Optional[ZoneOverride]]]:
+    """``settings`` as a trial and/or zone override on top of ``template``.
+
+    Returns ``(trial, zones)``, either of which is None when ``settings``
+    agrees with the template there; ``(None, None)`` for identical settings.
+    Returns None when the settings differ from the template in anything a
+    layer cannot express (other fields, an end time or per-mouse windows that
+    the template has and the settings lack, a calibration that changed
+    without the regions, or an aligned copy whose regions did not move).
+    The values are copied untouched so the composition hashes the same.
+    """
+    wanted, base = settings.to_dict(), template.to_dict()
+    for key in (set(wanted) | set(base)) - _LAYERED_KEYS:
+        if _differs(wanted, base, key):
+            return None
+    zones_differ = _differs(wanted, base, "roi_manager")
+    scale_differs = _differs(wanted, base, "scale_factor")
+    if scale_differs and not zones_differ:
+        return None
+    if source == SOURCE_ALIGNED and not zones_differ:
+        return None
+    trial = TrialWindow()
+    if _differs(wanted, base, "start_time"):
+        trial.start_time, trial.start_set = settings.start_time, True
+    if _differs(wanted, base, "end_time"):
+        if settings.end_time is None:
+            return None
+        trial.end_time = settings.end_time
+    if _differs(wanted, base, "per_roi_times"):
+        if not settings.per_roi_times:
+            return None
+        trial.per_roi_times = {
+            name: (a, b) for name, (a, b) in settings.per_roi_times.items()
+        }
+    zones = None
+    if zones_differ:
+        zones = ZoneOverride(
+            roi_manager=copy.deepcopy(settings.roi_manager),
+            source=ZONE_ALIGNED if source == SOURCE_ALIGNED else ZONE_ADJUSTED,
+            scale_factor=settings.scale_factor if scale_differs else None,
+        )
+    return (None if trial.is_empty() else trial), zones
+
+
 # ----------------------------------------------------------------------
 # Videos
 # ----------------------------------------------------------------------
@@ -449,6 +523,13 @@ class VideoEntry:
     # Settings found in a file that this version cannot read. Kept verbatim
     # and written back, so opening and saving never destroys them.
     _raw_settings: Optional[Dict[str, Any]] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    # Same for a trial window or zone override that could not be read.
+    _raw_trial: Optional[Any] = field(
+        default=None, init=False, repr=False, compare=False
+    )
+    _raw_zones: Optional[Any] = field(
         default=None, init=False, repr=False, compare=False
     )
 
@@ -489,6 +570,18 @@ class VideoEntry:
             "last_status": self.last_status,
             "last_run_dir": store_path(self.last_run_dir, base_dir),
             "notes": self.notes,
+            "trial": (
+                self.trial.to_dict() if self.trial is not None
+                else self._raw_trial
+            ),
+            "zones": (
+                self.zones.to_dict() if self.zones is not None
+                else self._raw_zones
+            ),
+            "duration_s": self.duration_s,
+            "frame_size": (
+                None if self.frame_size is None else list(self.frame_size)
+            ),
         }
 
     @classmethod
@@ -543,6 +636,32 @@ class VideoEntry:
                     warnings.append(
                         f"{path.name}: settings could not be read ({exc})"
                     )
+        for attribute, kind, reader in (
+            ("trial", "trial window", TrialWindow.from_dict),
+            ("zones", "zone override", ZoneOverride.from_dict),
+        ):
+            raw_layer = data.get(attribute)
+            if raw_layer is None:
+                continue
+            try:
+                setattr(entry, attribute, reader(raw_layer))
+            except Exception as exc:  # keep it verbatim, like unreadable settings
+                setattr(entry, f"_raw_{attribute}", raw_layer)
+                if warnings is not None:
+                    warnings.append(
+                        f"{path.name}: the {kind} could not be read ({exc})"
+                    )
+        entry.duration_s = (
+            data["duration_s"] if _is_number(data.get("duration_s"))
+            and data["duration_s"] > 0 else None
+        )
+        size = data.get("frame_size")
+        if (
+            isinstance(size, (list, tuple)) and len(size) == 2
+            and all(isinstance(v, int) and not isinstance(v, bool) and v > 0
+                    for v in size)
+        ):
+            entry.frame_size = (size[0], size[1])
         return entry
 
 
@@ -778,6 +897,7 @@ class Project:
                 None if self.template_settings is None
                 else self.template_settings.to_dict()
             ),
+            "trial_protocol": self.trial_protocol.to_dict(),
             "notes": self.notes,
             "videos": [
                 video.to_dict(base_dir, template_json) for video in self.videos
@@ -826,6 +946,7 @@ class Project:
             ),
             run_options=RunOptions.from_dict(data.get("run_options"), base_dir),
             template_settings=template,
+            trial_protocol=TrialProtocol.from_dict(data.get("trial_protocol")),
             notes=str(data.get("notes") or ""),
         )
         seen = set()
@@ -838,8 +959,68 @@ class Project:
         project.runs = [
             RunRecord.from_dict(raw, base_dir) for raw in data.get("runs") or []
         ]
+        if version < 2:
+            project._migrate_full_copies(warnings)
         project.load_warnings = warnings
         return project
+
+    def _migrate_full_copies(self, warnings: List[str]) -> None:
+        """Schema 1 stored every per-video change as a full copy of the
+        settings. A copy that differs from the template only in its times
+        and/or regions becomes a trial and/or zone override; any other copy
+        stays as it is. The change is reported once in ``warnings``."""
+        moved: List[str] = []
+        for video in self.videos:
+            if video.settings is None or video.settings_source == SOURCE_TEMPLATE:
+                continue
+            if self._store_as_layers(video, video.settings, video.settings_source):
+                moved.append(video.name)
+        if moved:
+            shown = ", ".join(moved[:5]) + (
+                f" and {len(moved) - 5} more" if len(moved) > 5 else ""
+            )
+            warnings.append(
+                f"Updated to the new project format: {len(moved)} video(s) "
+                "that differed from the template only in their start/end "
+                f"times or regions now follow the template ({shown}). "
+                "Their settings and results are unchanged."
+            )
+
+    def _store_as_layers(
+        self, entry: VideoEntry, settings: BatchSettings, source: str
+    ) -> bool:
+        """Store ``settings`` as the template plus a trial and/or zone override.
+
+        Only done when the settings differ from the template in nothing but
+        their times and/or regions, and when the composition then gives
+        exactly the settings it replaces (``to_dict`` and so the hash).
+        Returns False, leaving ``entry`` untouched, when that is not so.
+        """
+        template = self.template_settings
+        if template is None:
+            return False
+        layers = decompose_settings(template, settings, source)
+        if layers is None or layers == (None, None):
+            return False
+        trial, zones = layers
+        if zones is not None:
+            zones.reference = self.zones_reference()
+        candidate = VideoEntry(
+            key=entry.key, path=entry.path, settings=template.copy(),
+            settings_source=SOURCE_TEMPLATE, trial=trial, zones=zones,
+            duration_s=entry.duration_s, frame_size=entry.frame_size,
+        )
+        wanted = _settings_to_json(self.effective_settings(
+            VideoEntry(key=entry.key, path=entry.path, settings=settings,
+                       settings_source=SOURCE_CUSTOM)
+        ))
+        if _settings_to_json(self.effective_settings(candidate)) != wanted:
+            return False
+        entry.settings = candidate.settings
+        entry.settings_source = SOURCE_TEMPLATE
+        entry._raw_settings = None
+        entry.trial, entry.zones = trial, zones
+        return True
 
     # ------------------------------------------------------------------
     # Videos
@@ -1081,6 +1262,7 @@ class Project:
             raise ProjectError(f"Unknown settings source {source!r}")
         entry = self.entry(key)
         entry.zones = None
+        entry._raw_zones = None
         if entry.trial is not None:
             entry.trial = TrialWindow(
                 start_time=settings.start_time,
@@ -1443,6 +1625,7 @@ class Project:
                 for name, value in per_roi_times.items()
             }
         entry.trial = None if trial.is_empty() else trial
+        entry._raw_trial = None
         self._mark_changed_settings(entry, before, reset_verified=False)
         self._changed()
         return entry.trial
@@ -1450,10 +1633,11 @@ class Project:
     def clear_trial(self, key: str) -> bool:
         """Drop the video's own trial times; True if it had any."""
         entry = self.entry(key)
-        if entry.trial is None:
+        if entry.trial is None and entry._raw_trial is None:
             return False
         before = self._effective_json(entry)
         entry.trial = None
+        entry._raw_trial = None
         self._mark_changed_settings(entry, before, reset_verified=False)
         self._changed()
         return True
@@ -1575,6 +1759,7 @@ class Project:
             reference=self.zones_reference(),
             scale_factor=scale_factor,
         )
+        entry._raw_zones = None
         self._mark_changed_settings(entry, before, reset_verified=True)
         entry.verified = False
         self._changed()
@@ -1583,10 +1768,11 @@ class Project:
     def clear_zone_override(self, key: str) -> bool:
         """Back to the template's regions; True if there was an override."""
         entry = self.entry(key)
-        if entry.zones is None:
+        if entry.zones is None and entry._raw_zones is None:
             return False
         before = self._effective_json(entry)
         entry.zones = None
+        entry._raw_zones = None
         self._mark_changed_settings(entry, before, reset_verified=True)
         entry.verified = False
         self._changed()

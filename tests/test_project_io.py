@@ -237,9 +237,19 @@ class ImporterTests(ProjectFixture):
         })
         project = project_from_batch_plan(plan_file)
         self.assertEqual([v.path for v in project.videos], [a, b, c])
+        # b differs only in its regions: it follows the template with a zone
+        # override instead of forking a full copy.
         self.assertEqual(
             [v.settings_source for v in project.videos],
-            ["template", "custom", "template"],
+            ["template", "template", "template"],
+        )
+        self.assertEqual(
+            [project.zone_status(v) for v in project.videos],
+            ["template", "adjusted", "template"],
+        )
+        self.assertEqual(
+            project.effective_settings(project.videos[1]).to_dict(),
+            make_settings(offset=6).to_dict(),
         )
         self.assertIsNotNone(project.template_settings)
         self.assertEqual(project.paradigm, "Y-Maze")

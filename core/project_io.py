@@ -135,32 +135,55 @@ def _new_project(name: str, project_file: Optional[os.PathLike]) -> Project:
     return project
 
 
+def _without_times(settings: BatchSettings) -> str:
+    """Everything of ``settings`` but its times (and what follows the regions)."""
+    return canonical_json({
+        key: value for key, value in settings.to_dict().items()
+        if key not in ("start_time", "end_time", "per_roi_times", "schema_version")
+    })
+
+
 def _adopt_settings(
     project: Project, assignments: List
 ) -> None:
     """Configure videos from ``[(key, settings)]`` and find the template.
 
-    Settings shared by at least two videos become the project template (those
-    videos use it); every other video keeps its own as ``custom``. The
-    paradigm and algorithm parameters are taken from the first settings
-    that name them.
+    Settings shared by at least two videos, apart from their start/end times,
+    become the project template. A video that differs from it only in its
+    times gets a trial window, one that also (or only) has other regions gets
+    a zone override, and both keep following the template for everything
+    else. A video that differs in anything more keeps its own full copy as
+    ``custom``. When the shared settings carry different times, the template
+    starts at 0 and runs to the end of the video, so each trial states its
+    own times. The paradigm and algorithm parameters are taken from the first
+    settings that name them.
     """
     if not assignments:
         return
-    counts = Counter(canonical_json(s.to_dict()) for _, s in assignments)
+    counts = Counter(_without_times(s) for _, s in assignments)
     common, count = counts.most_common(1)[0]
     template = None
     if count >= 2:
-        template = next(
-            s for _, s in assignments if canonical_json(s.to_dict()) == common
-        )
+        group = [s for _, s in assignments if _without_times(s) == common]
+        template = group[0].copy()
+        if len({
+            canonical_json([s.start_time, s.end_time, s.per_roi_times])
+            for s in group
+        }) > 1:
+            template.start_time = 0.0
+            template.end_time = None
+            template.per_roi_times = {}
         project.set_template(template, update_inheriting=False)
     for key, settings in assignments:
         entry = project.entry(key)
-        shared = template is not None and canonical_json(settings.to_dict()) == common
-        project._configure(
-            entry, settings, SOURCE_TEMPLATE if shared else SOURCE_CUSTOM
-        )
+        if template is None:
+            project._configure(entry, settings, SOURCE_CUSTOM)
+            continue
+        project._configure(entry, template, SOURCE_TEMPLATE)
+        if canonical_json(settings.to_dict()) == canonical_json(template.to_dict()):
+            continue
+        if not project._store_as_layers(entry, settings, SOURCE_CUSTOM):
+            project._configure(entry, settings, SOURCE_CUSTOM)
     for _, settings in assignments:
         if not project.paradigm and settings.paradigm_id:
             project.paradigm = settings.paradigm_id

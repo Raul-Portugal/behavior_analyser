@@ -171,7 +171,7 @@ class ProjectSerializationTests(ProjectFixture):
         data = self._project().to_dict(self.root)
         self.assertEqual(data["type"], "project")
         self.assertEqual(data["schema_version"], SCHEMA_VERSION)
-        self.assertEqual(Project.schema_version, 1)
+        self.assertEqual(Project.schema_version, 2)
 
     def test_template_identical_settings_are_written_once(self):
         data = self._project().to_dict(self.root)
