@@ -95,6 +95,19 @@ class DetectionResult:
         return self.position is not None
 
 
+# What the quality labels mean: (colour, advice).
+QUALITY_ADVICE = {
+    "Excellent": ("green", "Tracking evidence is internally consistent"),
+    "Review": ("orange", "Review low-confidence frames and large jumps"),
+    "Poor": ("red", "Adjust segmentation or improve recording conditions"),
+}
+
+
+def quality_advice(label: str) -> Tuple[str, str]:
+    """``(colour, advice)`` of a quality label; unknown labels read as Poor."""
+    return QUALITY_ADVICE.get(label, QUALITY_ADVICE["Poor"])
+
+
 class DetectionQualityMonitor:
     """Summarize recent detection coverage, confidence, and jump quality."""
 
@@ -134,11 +147,8 @@ class DetectionQualityMonitor:
     def get_quality_status(self) -> Tuple[str, str, str]:
         stats = self.get_statistics()
         label = quality_grade_label(stats['quality_grade'])
-        if label == "Excellent":
-            return label, "green", "Tracking evidence is internally consistent"
-        if label == "Review":
-            return label, "orange", "Review low-confidence frames and large jumps"
-        return label, "red", "Adjust segmentation or improve recording conditions"
+        color, advice = quality_advice(label)
+        return label, color, advice
 
     def reset(self):
         self.recent_detections.clear()

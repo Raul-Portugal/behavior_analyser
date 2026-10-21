@@ -18,7 +18,7 @@ from PyQt6.QtGui import QKeySequence, QShortcut
 from PyQt6.QtWidgets import (
     QComboBox, QDoubleSpinBox, QFileDialog,
     QFormLayout, QGroupBox, QHBoxLayout, QLabel, QMessageBox, QPushButton,
-    QProgressBar, QScrollArea, QSlider, QVBoxLayout, QWidget,
+    QProgressBar, QScrollArea, QSizePolicy, QSlider, QVBoxLayout, QWidget,
 )
 
 from matplotlib.backends.backend_qtagg import FigureCanvasQTAgg
@@ -208,6 +208,23 @@ class OptimizedCanvas(FigureCanvasQTAgg):
         super().__init__(figure)
 
 
+class _ResizeLabel(QLabel):
+    """The embedded video label: tells the tuner when its size changed."""
+
+    resized = pyqtSignal()
+
+    def __init__(self, text="", parent=None):
+        super().__init__(text, parent)
+        self._timer = QTimer(self)
+        self._timer.setSingleShot(True)
+        self._timer.setInterval(60)
+        self._timer.timeout.connect(self.resized.emit)
+
+    def resizeEvent(self, event):
+        super().resizeEvent(event)
+        self._timer.start()
+
+
 class TstTunerWidget(QWidget):
     """
     High-performance, embeddable TST tuner with optimized video playback
@@ -217,6 +234,13 @@ class TstTunerWidget(QWidget):
     ``apply_to_maze(maze)``, ``has_unsaved_changes()``, the
     ``config_changed`` / ``scan_finished`` signals and ``shutdown()`` (call it
     when the step is discarded; hiding the widget only pauses it).
+
+    ``embedded=True`` is the workspace's Motion tuning stage: the video and the
+    evidence graph fill the widget (the video grows with its window) and the
+    playback bar sits below them. The minimum-immobility slider is then in
+    ``parameter_group`` and the expert settings in ``advanced_group``, two
+    parentless widgets the host puts in its side column; the classic layout
+    is untouched.
     """
 
     # Emitted whenever the tuned settings change (read them with
@@ -226,8 +250,11 @@ class TstTunerWidget(QWidget):
     scan_finished = pyqtSignal()
 
     def __init__(self, video_path, roi_manager, tst_maze_instance,
-                 initial_motion_config=None, parent=None):
+                 initial_motion_config=None, parent=None, embedded=False):
         super().__init__(parent)
+        self.embedded = bool(embedded)
+        self.parameter_group = None
+        self.advanced_group = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
 
         self.video_path = video_path
@@ -317,8 +344,16 @@ class TstTunerWidget(QWidget):
         video_group = QGroupBox("Visual Confirmation")
         video_layout = QVBoxLayout()
 
-        self.image_label = QLabel("Initializing...")
-        self.image_label.setFixedSize(640, 480)  # Increased size to match new resolution
+        if self.embedded:
+            self.image_label = _ResizeLabel("Initializing...")
+            self.image_label.setMinimumSize(320, 150)
+            self.image_label.setSizePolicy(
+                QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Expanding
+            )
+            self.image_label.resized.connect(self._on_preview_resized)
+        else:
+            self.image_label = QLabel("Initializing...")
+            self.image_label.setFixedSize(640, 480)  # Increased size to match new resolution
         self.image_label.setStyleSheet("""
             QLabel {
                 background: #1a1a1a;
@@ -330,7 +365,10 @@ class TstTunerWidget(QWidget):
         self.image_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.image_label.setScaledContents(False)
 
-        video_layout.addWidget(self.image_label, alignment=Qt.AlignmentFlag.AlignCenter)
+        if self.embedded:
+            video_layout.addWidget(self.image_label, 1)
+        else:
+            video_layout.addWidget(self.image_label, alignment=Qt.AlignmentFlag.AlignCenter)
 
         # Frame counter
         self.frame_label = QLabel("Frame: 0 / 0")
@@ -360,6 +398,8 @@ class TstTunerWidget(QWidget):
         self.fps_label = QLabel("FPS: 0.0")
         self.fps_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.fps_label.setStyleSheet("font-size: 12px; color: #888;")
+        if self.embedded:
+            self.fps_label.setVisible(False)     # a debugging aid
         video_layout.addWidget(self.fps_label)
 
         video_group.setLayout(video_layout)
@@ -427,9 +467,14 @@ class TstTunerWidget(QWidget):
 
         self.graph_group.setLayout(graph_layout)
 
-        top_layout.addWidget(video_group)
-        top_layout.addWidget(self.graph_group, 1)  # Graph takes more space
-        main_layout.addLayout(top_layout)
+        if self.embedded:
+            top_layout.addWidget(video_group, 5)
+            top_layout.addWidget(self.graph_group, 4)
+            main_layout.addLayout(top_layout, 1)
+        else:
+            top_layout.addWidget(video_group)
+            top_layout.addWidget(self.graph_group, 1)  # Graph takes more space
+            main_layout.addLayout(top_layout)
 
         # === MIDDLE SECTION: CONTROLS ===
         controls_layout = QHBoxLayout()
@@ -496,7 +541,9 @@ class TstTunerWidget(QWidget):
         )
 
         # Parameter Controls
-        param_group = QGroupBox("Detection Parameters")
+        param_group = (
+            QWidget() if self.embedded else QGroupBox("Detection Parameters")
+        )
         param_layout = QHBoxLayout()
 
         # The classifier is automatic; this disabled indicator replaces the
@@ -530,10 +577,21 @@ class TstTunerWidget(QWidget):
         param_layout.addLayout(time_layout)
         param_group.setLayout(param_layout)
 
-        controls_layout.addWidget(param_group, 1)
+        if self.embedded:
+            self.parameter_group = param_group
+        else:
+            controls_layout.addWidget(param_group, 1)
         main_layout.addLayout(controls_layout)
 
         self._add_advanced_controls(main_layout)
+
+        if self.embedded:
+            root_layout = QVBoxLayout()
+            root_layout.setContentsMargins(0, 0, 0, 0)
+            root_layout.addLayout(main_layout, 1)
+            self.content_scroll = None
+            self.setLayout(root_layout)
+            return
 
         # Only the large preview, graph and parameter area scroll when the
         # display is short; the host keeps its own action buttons visible.
@@ -553,10 +611,16 @@ class TstTunerWidget(QWidget):
 
     def _add_advanced_controls(self, main_layout):
         """Keep expert classifier settings available without cluttering basics."""
-        group = QGroupBox("Advanced classifier settings")
-        group.setCheckable(True)
-        group.setChecked(False)
+        group = (
+            QWidget() if self.embedded
+            else QGroupBox("Advanced classifier settings")
+        )
+        if not self.embedded:
+            group.setCheckable(True)
+            group.setChecked(False)
         form = QFormLayout()
+        if self.embedded:
+            form.setRowWrapPolicy(QFormLayout.RowWrapPolicy.WrapAllRows)
         self.advanced_controls = {}
         fields = (
             ("segmentation_contrast", "Segmentation contrast", 0.0, 255.0, 1.0, 1),
@@ -588,13 +652,19 @@ class TstTunerWidget(QWidget):
         buttons.addWidget(load_profile)
         form.addRow(buttons)
         self.advanced_note = QLabel(
+            "Changes are saved to the project as you make them. "
+            "Use Rescan preview to inspect their effect."
+            if self.embedded else
             "Advanced changes apply to the full analysis only after acceptance. "
             "Use Rescan preview to inspect their effect."
         )
         self.advanced_note.setWordWrap(True)
         form.addRow(self.advanced_note)
         group.setLayout(form)
-        main_layout.addWidget(group)
+        if self.embedded:
+            self.advanced_group = group
+        else:
+            main_layout.addWidget(group)
 
     def _on_advanced_changed(self):
         for name, control in self.advanced_controls.items():
@@ -602,8 +672,20 @@ class TstTunerWidget(QWidget):
         if self.preview_motion_config.min_mouse_area_ratio >= self.preview_motion_config.max_mouse_area_ratio:
             self.advanced_note.setText("Minimum body area must be lower than maximum body area.")
         else:
-            self.advanced_note.setText("Settings changed. Rescan preview to inspect them; accept to use them in analysis.")
+            self.advanced_note.setText(
+                "Settings changed and saved. Rescan preview to inspect them."
+                if self.embedded else
+                "Settings changed. Rescan preview to inspect them; accept to use them in analysis."
+            )
         self.config_changed.emit()
+
+    def _on_preview_resized(self):
+        """Embedded: pictures cached for the old size are drawn again."""
+        if not self._scan_complete or not self.frame_buffer:
+            return
+        self.processed_frame_cache.clear()
+        if not self.is_playing:
+            self.update_frame(self.current_frame)
 
     def _rescan_preview(self):
         if self.scanner is not None and self.scanner.isRunning():

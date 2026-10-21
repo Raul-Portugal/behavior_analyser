@@ -13,7 +13,8 @@ Modules
 ``videos_stage``  stage 1, finished: empty state, paradigm picker, video table;
 ``arena_stage``   stage 2, finished: the template's zones and the zones of
                   single videos (live edits, alignment);
-``hosted``        the other stages in their *temporary* form: the old Setup,
+``detection_stage``  stage 3, finished: live-written detection / motion tuning;
+``hosted``        Review & run and Results in their *temporary* form: the old
                   Run and Results tabs hosted inside a stage.
 
 The replacement contract (for the authors of stages 2 to 6)

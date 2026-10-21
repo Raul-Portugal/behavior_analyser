@@ -806,6 +806,77 @@ def ws_arena_blank(demo: WorkspaceDemo) -> None:
     demo.window.go_to_stage("arena", force=True)
 
 
+def _wait_for(predicate: Callable[[], bool], seconds: float = 60.0) -> bool:
+    """Run the event loop until ``predicate()`` (background work finishes)."""
+    import time
+    deadline = time.monotonic() + seconds
+    while not predicate() and time.monotonic() < deadline:
+        QCoreApplication.processEvents()
+        time.sleep(0.01)
+    return predicate()
+
+
+def _detection_stage(demo: WorkspaceDemo):
+    ws_videos(demo)
+    demo.window.go_to_stage("detection", force=True)
+    stage = demo.window.stage("detection")
+    _wait_for(lambda: stage.simple.quality_chip.kind() != "running", 30.0)
+    return stage
+
+
+def ws_detection(demo: WorkspaceDemo) -> None:
+    _detection_stage(demo)
+
+
+def ws_detection_mask(demo: WorkspaceDemo) -> None:
+    """The mask view and the Advanced sliders open."""
+    stage = _detection_stage(demo)
+    stage.mask_button.setChecked(True)
+    stage.advanced.set_expanded(True)
+    demo.settle()
+    stage.side_scroll.verticalScrollBar().setValue(10_000)
+
+
+def ws_detection_checked(demo: WorkspaceDemo) -> None:
+    """After "Quick check all videos" (one video is unreadable)."""
+    stage = _detection_stage(demo)
+    stage.start_quick_check()
+    _wait_for(lambda: not stage.checking)
+    stage.side_scroll.verticalScrollBar().setValue(10_000)
+
+
+def ws_detection_blocked(demo: WorkspaceDemo) -> None:
+    """No zones yet: the stage points at Arena & zones."""
+    from core.project import Project
+    from core.project_io import save_project
+    study = Project(name="Zones to do", paradigm="Y-Maze")
+    study.add_videos(demo.clips[:2])
+    demo.window.open_path(save_project(study, demo.root / "Zones to do.bmaproj"))
+    demo.window.go_to_stage("detection", force=True)
+
+
+def ws_detection_tst(demo: WorkspaceDemo) -> None:
+    """Motion tuning of the Tail Suspension Test."""
+    import numpy as np
+    from core.models import AppConfig, BatchSettings
+    from core.project import Project
+    from core.project_io import save_project
+    from mazes import create_maze
+    from roi_manager import ROIManager
+    maze = create_maze("Tail Suspension Test")
+    manager = ROIManager(source_dimensions=(320, 180))
+    manager.add_roi("mouse_1", np.array([[90, 10], [230, 10], [230, 170], [90, 170]]))
+    study = Project(name="Tail suspension cohort", paradigm="Tail Suspension Test")
+    study.set_template(BatchSettings(
+        manager, AppConfig().detection, 0.0, paradigm_id=maze.name,
+        algorithm_parameters=maze.get_algorithm_parameters()))
+    study.add_videos(demo.clips[:4])
+    demo.window.open_path(save_project(study, demo.root / "Tail suspension.bmaproj"))
+    demo.window.go_to_stage("detection", force=True)
+    stage = demo.window.stage("detection")
+    _wait_for(lambda: stage.tuner is not None and stage.tuner.has_unsaved_changes(), 60.0)
+
+
 WORKSPACE_PAGES: Dict[str, Callable[[WorkspaceDemo], None]] = {
     "welcome": ws_welcome,
     "paradigm": ws_paradigm,
@@ -821,7 +892,11 @@ WORKSPACE_PAGES: Dict[str, Callable[[WorkspaceDemo], None]] = {
     "arena_options": ws_arena_options,
     "arena_openfield": ws_arena_openfield,
     "arena_blank": ws_arena_blank,
-    "detection": _stage_page("detection"),
+    "detection": ws_detection,
+    "detection_mask": ws_detection_mask,
+    "detection_checked": ws_detection_checked,
+    "detection_blocked": ws_detection_blocked,
+    "detection_tst": ws_detection_tst,
     "trials": _stage_page("trials"),
     "trials_protocol": ws_trials_protocol,
     "trials_tst": ws_trials_tst,

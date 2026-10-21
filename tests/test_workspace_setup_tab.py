@@ -65,14 +65,13 @@ class LayoutTests(SetupTabFixture):
         self.assertIs(self.window.tab_widget("setup"), self.window.setup_tab)
         self.assertIs(self.tab.workspace, self.window)
 
-    def test_the_setup_tab_is_shown_by_the_detection_stage(self):
+    def test_no_stage_hosts_the_setup_tab_any_more(self):
         self.choose_paradigm(T)
         window = self.window
-        for stage_id, step in (("detection", STEP_TST_TUNING),):
+        for stage_id in ("arena", "detection", "trials"):
             with self.subTest(stage_id):
                 self.assertTrue(window.go_to_stage(stage_id))
-                self.assertIs(self.tab.parentWidget(), window.stage(stage_id).content)
-                self.assertEqual(self.tab.step, step)
+                self.assertIsNot(self.tab.parentWidget(), window.stage(stage_id).content)
 
     def test_empty_states_point_to_what_is_missing(self):
         window = self.window
@@ -327,9 +326,12 @@ class StepHostingTests(SetupTabFixture):
     def test_leaving_the_tst_step_joins_the_scan_thread(self):
         self.choose_paradigm(T)
         self.project.set_template(valid_settings(T))
-        self.window.show()
-        self.assertTrue(self.window.go_to_stage("detection"))   # Motion tuning
-        self.assertEqual(self.tab.step, STEP_TST_TUNING)
+        # No stage hosts the setup tab any more: show it on its own so the
+        # TST tuner (which scans on first show) starts.
+        self.tab.setParent(None)
+        self.addCleanup(self.tab.hide)
+        self.tab.show()
+        self.assertTrue(self.tab.go_to_step(STEP_TST_TUNING))
         tuner = self.tab.host.tuner
         self.assertTrue(wait_until(
             self.app, lambda: tuner.scanner is not None

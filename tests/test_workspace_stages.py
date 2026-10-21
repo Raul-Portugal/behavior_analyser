@@ -158,16 +158,16 @@ class NavigationTests(StageFixture):
             window.go_to_stage("videos")
         self.assertEqual(calls, ["enter", "leave"])
 
-    def test_unapplied_setup_edits_veto_leaving_a_setup_stage(self):
+    def test_live_setup_stages_never_ask_before_leaving(self):
+        # Arena, Detection and Trials write their edits live, so leaving
+        # never needs an Apply / Discard prompt.
         self.ready()
         window = self.window
-        window.go_to_stage("detection")
-        tab = window.setup_tab
-        self.prompts.say("ask_save_changes", "cancel")
-        with patch.object(type(tab), "has_unapplied_edits", return_value=True):
-            self.assertFalse(window.go_to_stage("videos"))
-        self.assertEqual(window.current_stage_id, "detection")
-        self.assertEqual(len(self.prompts.called("ask_save_changes")), 1)
+        for stage_id in ("arena", "detection", "trials"):
+            window.go_to_stage(stage_id)
+            self.assertTrue(window.go_to_stage("videos"))
+            self.assertEqual(window.current_stage_id, "videos")
+        self.assertEqual(self.prompts.called("ask_save_changes"), [])
 
     def test_closing_the_project_returns_to_the_first_stage(self):
         self.ready()
@@ -233,6 +233,9 @@ class StepperTests(StageFixture):
         window.project.set_template(settings_for("Y-Maze"))
         window.refresh_navigation()
         self.assertEqual(self.step_status("arena"), "done")
+        self.assertEqual(self.step_status("detection"), "todo")   # not reviewed yet
+        window.project.set_detection_reviewed()
+        window.refresh_navigation()
         self.assertEqual(self.step_status("detection"), "done")
         self.assertEqual(self.step_status("trials"), "done")
         self.assertEqual(self.step_status("review"), "done")
@@ -936,26 +939,17 @@ class DrawerTests(StageFixture):
 
 
 class HostedStageTests(StageFixture):
-    def test_setup_stages_jump_to_their_step(self):
+    def test_setup_stages_are_real_stages(self):
         self.ready()
         window = self.window
-        tab = window.setup_tab
-        for stage_id, step in (("detection", "detection_tuning"),):
+        for stage_id in ("arena", "detection", "trials"):
             window.go_to_stage(stage_id)
-            self.assertEqual(tab.step, step, stage_id)
-            self.assertIs(tab.parentWidget(), window.stage(stage_id).content)
-            self.assertTrue(tab.isVisibleTo(window.stage(stage_id)))
+            self.assertNotIsInstance(window.stage(stage_id), HostedSetupStage)
+            self.assertIsNot(window.setup_tab.parentWidget(), window.stage(stage_id).content)
 
-    def test_the_tst_detection_stage_opens_motion_tuning(self):
-        self.ready("Tail Suspension Test", template=False)
-        from tests.test_workspace_stage_status import settings_for
-        self.window.project.set_template(settings_for("Tail Suspension Test"))
-        self.window.go_to_stage("detection")
-        self.assertEqual(self.window.setup_tab.step, "tst_tuning")
-
-    def test_the_setup_stages_are_hosted_stages(self):
-        for stage_id in ("detection",):
-            self.assertIsInstance(self.window.stage(stage_id), HostedSetupStage)
+    def test_no_setup_stage_is_hosted_any_more(self):
+        for stage_id in ("arena", "detection", "trials"):
+            self.assertNotIsInstance(self.window.stage(stage_id), HostedSetupStage)
 
     def test_run_and_results_host_their_tabs(self):
         self.ready()

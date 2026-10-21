@@ -138,8 +138,10 @@ class StageStatusTests(ProjectFixture):
         project = self.make_project(template=False)
         self.assertEqual(self.status(st.STAGE_DETECTION, project).status, st.STATUS_TODO)
 
-    def test_detection_done_once_accepted(self):
+    def test_detection_done_once_reviewed(self):
         project = self.make_project()
+        self.assertEqual(self.status(st.STAGE_DETECTION, project).status, st.STATUS_TODO)
+        project.set_detection_reviewed()
         self.assertEqual(self.status(st.STAGE_DETECTION, project).status, st.STATUS_DONE)
 
     def test_detection_attention_for_an_invalid_configuration(self):
@@ -153,6 +155,7 @@ class StageStatusTests(ProjectFixture):
         self.assertEqual(st.detection_title("Y-Maze"), "Detection")
         self.assertEqual(st.detection_title(""), "Detection")
         project = self.make_project(paradigm="Tail Suspension Test")
+        project.set_detection_reviewed()
         self.assertEqual(self.status(st.STAGE_DETECTION, project).status, st.STATUS_DONE)
 
     def test_every_paradigm_has_a_detection_step(self):

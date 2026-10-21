@@ -53,9 +53,16 @@ def summarize_tracking_quality(
     *,
     frame_diagonal: float,
     low_confidence_threshold: float = 0.40,
-    implausible_jump_ratio: float = 0.20
+    implausible_jump_ratio: float = 0.20,
+    break_before: Sequence[int] = ()
 ) -> Dict[str, float]:
-    """Summarize coverage, confidence, and consecutive-frame jump quality."""
+    """Summarize coverage, confidence, and consecutive-frame jump quality.
+
+    ``break_before`` lists the indices where a new, separate run of frames
+    starts (a quick scan samples several windows of the video): the jump
+    between the last frame of one run and the first of the next is not a
+    tracking error and is left out. Empty (the default) changes nothing.
+    """
     total_frames = len(positions)
     detected_indices = [
         index for index, position in enumerate(positions)
@@ -78,8 +85,11 @@ def summarize_tracking_quality(
     )
 
     jumps: List[float] = []
-    for previous, current in zip(positions, positions[1:]):
-        if previous is None or current is None:
+    breaks = set(break_before)
+    for index, (previous, current) in enumerate(
+        zip(positions, positions[1:]), start=1
+    ):
+        if index in breaks or previous is None or current is None:
             continue
         jumps.append(hypot(current[0] - previous[0], current[1] - previous[1]))
 
