@@ -233,6 +233,9 @@ class StepperTests(StageFixture):
         window.project.set_template(settings_for("Y-Maze"))
         window.refresh_navigation()
         self.assertEqual(self.step_status("arena"), "done")
+        self.assertEqual(self.step_status("detection"), "todo")   # not reviewed yet
+        window.project.set_detection_reviewed()
+        window.refresh_navigation()
         self.assertEqual(self.step_status("detection"), "done")
         self.assertEqual(self.step_status("trials"), "done")
         self.assertEqual(self.step_status("review"), "done")
@@ -940,22 +943,14 @@ class HostedStageTests(StageFixture):
         self.ready()
         window = self.window
         tab = window.setup_tab
-        for stage_id, step in (("arena", "rois"), ("detection", "detection_tuning"),
-                               ("trials", "time_window")):
+        for stage_id, step in (("arena", "rois"), ("trials", "time_window")):
             window.go_to_stage(stage_id)
             self.assertEqual(tab.step, step, stage_id)
             self.assertIs(tab.parentWidget(), window.stage(stage_id).content)
             self.assertTrue(tab.isVisibleTo(window.stage(stage_id)))
 
-    def test_the_tst_detection_stage_opens_motion_tuning(self):
-        self.ready("Tail Suspension Test", template=False)
-        from tests.test_workspace_stage_status import settings_for
-        self.window.project.set_template(settings_for("Tail Suspension Test"))
-        self.window.go_to_stage("detection")
-        self.assertEqual(self.window.setup_tab.step, "tst_tuning")
-
     def test_the_setup_stages_are_hosted_stages(self):
-        for stage_id in ("arena", "detection", "trials"):
+        for stage_id in ("arena", "trials"):
             self.assertIsInstance(self.window.stage(stage_id), HostedSetupStage)
 
     def test_run_and_results_host_their_tabs(self):

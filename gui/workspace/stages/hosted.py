@@ -3,10 +3,10 @@ gui/workspace/stages/hosted.py
 Stages 2 to 6 in their temporary form: the old Setup, Run and Results tabs
 hosted inside a stage, so nothing breaks while the real stages are written.
 
-* Arena & zones, Detection (Motion tuning for the Tail Suspension Test) and
-  Trials all show the **same** ``SetupTab``, jumped to the matching step
-  (``go_to_step``: regions, detection or TST tuning, time window). The tab
-  is moved into whichever of the three stages is current.
+* Arena & zones and Trials show the **same** ``SetupTab``, jumped to the
+  matching step (``go_to_step``: regions, time window). The tab is moved
+  into whichever of the two stages is current. (Detection / Motion tuning
+  is a real stage now: ``detection_stage.py``.)
 * Review & run hosts the ``RunTab``; Results hosts the ``ResultsTab``.
 
 The tabs keep working through their ``WorkspaceTab`` hooks (the window still
@@ -99,35 +99,6 @@ class ArenaStage(HostedSetupStage):
         return STEP_ROIS
 
 
-class DetectionStage(HostedSetupStage):
-    stage_id = stage_status.STAGE_DETECTION
-    title = stage_status.DETECTION_TITLE
-    subtitle = "Check that the animal is found in every frame."
-    icon_name = "target"
-
-    def setup_step(self) -> str:
-        paradigm = "" if self.project is None else self.project.effective_paradigm()
-        return stage_status.detection_step(paradigm)
-
-    def update_for_paradigm(self) -> None:
-        """"Motion tuning" for the Tail Suspension Test, "Detection" otherwise."""
-        paradigm = "" if self.project is None else self.project.effective_paradigm()
-        title = stage_status.detection_title(paradigm)
-        subtitle = (
-            "Tune how movement is told apart from stillness for each mouse."
-            if title == stage_status.MOTION_TITLE
-            else "Check that the animal is found in every frame."
-        )
-        if title != self.title or subtitle != self.subtitle:
-            self.set_texts(title, subtitle)
-
-    def on_project_changed(self, project) -> None:
-        self.update_for_paradigm()
-
-    def on_project_modified(self) -> None:
-        self.update_for_paradigm()
-
-
 class TrialsStage(HostedSetupStage):
     stage_id = stage_status.STAGE_TRIALS
     title = "Trials"
@@ -165,6 +136,6 @@ class ResultsStage(HostedStage):
 
 
 __all__ = [
-    "ArenaStage", "DetectionStage", "HostedSetupStage", "HostedStage",
+    "ArenaStage", "HostedSetupStage", "HostedStage",
     "ResultsStage", "ReviewStage", "TrialsStage",
 ]

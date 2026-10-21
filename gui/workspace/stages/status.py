@@ -18,9 +18,10 @@ Arena & zones
     or videos whose frame size differs from the one the regions were drawn
     on.
 Detection (Motion tuning for the Tail Suspension Test)
-    done: a detection configuration has been accepted. The project does not
-    record the acceptance itself, so a template that exists and validates
-    counts as accepted; an invalid configuration needs attention.
+    done: the template's detection (motion) settings validate and the user
+    has reviewed them (``Project.detection_reviewed``, set by the stage when
+    the preview was looked at or edited). attention: an invalid
+    configuration.
 Trials
     done: ``Project.trial_status`` is ``ok`` for every video.
     attention: some video has an invalid trial or no start.
@@ -172,7 +173,7 @@ def detection_status(project: Optional[Project]) -> StageStatus:
     report = state.step_report(step)
     if report.issues:
         return StageStatus(STATUS_ATTENTION, report.issues[0])
-    if report.status == REPORT_DONE:
+    if report.status == REPORT_DONE and project.detection_reviewed:
         return StageStatus(STATUS_DONE, "Detection settings accepted")
     return StageStatus(STATUS_TODO, "Check that the animal is detected well")
 

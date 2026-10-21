@@ -803,6 +803,10 @@ class Project:
     videos: List[VideoEntry] = field(default_factory=list)
     runs: List[RunRecord] = field(default_factory=list)
     notes: str = ""
+    # The user looked at the detection (or motion) preview of the template.
+    # Written to the file only when True, so older files and readers are
+    # unaffected; cleared when the paradigm (hence the settings) changes.
+    detection_reviewed: bool = False
     # Runtime only (never serialized): where the project lives on disk, what
     # went wrong while loading it, and who wants to hear about changes.
     file_path: Optional[Path] = field(default=None, repr=False, compare=False)
@@ -883,7 +887,7 @@ class Project:
     def to_dict(self, base_dir: Optional[Path] = None) -> Dict[str, Any]:
         """The ``.bmaproj`` payload; paths are relative to ``base_dir``."""
         template_json = _settings_to_json(self.template_settings)
-        return {
+        payload = {
             "type": FILE_TYPE,
             "schema_version": SCHEMA_VERSION,
             "name": self.name,
@@ -904,6 +908,9 @@ class Project:
             ],
             "runs": [run.to_dict(base_dir) for run in self.runs],
         }
+        if self.detection_reviewed:
+            payload["detection_reviewed"] = True
+        return payload
 
     @classmethod
     def from_dict(
@@ -948,6 +955,7 @@ class Project:
             template_settings=template,
             trial_protocol=TrialProtocol.from_dict(data.get("trial_protocol")),
             notes=str(data.get("notes") or ""),
+            detection_reviewed=data.get("detection_reviewed") is True,
         )
         seen = set()
         for raw in data.get("videos") or []:
@@ -1157,6 +1165,8 @@ class Project:
         empty project are taken from the template. Returns the keys updated.
         """
         self.template_settings = None if settings is None else settings.copy()
+        if settings is None:
+            self.detection_reviewed = False
         updated: List[str] = []
         if settings is not None:
             if not self.paradigm and settings.paradigm_id:
@@ -1196,6 +1206,7 @@ class Project:
         if paradigm != current and self.has_configured_videos():
             self.template_settings = None
             self.algorithm_parameters = {}
+            self.detection_reviewed = False
             for video in self.videos:
                 if video.settings is not None or video._raw_settings is not None:
                     cleared.append(video.key)
@@ -1334,6 +1345,15 @@ class Project:
         if not name or name == self.name:
             return False
         self.name = name
+        self._changed()
+        return True
+
+    def set_detection_reviewed(self, reviewed: bool = True) -> bool:
+        """Record that the detection preview was reviewed; True if it changed."""
+        reviewed = bool(reviewed)
+        if reviewed == self.detection_reviewed:
+            return False
+        self.detection_reviewed = reviewed
         self._changed()
         return True
 

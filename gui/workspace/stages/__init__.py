@@ -11,6 +11,7 @@ Modules
 ``base``          the :class:`Stage` base class (header, content area, hooks);
 ``status``        Qt-free rules for the stepper statuses;
 ``videos_stage``  stage 1, finished: empty state, paradigm picker, video table;
+``detection_stage``  stage 3, finished: live-written detection / motion tuning;
 ``hosted``        stages 2 to 6 in their *temporary* form: the old Setup, Run
                   and Results tabs hosted inside a stage.
 

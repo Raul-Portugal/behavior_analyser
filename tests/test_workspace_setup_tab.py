@@ -68,8 +68,8 @@ class LayoutTests(SetupTabFixture):
     def test_the_setup_tab_is_shown_by_the_arena_detection_and_trials_stages(self):
         self.choose_paradigm(T)
         window = self.window
-        for stage_id, step in (("arena", STEP_ROIS), ("detection", STEP_TST_TUNING),
-                               ("trials", "time_window")):
+        # (Detection has its own stage now: see test_workspace_stage_detection.)
+        for stage_id, step in (("arena", STEP_ROIS), ("trials", "time_window")):
             with self.subTest(stage_id):
                 self.assertTrue(window.go_to_stage(stage_id))
                 self.assertIs(self.tab.parentWidget(), window.stage(stage_id).content)
@@ -329,8 +329,8 @@ class StepHostingTests(SetupTabFixture):
         self.choose_paradigm(T)
         self.project.set_template(valid_settings(T))
         self.window.show()
-        self.assertTrue(self.window.go_to_stage("detection"))   # Motion tuning
-        self.assertEqual(self.tab.step, STEP_TST_TUNING)
+        self.assertTrue(self.window.go_to_stage("arena"))     # hosts the tab
+        self.assertTrue(self.tab.go_to_step(STEP_TST_TUNING))
         tuner = self.tab.host.tuner
         self.assertTrue(wait_until(
             self.app, lambda: tuner.scanner is not None

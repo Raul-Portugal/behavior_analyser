@@ -35,7 +35,7 @@ class LayoutTests(WorkspaceFixture):
         # The old tabs are hosted by the stages that stand in for them.
         for attribute in ("setup_tab", "run_tab", "results_tab"):
             self.assertIsInstance(getattr(window, attribute), QWidget)
-        for stage_id, tab in (("arena", "setup"), ("detection", "setup"),
+        for stage_id, tab in (("arena", "setup"),
                               ("trials", "setup"), ("review", "run"),
                               ("results", "results")):
             hosted = window.stage(stage_id)

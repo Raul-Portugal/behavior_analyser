@@ -5,9 +5,37 @@ Embeddable detection tuner: live quality feedback while tuning detection.
 ``DetectionTunerWidget`` holds everything the modal ``TunerDialog`` shows
 except its OK/Cancel buttons, so the workspace can host it as a setup step.
 Lifecycle handling (thread, capture, timers) follows ``gui.tuners.lifecycle``.
+
+Embedded mode (``embedded=True``) is what the workspace's Detection stage
+hosts: the widget then shows only the large preview (the video with the animal
+marked, or the "what the detector sees" mask) and the frame slider, and
+exposes the rest as parts the host places itself: ``advanced_panel`` (the full
+sliders, kept in step with the simple controls) and ``footer_layout`` (a row
+the host may add buttons to). The classic layout is untouched.
+
+Simple mode
+-----------
+Two plain-language controls map onto the sliders; both always write *valid*
+``DetectionConfig`` values (every value is inside the slider ranges below):
+
+``Sensitivity`` (``SENSITIVITY_LEVELS``, level 0 = Low ... 6 = High)
+    sets ``threshold_percentile``. A higher level lowers the percentile, so
+    more of the difference image counts as "animal": 99.9, 99.5, 99.2, 99.0
+    (the default, level 3), 98.0, 97.0, 95.0. Strictly decreasing, so the
+    mapping is monotonic.
+``Animal size`` (``ANIMAL_SIZES``)
+    sets ``min_component_area`` (smallest blob, analysis px squared) and
+    ``window_size`` (search window, analysis px) together: small = 10 / 60,
+    medium = 20 / 100 (the defaults), large = 60 / 160.
+
+A configuration whose values do not sit exactly on these positions is never
+rewritten when it is loaded: ``simple_state()`` then reports ``None`` for that
+control ("Custom (advanced)") until the user touches it.
 """
 import copy
-from typing import Callable, List, Optional, Tuple
+from dataclasses import dataclass
+from math import log
+from typing import Callable, Dict, List, Optional, Tuple
 
 import cv2
 import numpy as np
@@ -18,8 +46,10 @@ from PyQt6.QtWidgets import (QGridLayout, QGroupBox, QHBoxLayout, QLabel,
 
 from core.analysis_geometry import AnalysisGeometry
 from core.arena_zones import analysis_mask
-from core.detection import DetectionEngine, DetectionQualityMonitor
+from core.detection import (DetectionEngine, DetectionQualityMonitor,
+                            quality_advice)
 from core.models import AppConfig, DetectionConfig
+from core.tracking_quality import quality_grade_label, summarize_tracking_quality
 from core.video import VideoHandler
 from gui import ux_helpers
 from gui.qt_image import bgr_to_qpixmap
@@ -29,6 +59,154 @@ from roi_manager import ROIManager
 
 # (detected, confidence, source-space position) for one scanned frame.
 ScanSample = Tuple[bool, float, Optional[Tuple[float, float]]]
+
+
+# Level 0 (Low) ... 6 (High); see the module docstring.
+SENSITIVITY_LEVELS: Tuple[float, ...] = (99.9, 99.5, 99.2, 99.0, 98.0, 97.0, 95.0)
+DEFAULT_SENSITIVITY_LEVEL = 3
+# size -> (min_component_area, window_size)
+ANIMAL_SIZES: Dict[str, Tuple[int, int]] = {
+    "small": (10, 60),
+    "medium": (20, 100),
+    "large": (60, 160),
+}
+SIZE_ORDER = ("small", "medium", "large")
+_PERCENTILE_FIELD = "Threshold percentile"
+_AREA_FIELD = "Min component area"
+_WINDOW_FIELD = "Search window"
+
+VIEW_VIDEO = "video"
+VIEW_MASK = "mask"
+
+
+def sensitivity_percentile(level: int) -> float:
+    """The ``threshold_percentile`` of a sensitivity level (0 Low .. 6 High)."""
+    return SENSITIVITY_LEVELS[max(0, min(len(SENSITIVITY_LEVELS) - 1, int(level)))]
+
+
+def sensitivity_level_of(config: DetectionConfig) -> Optional[int]:
+    """The level whose percentile ``config`` has exactly (None: custom)."""
+    for level, percentile in enumerate(SENSITIVITY_LEVELS):
+        if config.threshold_percentile == percentile:
+            return level
+    return None
+
+
+def nearest_sensitivity_level(config: DetectionConfig) -> int:
+    """The level closest to ``config`` (where a custom value is drawn)."""
+    return min(
+        range(len(SENSITIVITY_LEVELS)),
+        key=lambda level: abs(SENSITIVITY_LEVELS[level] - config.threshold_percentile),
+    )
+
+
+def animal_size_fields(size: str) -> Tuple[int, int]:
+    """``(min_component_area, window_size)`` of an animal size."""
+    return ANIMAL_SIZES[size]
+
+
+def animal_size_of(config: DetectionConfig) -> Optional[str]:
+    """The size whose area and window ``config`` has exactly (None: custom)."""
+    for size, (area, window) in ANIMAL_SIZES.items():
+        if config.min_component_area == area and config.window_size == window:
+            return size
+    return None
+
+
+def nearest_animal_size(config: DetectionConfig) -> str:
+    """The size closest to ``config`` (where a custom value is drawn)."""
+    def distance(size: str) -> float:
+        area, window = ANIMAL_SIZES[size]
+        return (abs(log(max(config.min_component_area, 1) / area))
+                + abs(log(max(config.window_size, 1) / window)))
+
+    return min(SIZE_ORDER, key=distance)
+
+
+@dataclass(frozen=True)
+class SimpleState:
+    """What the simple controls show for the current configuration.
+
+    ``sensitivity`` / ``size`` are ``None`` for a custom value (the control
+    is then drawn at ``nearest_*`` and labelled "Custom (advanced)").
+    """
+    sensitivity: Optional[int]
+    size: Optional[str]
+    nearest_sensitivity: int
+    nearest_size: str
+
+
+def simple_state_of(config: DetectionConfig) -> SimpleState:
+    return SimpleState(
+        sensitivity_level_of(config), animal_size_of(config),
+        nearest_sensitivity_level(config), nearest_animal_size(config),
+    )
+
+
+@dataclass(frozen=True)
+class QualitySummary:
+    """The tuner's quality monitor in plain words: good, check or poor."""
+    level: str                 # "good" | "check" | "poor"
+    label: str                 # "Good" | "Check" | "Poor"
+    detection_rate: float      # percent of sampled frames with the animal
+    frames: int
+    recommendation: str
+
+    @property
+    def explanation(self) -> str:
+        return f"Animal found in {self.detection_rate:.0f}% of sampled frames"
+
+
+_QUALITY_LEVELS = {
+    "green": ("good", "Good"),
+    "orange": ("check", "Check"),
+    "red": ("poor", "Poor"),
+}
+
+
+def quality_summary_of(monitor: DetectionQualityMonitor) -> Optional[QualitySummary]:
+    """Summary of ``monitor`` (None until it has seen a few frames)."""
+    if monitor.frames_processed < 5:
+        return None
+    stats = monitor.get_statistics()
+    _status, color, recommendation = monitor.get_quality_status()
+    level, label = _QUALITY_LEVELS[color]
+    return QualitySummary(
+        level, label, float(stats['detection_rate']),
+        len(monitor.recent_detections), recommendation,
+    )
+
+
+def summarize_windows(windows: List[List["ScanSample"]], frame_diagonal: float
+                      ) -> Optional[QualitySummary]:
+    """The quality of a quick scan, given its separate windows of frames.
+
+    The grade is the monitor's own, but the jump between the last frame of
+    one window and the first of the next (minutes apart in the video) is not
+    counted as a tracking error. ``None`` below five frames.
+    """
+    positions: List[Optional[Tuple[float, float]]] = []
+    confidences: List[float] = []
+    breaks: List[int] = []
+    for window in windows:
+        if not window:
+            continue
+        if positions:
+            breaks.append(len(positions))
+        for detected, confidence, position in window:
+            positions.append(position if detected else None)
+            confidences.append(float(confidence) if detected else 0.0)
+    if len(positions) < 5:
+        return None
+    stats = summarize_tracking_quality(
+        positions, confidences, frame_diagonal=max(float(frame_diagonal), 1.0),
+        break_before=breaks,
+    )
+    color, advice = quality_advice(quality_grade_label(stats['quality_grade']))
+    level, label = _QUALITY_LEVELS[color]
+    return QualitySummary(
+        level, label, stats['detection_rate'] * 100.0, len(positions), advice
+    )
 
 
 def quick_scan_windows(total_frames: int) -> List[Tuple[int, int]]:
@@ -42,6 +220,60 @@ def quick_scan_windows(total_frames: int) -> List[Tuple[int, int]]:
     return [
         (start, min(window_length, total_frames - start)) for start in starts
     ]
+
+
+def scan_video_windows(video_path, analysis_ref: np.ndarray,
+                       geometry: AnalysisGeometry, config: DetectionConfig,
+                       total_frames: int,
+                       capture_factory: Callable = cv2.VideoCapture,
+                       arena_mask: Optional[np.ndarray] = None,
+                       should_stop: Optional[Callable[[], bool]] = None
+                       ) -> Optional[List[List[ScanSample]]]:
+    """The quick scan of one video: one list of samples per window.
+
+    Detects over the start, middle and end of the video. Opens (and always
+    releases) its own capture. Returns ``None`` when ``should_stop()`` asked
+    to stop.
+    """
+    cap = None
+    try:
+        cap = capture_factory(video_path)
+        windows: List[List[ScanSample]] = []
+        # Deterministic sequential windows exercise temporal weighting
+        # while sampling the beginning, middle, and end of the recording.
+        for start, length in quick_scan_windows(total_frames):
+            samples: List[ScanSample] = []
+            windows.append(samples)
+            engine = DetectionEngine(analysis_ref, config)
+            engine.set_analysis_mask(arena_mask)
+            cap.set(cv2.CAP_PROP_POS_FRAMES, start)  # one seek per window
+            for _ in range(length):
+                if should_stop is not None and should_stop():
+                    return None
+                ret, frame = cap.read()
+                if not ret:
+                    break
+                detection = engine.detect(
+                    geometry.to_analysis(frame), use_last_pos=True
+                )
+                samples.append((
+                    detection.detected,
+                    detection.confidence,
+                    geometry.to_source(detection.position),
+                ))
+        return windows
+    finally:
+        if cap is not None:
+            cap.release()
+
+
+def scan_video_samples(*args, **kwargs) -> Optional[List[ScanSample]]:
+    """:func:`scan_video_windows`, flattened into one list of samples (what
+    the tuner's ``QuickScanWorker`` reports); ``None`` when stopped."""
+    windows = scan_video_windows(*args, **kwargs)
+    if windows is None:
+        return None
+    return [sample for window in windows for sample in window]
 
 
 class QuickScanWorker(QThread):
@@ -67,38 +299,23 @@ class QuickScanWorker(QThread):
         self.config = copy.copy(config)
         self.total_frames = total_frames
         self._capture_factory = capture_factory
+        # How many frames each window yielded (set when the scan completes).
+        self.window_lengths: List[int] = []
 
     def run(self):
-        cap = None
         try:
-            cap = self._capture_factory(self.video_path)
-            samples: List[ScanSample] = []
-            # Deterministic sequential windows exercise temporal weighting
-            # while sampling the beginning, middle, and end of the recording.
-            for start, length in quick_scan_windows(self.total_frames):
-                engine = DetectionEngine(self.analysis_ref, self.config)
-                engine.set_analysis_mask(self.arena_mask)
-                cap.set(cv2.CAP_PROP_POS_FRAMES, start)  # one seek per window
-                for _ in range(length):
-                    if self.isInterruptionRequested():
-                        return
-                    ret, frame = cap.read()
-                    if not ret:
-                        break
-                    detection = engine.detect(
-                        self.geometry.to_analysis(frame), use_last_pos=True
-                    )
-                    samples.append((
-                        detection.detected,
-                        detection.confidence,
-                        self.geometry.to_source(detection.position),
-                    ))
-            self.scan_complete.emit(samples)
+            windows = scan_video_windows(
+                self.video_path, self.analysis_ref, self.geometry,
+                self.config, self.total_frames, self._capture_factory,
+                self.arena_mask, self.isInterruptionRequested,
+            )
+            if windows is not None:
+                self.window_lengths = [len(window) for window in windows]
+                self.scan_complete.emit(
+                    [sample for window in windows for sample in window]
+                )
         except Exception as exc:
             self.scan_failed.emit(str(exc))
-        finally:
-            if cap is not None:
-                cap.release()
 
 
 # (slider name, DetectionConfig field, minimum, maximum, scale, decimals,
@@ -114,6 +331,34 @@ _SLIDER_SPECS = (
 )
 
 
+class _PreviewLabel(QLabel):
+    """The embedded hero view: scales its picture again whenever it resizes."""
+
+    def __init__(self, text: str = "", parent=None):
+        super().__init__(text, parent)
+        self._source = None
+        self.setSizePolicy(QSizePolicy.Policy.Ignored, QSizePolicy.Policy.Ignored)
+        self.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.setStyleSheet(
+            "background-color: black; color: white; border: 1px solid grey;"
+        )
+
+    def set_source(self, pixmap) -> None:
+        self._source = pixmap
+        self._rescale()
+
+    def _rescale(self) -> None:
+        if self._source is not None and not self._source.isNull():
+            self.setPixmap(self._source.scaled(
+                self.size(), Qt.AspectRatioMode.KeepAspectRatio,
+                Qt.TransformationMode.SmoothTransformation,
+            ))
+
+    def resizeEvent(self, event) -> None:
+        super().resizeEvent(event)
+        self._rescale()
+
+
 class DetectionTunerWidget(QWidget):
     """Tune detection with live quality feedback; embeddable in a workspace.
 
@@ -123,12 +368,19 @@ class DetectionTunerWidget(QWidget):
     """
 
     config_changed = pyqtSignal(object)
+    # A new QualitySummary of the monitor (embedded hosts show it as a chip).
+    quality_changed = pyqtSignal(object)
+    # A quick scan (thread) has finished, with or without a result.
+    scan_finished = pyqtSignal()
 
     def __init__(self, video_path: str, ref_frame: np.ndarray,
                  roi_manager: ROIManager,
                  initial_config: Optional[DetectionConfig] = None,
-                 parent=None):
+                 parent=None, embedded: bool = False):
         super().__init__(parent)
+        self.embedded = bool(embedded)
+        self.view_mode = VIEW_VIDEO
+        self._last_quality: Optional[QualitySummary] = None
         self.setFocusPolicy(Qt.FocusPolicy.StrongFocus)
         self.video_path = video_path
         self.ref_frame = ref_frame
@@ -166,6 +418,9 @@ class DetectionTunerWidget(QWidget):
         )
 
         self.scan_worker: Optional[QuickScanWorker] = None
+        self.scan_error = ""
+        # Embedded: the last quick scan, graded window by window.
+        self._scan_summary: Optional[QualitySummary] = None
 
         # Auto-update stats
         self.stats_timer = QTimer(self)
@@ -188,7 +443,62 @@ class DetectionTunerWidget(QWidget):
         return self._capture.get()
 
     # ------------------------------------------------------------------ UI
+    def _init_embedded_ui(self):
+        """The workspace layout: the large preview and the frame slider.
+
+        The full sliders live in ``advanced_panel`` (a parentless widget the
+        host places) and a row for extra buttons in ``footer_layout``.
+        """
+        self.main_view = _PreviewLabel("Loading the preview...")
+        self.main_view.setMinimumSize(320, 200)
+        self.diff_view = None
+        self.thresh_view = None
+        self.control_scroll = None
+        # Kept so the attribute contract of the classic layout holds; the
+        # host shows the quality through ``quality_changed`` instead.
+        self.stats_label = QLabel(self)
+        self.recommendation_label = QLabel(self)
+        self.test_scan_button = QPushButton("Quick Scan Test", self)
+        for hidden in (self.stats_label, self.recommendation_label,
+                       self.test_scan_button):
+            hidden.setVisible(False)
+        self.test_scan_button.clicked.connect(self.run_quick_scan)
+
+        param_grid = QGridLayout()
+        self.sliders = {}
+        self.slider_labels = {}
+        for name, field, low, high, scale, decimals, unit in _SLIDER_SPECS:
+            self._add_slider(
+                param_grid, name, low, high,
+                self._slider_position(field), scale=scale,
+                decimals=decimals, unit=unit,
+            )
+        param_grid.setColumnStretch(1, 1)
+        self.advanced_panel = QWidget()
+        self.advanced_panel.setLayout(param_grid)
+
+        self.frame_label = QLabel()
+        self.frame_slider = QSlider(
+            Qt.Orientation.Horizontal, minimum=0,
+            maximum=self.video_info.total_frames - 1,
+        )
+        self.frame_slider.valueChanged.connect(self.on_frame_slider_change)
+        self.footer_layout = QHBoxLayout()
+        self.footer_layout.setContentsMargins(0, 0, 0, 0)
+        self.footer_layout.addWidget(self.frame_label)
+        self.footer_layout.addStretch(1)
+
+        root_layout = QVBoxLayout()
+        root_layout.setContentsMargins(0, 0, 0, 0)
+        root_layout.addWidget(self.main_view, 1)
+        root_layout.addLayout(self.footer_layout)
+        root_layout.addWidget(self.frame_slider)
+        self.setLayout(root_layout)
+
     def init_ui(self):
+        if self.embedded:
+            self._init_embedded_ui()
+            return
         main_layout = QHBoxLayout()
         left_layout = QVBoxLayout()
         right_layout = QVBoxLayout()
@@ -314,6 +624,7 @@ class DetectionTunerWidget(QWidget):
         # (Avoid QObject.sender(): when update_detection is called directly
         # it can point at a deleted object and crash on comparison.)
         self.quality_monitor.reset()
+        self._scan_summary = None
         self.update_detection()
         self.config_changed.emit(copy.copy(self.config))
 
@@ -387,20 +698,26 @@ class DetectionTunerWidget(QWidget):
                 True, (0, 165, 255), 3,
             )
 
-        self._update_image(self.main_view, display_frame)
-
-        diff_colored = cv2.cvtColor(
-            debug_images['diff'], cv2.COLOR_GRAY2BGR
-        )
-        self._update_image(self.diff_view, diff_colored)
-
         threshold_colored = cv2.cvtColor(
             debug_images['threshold'], cv2.COLOR_GRAY2BGR
         )
         selected_component = debug_images.get('selected_component')
         if selected_component is not None:
             threshold_colored[selected_component > 0] = (0, 255, 0)
-        self._update_image(self.thresh_view, threshold_colored)
+        if self.embedded:
+            # One hero view: the video, or what the detector sees.
+            self._update_image(
+                self.main_view,
+                threshold_colored if self.view_mode == VIEW_MASK
+                else display_frame,
+            )
+        else:
+            self._update_image(self.main_view, display_frame)
+            diff_colored = cv2.cvtColor(
+                debug_images['diff'], cv2.COLOR_GRAY2BGR
+            )
+            self._update_image(self.diff_view, diff_colored)
+            self._update_image(self.thresh_view, threshold_colored)
 
         self.frame_label.setText(f"Frame: {self.current_frame_idx} / {self.video_info.total_frames - 1}")
 
@@ -417,6 +734,12 @@ class DetectionTunerWidget(QWidget):
                       f"Status: <b>{status}</b>")
 
         self.stats_label.setText(stats_text)
+        summary = self.quality_summary()
+        if summary != self._last_quality:
+            self._last_quality = summary
+            self.quality_changed.emit(summary)
+        if self.embedded:
+            return      # the host draws the quality; the labels are not shown
 
         colors = {'green': '#d4edda', 'orange': '#fff3cd', 'red': '#f8d7da'}
         borders = {'green': '#28a745', 'orange': '#ffc107', 'red': '#dc3545'}
@@ -437,6 +760,7 @@ class DetectionTunerWidget(QWidget):
         self.test_scan_button.setEnabled(False)
         self.test_scan_button.setText("Scanning...")
         self.quality_monitor.reset()
+        self._scan_summary = None
 
         # Parentless on purpose: the lifecycle owns and joins the thread (a
         # child thread would be destroyed, still running, with this widget).
@@ -459,18 +783,40 @@ class DetectionTunerWidget(QWidget):
         self.quality_monitor.reset()
         for detected, confidence, position in samples:
             self.quality_monitor.update(detected, confidence, position)
+        if self.embedded:
+            self._scan_summary = summarize_windows(
+                self._split_windows(samples), self.quality_monitor.frame_diagonal
+            )
         self.update_quality_stats()
 
+    def _split_windows(self, samples):
+        """The flat samples of the last scan, cut back into its windows."""
+        lengths = list(getattr(self.scan_worker, "window_lengths", []) or [])
+        if sum(lengths) != len(samples):
+            lengths = [len(samples)]
+        windows, start = [], 0
+        for length in lengths:
+            windows.append(list(samples[start:start + length]))
+            start += length
+        return windows
+
     def _on_quick_scan_failed(self, message: str):
+        self.scan_error = message
+        if self.embedded:
+            return
         self.recommendation_label.setText(f"Quick scan failed: {message}")
         self.recommendation_label.setVisible(True)
 
     def _on_quick_scan_finished(self):
         self.test_scan_button.setEnabled(True)
         self.test_scan_button.setText("Quick Scan Test")
+        self.scan_finished.emit()
 
     def _update_image(self, label: QLabel, image: np.ndarray):
         pixmap = bgr_to_qpixmap(image)
+        if isinstance(label, _PreviewLabel):
+            label.set_source(pixmap)
+            return
         label.setPixmap(pixmap.scaled(label.size(), Qt.AspectRatioMode.KeepAspectRatio, Qt.TransformationMode.SmoothTransformation))
 
     def handle_navigation_key(self, event) -> bool:
@@ -501,6 +847,62 @@ class DetectionTunerWidget(QWidget):
 
     def _slider_state(self):
         return tuple(slider.value() for slider in self.sliders.values())
+
+    # ---------------------------------------------------------- simple mode
+    def simple_state(self) -> SimpleState:
+        """What the simple controls should show (see the module docstring)."""
+        self._sync_config_from_sliders()
+        return simple_state_of(self.config)
+
+    def set_sensitivity(self, level: int) -> None:
+        """Move to a sensitivity level (0 Low .. 6 High); sets the percentile."""
+        self._apply_simple({"threshold_percentile": sensitivity_percentile(level)})
+
+    def set_animal_size(self, size: str) -> None:
+        """Choose small, medium or large; sets min area and search window."""
+        area, window = animal_size_fields(size)
+        self._apply_simple({"min_component_area": area, "window_size": window})
+
+    def _apply_simple(self, values: Dict[str, float]) -> None:
+        """Write exact ``values`` into the config and show them on the sliders.
+
+        The sliders are moved with their signals blocked: a slider cannot
+        always sit exactly on the value (and a value it already shows would
+        not fire), so the config is written directly and never re-derived.
+        """
+        self._sync_config_from_sliders()
+        for field, value in values.items():
+            setattr(self.config, field, value)
+        self.config.validate()
+        for name, field, _low, _high, scale, decimals, unit in _SLIDER_SPECS:
+            if field not in values:
+                continue
+            slider = self.sliders[name]
+            was_blocked = slider.blockSignals(True)
+            try:
+                slider.setValue(self._slider_position(field))
+            finally:
+                slider.blockSignals(was_blocked)
+            self.slider_labels[name].setText(self.format_slider_value(
+                name, slider.value(), scale, decimals, unit
+            ))
+        self.on_parameter_change()
+
+    def set_view_mode(self, mode: str) -> None:
+        """Embedded only: show the video (``"video"``) or what the detector
+        sees (``"mask"``: the thresholded image, the chosen blob in green)."""
+        if mode not in (VIEW_VIDEO, VIEW_MASK):
+            raise ValueError(f"Unknown view mode {mode!r}")
+        if mode != self.view_mode:
+            self.view_mode = mode
+            self.update_detection()
+
+    def quality_summary(self) -> Optional[QualitySummary]:
+        """The current quality (None until there are a few frames): the last
+        quick scan when there is one, else what the preview frames show."""
+        if self._scan_summary is not None:
+            return self._scan_summary
+        return quality_summary_of(self.quality_monitor)
 
     def has_unsaved_changes(self) -> bool:
         """True once a detection parameter was moved from its initial value."""

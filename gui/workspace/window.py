@@ -91,9 +91,10 @@ from gui.workspace.prompts import (DISCARD, OPEN_FILTER, PROJECT_FILTER,
 from gui.workspace.setup_tab import SetupTab  # Setup tab (X2b-2)
 from gui.workspace.stages import status as stage_status
 from gui.workspace.stages.base import Stage
-from gui.workspace.stages.hosted import (ArenaStage, DetectionStage,
-                                         HostedStage, ResultsStage,
-                                         ReviewStage, TrialsStage)
+from gui.workspace.stages.detection_stage import DetectionStage
+from gui.workspace.stages.hosted import (ArenaStage, HostedStage,
+                                         ResultsStage, ReviewStage,
+                                         TrialsStage)
 from gui.workspace.stages.videos_stage import VideosStage
 from gui.workspace.tabs import (TAB_NAMES, TAB_RESULTS, TAB_RUN, TAB_SETUP,
                                 PlaceholderTab, WorkspaceTab)
@@ -378,7 +379,8 @@ class WorkspaceWindow(QMainWindow):
         (see :mod:`gui.workspace.stages`).
         """
         ordered = [
-            self.videos_stage, ArenaStage(), DetectionStage(), TrialsStage(),
+            self.videos_stage, ArenaStage(),
+            DetectionStage(self.thumbnails, self.app_settings), TrialsStage(),
             ReviewStage(), ResultsStage(),
         ]
         assert [s.stage_id for s in ordered] == list(stage_status.STAGE_ORDER)
