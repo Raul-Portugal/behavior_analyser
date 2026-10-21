@@ -17,10 +17,12 @@ How to use it
   sheets:
 
   - ``QPushButton`` ``class``: ``"primary"``, ``"secondary"`` (the default
-    look), ``"ghost"`` or ``"danger"`` (see ``set_class``);
+    look), ``"ghost"``, ``"danger"`` or ``"section"`` (a left-aligned header
+    button; see ``set_class``);
   - ``QLabel`` ``role``: ``"display"``, ``"title"``, ``"subtitle"``,
     ``"body"``, ``"caption"`` or ``"muted"`` (see ``set_role``);
-  - any input ``invalid="true"`` draws the error border.
+  - any input ``invalid="true"`` draws the error border;
+  - a ``QListView`` with ``flat=true`` has no frame or background.
 
 * ``icon(name, color=None, size=None)`` gives a ``QIcon`` from the line-icon
   set in :mod:`gui.workspace.icons`.
@@ -317,6 +319,13 @@ QPushButton[class="danger"]:disabled {
     background: transparent; color: $text_disabled; border-color: $border;
 }
 
+QPushButton[class="section"] {
+    background: transparent; border: 1px solid transparent; color: $text;
+    font-weight: 600; text-align: left; padding: 6px 6px;
+}
+QPushButton[class="section"]:hover { background: $surface_alt; }
+QPushButton[class="section"]:focus { border: 2px solid $focus_ring; padding: 5px 5px; }
+
 /* ---- text inputs ----------------------------------------------------- */
 QLineEdit, QSpinBox, QDoubleSpinBox, QComboBox, QPlainTextEdit, QTextEdit,
 QDateEdit, QTimeEdit, QDateTimeEdit {
@@ -411,6 +420,7 @@ QTableView, QTreeView, QListView, QListWidget, QTableWidget, QTreeWidget {
     border: 1px solid $border; border-radius: 8px; gridline-color: transparent;
     selection-background-color: $selection; selection-color: $text; outline: 0;
 }
+QListView[flat="true"] { background: transparent; border: none; border-radius: 0; }
 QTableView:focus, QTreeView:focus, QListView:focus { border-color: $focus_ring; }
 QTableView::item, QTreeView::item, QListView::item {
     padding: 0 8px; border: none; min-height: 32px;
@@ -728,6 +738,7 @@ def style_table_view(view: QTableView, row_height: int = ROW_HEIGHT) -> None:
     view.verticalHeader().setDefaultSectionSize(row_height)
     view.verticalHeader().setMinimumSectionSize(row_height)
     view.horizontalHeader().setHighlightSections(False)
+    view.horizontalHeader().setStretchLastSection(True)
     view.horizontalHeader().setDefaultAlignment(
         Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter
     )
