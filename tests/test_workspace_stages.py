@@ -161,12 +161,12 @@ class NavigationTests(StageFixture):
     def test_unapplied_setup_edits_veto_leaving_a_setup_stage(self):
         self.ready()
         window = self.window
-        window.go_to_stage("arena")
+        window.go_to_stage("detection")
         tab = window.setup_tab
         self.prompts.say("ask_save_changes", "cancel")
         with patch.object(type(tab), "has_unapplied_edits", return_value=True):
             self.assertFalse(window.go_to_stage("videos"))
-        self.assertEqual(window.current_stage_id, "arena")
+        self.assertEqual(window.current_stage_id, "detection")
         self.assertEqual(len(self.prompts.called("ask_save_changes")), 1)
 
     def test_closing_the_project_returns_to_the_first_stage(self):
@@ -940,7 +940,7 @@ class HostedStageTests(StageFixture):
         self.ready()
         window = self.window
         tab = window.setup_tab
-        for stage_id, step in (("arena", "rois"), ("detection", "detection_tuning"),
+        for stage_id, step in (("detection", "detection_tuning"),
                                ("trials", "time_window")):
             window.go_to_stage(stage_id)
             self.assertEqual(tab.step, step, stage_id)
@@ -955,7 +955,7 @@ class HostedStageTests(StageFixture):
         self.assertEqual(self.window.setup_tab.step, "tst_tuning")
 
     def test_the_setup_stages_are_hosted_stages(self):
-        for stage_id in ("arena", "detection", "trials"):
+        for stage_id in ("detection", "trials"):
             self.assertIsInstance(self.window.stage(stage_id), HostedSetupStage)
 
     def test_run_and_results_host_their_tabs(self):

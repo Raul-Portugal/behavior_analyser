@@ -65,10 +65,10 @@ class LayoutTests(SetupTabFixture):
         self.assertIs(self.window.tab_widget("setup"), self.window.setup_tab)
         self.assertIs(self.tab.workspace, self.window)
 
-    def test_the_setup_tab_is_shown_by_the_arena_detection_and_trials_stages(self):
+    def test_the_setup_tab_is_shown_by_the_detection_and_trials_stages(self):
         self.choose_paradigm(T)
         window = self.window
-        for stage_id, step in (("arena", STEP_ROIS), ("detection", STEP_TST_TUNING),
+        for stage_id, step in (("detection", STEP_TST_TUNING),
                                ("trials", "time_window")):
             with self.subTest(stage_id):
                 self.assertTrue(window.go_to_stage(stage_id))

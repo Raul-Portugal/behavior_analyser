@@ -45,7 +45,9 @@ class AlignFixture(SetupTabFixture):
         self.window.video_panel.clear_selection()
 
     def align(self):
-        return self.window.align_action.trigger()
+        # The Tools action now belongs to the Arena & zones stage (see
+        # test_workspace_arena_stage); the tab's own alignment still works.
+        return self.tab.align_template()
 
 
 class AlignActionTests(AlignFixture):

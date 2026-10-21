@@ -11,8 +11,10 @@ Modules
 ``base``          the :class:`Stage` base class (header, content area, hooks);
 ``status``        Qt-free rules for the stepper statuses;
 ``videos_stage``  stage 1, finished: empty state, paradigm picker, video table;
-``hosted``        stages 2 to 6 in their *temporary* form: the old Setup, Run
-                  and Results tabs hosted inside a stage.
+``arena_stage``   stage 2, finished: the template's zones and the zones of
+                  single videos (live edits, alignment);
+``hosted``        the other stages in their *temporary* form: the old Setup,
+                  Run and Results tabs hosted inside a stage.
 
 The replacement contract (for the authors of stages 2 to 6)
 ----------------------------------------------------------
