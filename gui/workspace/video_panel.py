@@ -509,7 +509,8 @@ class VideoPanel(QWidget):
             return []
         custom = [
             e for e in project.entries_for(keys)
-            if e.settings is not None and e.settings_source != "template"
+            if e.settings is not None
+            and (e.settings_source != "template" or e.zones is not None)
         ]
         if custom and not self.prompts.confirm(
             "Apply template settings",

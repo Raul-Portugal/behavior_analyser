@@ -6,8 +6,10 @@ try:
                               qInstallMessageHandler)
     from PyQt6.QtWidgets import QApplication
     from PyQt6.QtTest import QAbstractItemModelTester
-    from core.project import Project
-    from gui.project_table_model import (KeyRole, PathRole, SortRole,
+    from core.project import START_PER_VIDEO, ZONE_ALIGNED, Project
+    from gui.project_table_model import (COL_TRIAL, COL_ZONES, LEADING_COLUMNS,
+                                         KeyRole, PathRole, SortRole,
+                                         format_clock, format_trial,
                                          ProjectFilterProxyModel,
                                          ProjectTableModel, paths_from_mime,
                                          selected_keys)
@@ -66,13 +68,13 @@ class ModelStructureTests(TableFixture):
     def test_columns_follow_the_project_metadata(self):
         self.assertEqual(
             self.model.headers(),
-            ["Status", "Video", "Configured", "Settings", "group",
+            ["Status", "Video", "Configured", "Settings", "Trial", "Zones", "group",
              "Last run", "Notes", "Issues"],
         )
         self.assertEqual(self.model.rowCount(), 4)
-        self.assertEqual(self.model.columnCount(), 8)
+        self.assertEqual(self.model.columnCount(), 10)
         self.assertEqual(self.model.rowCount(self.model.index(0, 0)), 0)
-        self.assertEqual(self.model.column_for_metadata("group"), 4)
+        self.assertEqual(self.model.column_for_metadata("group"), 6)
         self.assertEqual(self.model.column_for_metadata("nope"), -1)
 
     def test_cells(self):
@@ -123,7 +125,7 @@ class ModelStructureTests(TableFixture):
     def test_empty_and_projectless_models(self):
         empty = ProjectTableModel()
         self.assertEqual(empty.rowCount(), 0)
-        self.assertEqual(empty.columnCount(), 7)
+        self.assertEqual(empty.columnCount(), 9)
         self.assertEqual(empty.add_videos([self.paths[0]]).added, [])
         tester = QAbstractItemModelTester(
             empty, QAbstractItemModelTester.FailureReportingMode.Warning
@@ -159,7 +161,7 @@ class EditingTests(TableFixture):
         self.assertTrue(self.model.setData(index, "treated"))
         self.assertEqual(self.project.videos[0].metadata["group"], "treated")
         self.assertEqual(index.data(), "treated")
-        self.assertEqual(seen, [(0, 4)])
+        self.assertEqual(seen, [(0, 6)])
         self.assertEqual(len(self.changes), 1)
 
     def test_editing_notes(self):
@@ -182,15 +184,15 @@ class EditingTests(TableFixture):
     def test_adding_and_removing_a_metadata_column(self):
         self.assertTrue(self.model.add_metadata_column("sex"))
         self.assertFalse(self.model.add_metadata_column("sex"))
-        self.assertEqual(self.model.headers()[4:6], ["group", "sex"])
-        self.assertEqual(self.model.columnCount(), 9)
+        self.assertEqual(self.model.headers()[6:8], ["group", "sex"])
+        self.assertEqual(self.model.columnCount(), 11)
         self.assertTrue(self.model.setData(
             self.model.index(1, self.model.column_for_metadata("sex")), "F"
         ))
         self.assertEqual(self.project.videos[1].metadata["sex"], "F")
         self.assertTrue(self.model.remove_metadata_column("group"))
         self.assertFalse(self.model.remove_metadata_column("group"))
-        self.assertEqual(self.model.headers()[4], "sex")
+        self.assertEqual(self.model.headers()[6], "sex")
         self.assertNotIn("group", self.project.videos[0].metadata)
 
 
@@ -445,6 +447,122 @@ class DropTests(TableFixture):
             self.model.flags(QModelIndex()) & Qt.ItemFlag.ItemIsDropEnabled
         )
         self.assertEqual(self.model.supportedDropActions(), Qt.DropAction.CopyAction)
+
+
+class TrialAndZoneColumnTests(TableFixture):
+    def test_the_new_columns_sit_after_settings(self):
+        self.assertEqual(self.model.headers()[COL_TRIAL], "Trial")
+        self.assertEqual(self.model.headers()[COL_ZONES], "Zones")
+        self.assertEqual(LEADING_COLUMNS, COL_ZONES + 1)
+        self.assertEqual(self.model.column_for_metadata("group"), LEADING_COLUMNS)
+
+    def test_a_template_follower_shows_the_whole_video(self):
+        self.assertEqual(self.cell(0, "Trial"), "whole video")
+        self.assertEqual(self.cell(0, "Zones"), "Template")
+        self.assertEqual(self.cell(0, "Configured"), "Configured")
+
+    def test_trial_times_are_shown_as_a_range(self):
+        self.project.set_trial(self.project.videos[0].key, start=12, end=312)
+        self.project.set_trial(self.project.videos[1].key, start=65.5)
+        self.project.set_trial(
+            self.project.videos[2].key, start=3700, end=3790.0
+        )
+        self.assertEqual(self.cell(0, "Trial"), "0:12 – 5:12")
+        self.assertEqual(self.cell(1, "Trial"), "1:05.5 – end")
+        self.assertEqual(self.cell(2, "Trial"), "1:01:40 – 1:03:10")
+        self.assertEqual(self.cell(3, "Trial"), "whole video")
+        self.assertEqual(self.cell(0, "Configured"), "Configured")
+
+    def test_the_protocol_duration_shows_in_the_trial_column(self):
+        self.project.set_trial_protocol(duration_s=300.0)
+        self.assertEqual(self.cell(3, "Trial"), "0:00 – 5:00")
+
+    def test_a_missing_start_is_flagged_in_both_columns(self):
+        self.project.set_trial_protocol(start_mode=START_PER_VIDEO)
+        self.project.set_trial(self.project.videos[0].key, start=0.0)
+        # 0 is a deliberate start; the others still need theirs.
+        self.assertEqual(self.cell(0, "Trial"), "whole video")
+        self.assertEqual(self.cell(0, "Configured"), "Configured")
+        self.assertEqual(self.cell(1, "Trial"), "⚠ set start")
+        self.assertEqual(self.cell(1, "Configured"), "Needs start")
+        self.project.videos[1].verified = True
+        self.assertEqual(self.cell(1, "Configured"), "Needs start")
+
+    def test_invalid_times_are_flagged(self):
+        self.project.set_trial(self.project.videos[0].key, start=50, end=20)
+        self.assertEqual(self.cell(0, "Trial"), "⚠ invalid times")
+        self.assertEqual(self.cell(0, "Configured"), "Invalid trial")
+        self.assertIn(
+            "end time", self.cell(0, "Trial", Qt.ItemDataRole.ToolTipRole)
+        )
+        self.assertIn("trial_invalid", [
+            i.code for i in self.model.issues_for(self.project.videos[0].key)
+        ])
+
+    def test_zone_status_labels(self):
+        first, second, third, fourth = (v.key for v in self.project.videos)
+        self.project.set_zone_override(first, make_settings(offset=7).roi_manager)
+        self.project.set_zone_override(
+            second, make_settings(offset=9).roi_manager, source=ZONE_ALIGNED
+        )
+        self.project.customize(third, make_settings(offset=3))
+        self.assertEqual(
+            [self.cell(row, "Zones") for row in range(4)],
+            ["Adjusted", "Aligned", "Custom", "Template"],
+        )
+        self.assertEqual(fourth, self.project.keys()[3])
+        self.assertTrue(self.cell(0, "Zones", Qt.ItemDataRole.ToolTipRole))
+
+    def test_unconfigured_videos_have_empty_cells(self):
+        self.project.videos[1].settings = None
+        self.model.refresh()
+        self.assertEqual(self.cell(1, "Trial"), "")
+        self.assertEqual(self.cell(1, "Zones"), "")
+        self.assertEqual(self.cell(1, "Configured"), "Not configured")
+        self.assertIsNone(self.cell(1, "Trial", Qt.ItemDataRole.ToolTipRole))
+
+    def test_columns_are_read_only(self):
+        for column in (COL_TRIAL, COL_ZONES):
+            index = self.model.index(0, column)
+            self.assertFalse(self.model.flags(index) & Qt.ItemFlag.ItemIsEditable)
+            self.assertFalse(self.model.setData(index, "x"))
+
+    def test_the_cells_follow_changes_made_to_the_project(self):
+        seen = []
+        self.model.dataChanged.connect(lambda a, b, r=None: seen.append(1))
+        self.project.set_trial(self.project.videos[0].key, start=30.0)
+        self.assertTrue(seen)
+        self.assertEqual(self.cell(0, "Trial"), "0:30 – end")
+
+    def test_sorting_puts_problems_first_then_by_start(self):
+        proxy = ProjectFilterProxyModel()
+        proxy.setSourceModel(self.model)
+        self.project.set_trial_protocol(start_mode=START_PER_VIDEO)
+        a, b, c, d = (v.key for v in self.project.videos)
+        self.project.set_trial(a, start=40.0)
+        self.project.set_trial(b, start=10.0)
+        self.project.set_trial(c, start=5.0, end=1.0)            # invalid
+        proxy.sort(COL_TRIAL)
+        self.assertEqual(proxy.all_keys(), [c, d, b, a])
+
+    def test_filter_text_finds_the_new_cells(self):
+        proxy = ProjectFilterProxyModel()
+        proxy.setSourceModel(self.model)
+        self.project.set_zone_override(
+            self.project.videos[2].key, make_settings(offset=7).roi_manager
+        )
+        proxy.set_text_filter("adjusted")
+        self.assertEqual(proxy.all_keys(), [self.project.videos[2].key])
+
+    def test_clock_formatting(self):
+        self.assertEqual(format_clock(0), "0:00")
+        self.assertEqual(format_clock(59.96), "1:00")
+        self.assertEqual(format_clock(12.5), "0:12.5")
+        self.assertEqual(format_clock(3600), "1:00:00")
+        self.assertEqual(format_clock(-5), "-0:05")
+        self.assertEqual(format_trial(0, None), "whole video")
+        self.assertEqual(format_trial(10, None), "0:10 – end")
+        self.assertEqual(format_trial(0, 60), "0:00 – 1:00")
 
 
 if __name__ == "__main__":

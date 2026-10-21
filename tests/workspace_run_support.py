@@ -94,11 +94,18 @@ class RunFixture(WorkspaceFixture):
             os.environ, {"LOCALAPPDATA": cache, "XDG_CACHE_HOME": cache}
         )
 
-    def run_cli(self, label: str, *extra) -> Path:
-        """The same videos and settings through the headless CLI."""
+    def run_cli(self, label: str, *extra, settings_for=None) -> Path:
+        """The same videos and settings through the headless CLI.
+
+        ``settings_for(video_path)`` gives the plan entry of a video (default:
+        the template of the fixture).
+        """
         plan = self.root / f"{label}_plan.json"
         BatchSettings.save_batch_plan(
-            {f"real/{video.name}": freestyle_settings()
+            {f"real/{video.name}": (
+                freestyle_settings() if settings_for is None
+                else settings_for(video)
+            )
              for video in self.real_videos},
             plan,
         )

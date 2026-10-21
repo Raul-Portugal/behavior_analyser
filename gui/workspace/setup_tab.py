@@ -50,7 +50,8 @@ from PyQt6.QtWidgets import (QApplication, QComboBox, QHBoxLayout, QLabel,
 from core import roi_alignment as ra
 from core.models import AppConfig, BatchSettings
 from core.project import (SEVERITY_INFO, SOURCE_ALIGNED, SOURCE_CUSTOM,
-                          SOURCE_TEMPLATE, VideoEntry, canonical_json)
+                          SOURCE_TEMPLATE, ZONES_ADJUSTED, ZONES_ALIGNED,
+                          VideoEntry, canonical_json)
 from core.setup_state import (STATUS_DONE, STATUS_INVALID, STEP_LABELS,
                               SetupState)
 from core.video import ReferenceFrameGenerator
@@ -397,7 +398,7 @@ class SetupTab(WorkspaceTab):
             return project.template_settings
         if not self._targets:
             return None
-        return project.entry(self._targets[0]).settings
+        return project.effective_settings(self._targets[0])
 
     def _scope_json(self) -> Optional[str]:
         settings = self._scope_settings()
@@ -419,7 +420,7 @@ class SetupTab(WorkspaceTab):
             if not self._targets:
                 return NO_SELECTION_TEXT
             entry = project.entry(self._targets[0])
-            settings = entry.settings or project.template_settings
+            settings = project.effective_settings(entry) or project.template_settings
             self._state_key = self._targets[0]
         else:
             settings = project.template_settings
@@ -721,15 +722,16 @@ class SetupTab(WorkspaceTab):
                 if settings is None:
                     skipped.append(entry.name)
                     continue
+            current = project.effective_settings(entry)
             if (
-                entry.settings is not None
+                current is not None
                 and entry.settings_source == SOURCE_TEMPLATE
-                and canonical_json(entry.settings.to_dict())
+                and canonical_json(current.to_dict())
                 == canonical_json(settings.to_dict())
             ):
                 continue    # nothing changed: it keeps following the template
             keep_alignment = (
-                entry.settings_source == SOURCE_ALIGNED and step != STEP_ROIS
+                project.zone_status(entry) == ZONES_ALIGNED and step != STEP_ROIS
             )
             project.customize(
                 key, settings,
@@ -746,7 +748,10 @@ class SetupTab(WorkspaceTab):
         self, entry: VideoEntry, candidate: SetupState, step: str
     ) -> Optional[BatchSettings]:
         """``entry``'s own settings with just ``step`` taken from ``candidate``."""
-        settings = entry.settings or self._project.template_settings
+        settings = (
+            self._project.effective_settings(entry)
+            or self._project.template_settings
+        )
         if settings is None:
             if candidate.roi_manager is None or step != STEP_ROIS:
                 return None
@@ -871,7 +876,9 @@ class SetupTab(WorkspaceTab):
             return ""
         expected = project.template_settings.roi_manager.source_dimensions
         entry = project.entry(self._targets[0])
-        if expected is None or entry.settings_source == SOURCE_ALIGNED:
+        if expected is None or project.zone_status(entry) in (
+            ZONES_ALIGNED, ZONES_ADJUSTED
+        ):
             return ""
         actual = self._dims_of(entry.path)
         if actual is None or tuple(actual) == tuple(expected):
@@ -1000,7 +1007,9 @@ class SetupTab(WorkspaceTab):
             for video in project.videos:
                 if video.settings is None:
                     continue
-                for text in maze.validate_settings(video.settings):
+                for text in maze.validate_settings(
+                    project.effective_settings(video)
+                ):
                     lines.append(f"{video.name}: {text}")
         return lines
 
