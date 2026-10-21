@@ -675,6 +675,63 @@ def _stage_page(stage_id: str):
     return render
 
 
+def ws_trials_protocol(demo: WorkspaceDemo) -> None:
+    """The trials page with the protocol card open and a cell being refused."""
+    ws_videos(demo)
+    window = demo.window
+    window.go_to_stage("trials", force=True)
+    stage = window.stage("trials")
+    stage.protocol.section.set_expanded(True)
+    keys = window.project.keys()
+    stage.select_row(keys[4])
+    # An end before the start (kept, red) and text that is not a time.
+    stage.model.setData(stage.model.index(stage.model.row_of(keys[3]), 3), "0:05")
+    stage.model.setData(stage.model.index(stage.model.row_of(keys[4]), 2), "abc")
+    stage.player.wait_idle()
+
+
+def _tst_demo_project(demo: WorkspaceDemo):
+    """Replace the demo study by a tail suspension study of three clips."""
+    from core.models import AppConfig, BatchSettings
+    from core.project import Project
+    from core.project_io import save_project
+    from mazes import create_maze
+    from roi_manager import ROIManager
+    maze = create_maze("Tail Suspension Test")
+    maze.configure_mice(3)
+    manager = ROIManager(source_dimensions=(320, 180))
+    for index, (name, _label) in enumerate(maze.get_roi_definitions()):
+        x = 20 + index * 100
+        manager.add_roi(name, np.array([[x, 20], [x + 80, 20], [x + 80, 160], [x, 160]]))
+    study = Project(name="Tail suspension cohort", paradigm="Tail Suspension Test")
+    study.set_template(BatchSettings(
+        manager, AppConfig().detection, 0.0, paradigm_id="Tail Suspension Test",
+        algorithm_parameters=maze.get_algorithm_parameters(),
+    ))
+    study.add_videos(demo.clips[:3])
+    first, second, _third = (v.key for v in study.videos)
+    study.set_trial(first, per_roi_times={
+        "mouse_1": (1.0, 7.0), "mouse_2": (2.0, 8.0), "mouse_3": (3.0, 9.0)})
+    study.set_trial(second, per_roi_times={"mouse_1": (0.0, 6.0)})
+    return save_project(study, demo.root / "Tail suspension cohort.bmaproj")
+
+
+def ws_trials_tst(demo: WorkspaceDemo) -> None:
+    """Tail suspension: one window per mouse, grouped by video."""
+    window = demo.window
+    window.open_path(_tst_demo_project(demo))
+    window.go_to_stage("trials", force=True)
+    stage = window.stage("trials")
+    stage.select_row(window.project.keys()[0], "mouse_2")
+    stage.player.wait_idle()
+
+
+def ws_trials_empty(demo: WorkspaceDemo) -> None:
+    """No videos yet: the empty state points back to the Videos page."""
+    ws_videos_empty(demo)
+    demo.window.go_to_stage("trials", force=True)
+
+
 WORKSPACE_PAGES: Dict[str, Callable[[WorkspaceDemo], None]] = {
     "welcome": ws_welcome,
     "paradigm": ws_paradigm,
@@ -686,6 +743,9 @@ WORKSPACE_PAGES: Dict[str, Callable[[WorkspaceDemo], None]] = {
     "arena": _stage_page("arena"),
     "detection": _stage_page("detection"),
     "trials": _stage_page("trials"),
+    "trials_protocol": ws_trials_protocol,
+    "trials_tst": ws_trials_tst,
+    "trials_empty": ws_trials_empty,
     "review": _stage_page("review"),
     "results": _stage_page("results"),
 }

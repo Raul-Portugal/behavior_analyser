@@ -93,7 +93,8 @@ from gui.workspace.stages import status as stage_status
 from gui.workspace.stages.base import Stage
 from gui.workspace.stages.hosted import (ArenaStage, DetectionStage,
                                          HostedStage, ResultsStage,
-                                         ReviewStage, TrialsStage)
+                                         ReviewStage)
+from gui.workspace.stages.trials_stage import TrialsStage
 from gui.workspace.stages.videos_stage import VideosStage
 from gui.workspace.tabs import (TAB_NAMES, TAB_RESULTS, TAB_RUN, TAB_SETUP,
                                 PlaceholderTab, WorkspaceTab)

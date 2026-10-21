@@ -36,7 +36,7 @@ class LayoutTests(WorkspaceFixture):
         for attribute in ("setup_tab", "run_tab", "results_tab"):
             self.assertIsInstance(getattr(window, attribute), QWidget)
         for stage_id, tab in (("arena", "setup"), ("detection", "setup"),
-                              ("trials", "setup"), ("review", "run"),
+                              ("review", "run"),
                               ("results", "results")):
             hosted = window.stage(stage_id)
             self.assertIsInstance(hosted, HostedStage)
