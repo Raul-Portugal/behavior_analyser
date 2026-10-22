@@ -7,7 +7,6 @@ from unittest.mock import patch
 import numpy as np
 
 try:
-    from PyQt6.QtCore import QPointF
     from PyQt6.QtWidgets import QApplication
     from core.models import AppConfig, BatchSettings
     from gui import ux_helpers
@@ -20,6 +19,7 @@ try:
                                     STEP_MICE, STEP_ROI, STEP_TST_TUNER,
                                     STEP_ZONES, SetupProgress, wizard_steps)
     from gui.tst_tuner import TstTunerDialog
+    from gui.tuners.tst_tuner import TstTunerWidget
     from gui.tuner_dialog import TunerDialog
     from mazes import create_maze
     from roi_manager import ROIManager
@@ -174,8 +174,9 @@ class DiscardGuardTests(unittest.TestCase):
 
     def test_roi_selector_asks_before_discarding_a_drawn_polygon(self):
         dialog = self._roi_dialog()
-        dialog.current_polygon_points = [QPointF(1, 1), QPointF(30, 1), QPointF(30, 30)]
-        dialog.finalize_polygon()
+        for x, y in ((1, 1), (30, 1), (30, 30)):
+            dialog.editor.add_point(x, y)
+        dialog.editor.close_shape()
         dialog.setResult(7)
         with self._confirm(False) as confirm:
             dialog.reject()
@@ -189,12 +190,44 @@ class DiscardGuardTests(unittest.TestCase):
 
     def test_roi_selector_counts_unfinished_points_as_work(self):
         dialog = self._roi_dialog()
-        dialog.current_polygon_points = [QPointF(5, 5)]
+        dialog.editor.add_point(5, 5)
         self.assertTrue(dialog.has_unsaved_work())
+
+    def test_roi_selector_does_not_ask_when_loaded_rois_are_untouched(self):
+        manager = ROIManager(source_dimensions=(160, 120))
+        manager.add_roi("arm_a", np.array([[10, 10], [60, 10], [60, 60], [10, 60]]))
+        with patch("gui.roi_selector.cv2.VideoCapture", return_value=_Capture()):
+            dialog = RoiSelectorDialog("example.mp4", _Maze(),
+                                       initial_roi_manager=manager)
+        self.addCleanup(dialog.deleteLater)
+        self.assertFalse(dialog.has_unsaved_work())
+        with self._confirm(False) as confirm:
+            dialog.reject()
+        confirm.assert_not_called()
+
+        dialog.editor.undo_stack.clear()
+        dialog.editor.session.delete_shape(dialog.editor.session.document.shapes[0].id)
+        self.assertTrue(dialog.has_unsaved_work())
+
+    def test_roi_selector_escape_cancels_the_shape_in_progress_first(self):
+        dialog = self._roi_dialog()
+        dialog.editor.add_point(5, 5)
+        dialog.show()
+        from PyQt6.QtCore import Qt
+        from PyQt6.QtTest import QTest
+        with self._confirm(False) as confirm:
+            QTest.keyClick(dialog, Qt.Key.Key_Escape)
+        confirm.assert_not_called()          # only the pending point was dropped
+        self.assertTrue(dialog.isVisible())
+        self.assertEqual(dialog.editor.pending_points(), [])
+        self.assertFalse(dialog.has_unsaved_work())
+        dialog.close()
 
     def test_roi_selector_escape_goes_through_the_same_guard(self):
         dialog = self._roi_dialog()
-        dialog.current_polygon_points = [QPointF(5, 5)]
+        for x, y in ((1, 1), (30, 1), (30, 30)):
+            dialog.editor.add_point(x, y)
+        dialog.editor.close_shape()
         dialog.show()
         from PyQt6.QtCore import Qt
         from PyQt6.QtTest import QTest
@@ -202,7 +235,7 @@ class DiscardGuardTests(unittest.TestCase):
             QTest.keyClick(dialog, Qt.Key.Key_Escape)
         confirm.assert_called_once()
         self.assertTrue(dialog.isVisible())
-        dialog.current_polygon_points = []  # nothing left to confirm on close
+        dialog.editor.undo()  # nothing left to confirm on close
         dialog.close()
 
     # -- Freestyle config -------------------------------------------------
@@ -295,7 +328,7 @@ class DiscardGuardTests(unittest.TestCase):
         roi_manager = ROIManager(source_dimensions=(100, 100))
         roi_manager.add_roi("mouse_1", _square())
         tst = create_maze("Tail Suspension Test")
-        with patch.object(TstTunerDialog, "start_scan"):
+        with patch.object(TstTunerWidget, "start_scan"):
             dialog = TstTunerDialog(Path("unopened.mp4"), roi_manager, tst)
         self.addCleanup(dialog.deleteLater)
         try:
@@ -303,7 +336,7 @@ class DiscardGuardTests(unittest.TestCase):
                 dialog.reject()
             confirm.assert_not_called()
 
-            dialog.accept_button.setEnabled(True)  # what a finished scan does
+            dialog.widget._scan_complete = True  # what a finished scan does
             dialog.setResult(7)
             with self._confirm(False) as confirm:
                 dialog.reject()

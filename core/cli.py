@@ -38,7 +38,6 @@ from core.sample_sheet import (
 )
 from mazes import AVAILABLE_MAZES, create_maze
 from mazes.base_maze import Maze
-from mazes.tst import TST
 from preflight_checker import PreflightChecker
 
 VIDEO_EXTENSIONS = frozenset({'.mp4', '.avi', '.mov', '.mkv'})
@@ -246,37 +245,11 @@ def load_sample_metadata(
 def plan_issues(plan: Dict[Path, BatchSettings], maze: Maze) -> List[str]:
     """Plan-level problems the GUI also refuses to start with."""
     issues: List[str] = []
-    required = [name for name, _ in maze.get_roi_definitions()]
     expected_parameters = None
     for video, settings in plan.items():
-        if required:
-            _, roi_issues = settings.roi_manager.validate_rois(required)
-            issues.extend(f"{video.name}: {issue}" for issue in roi_issues)
-        if isinstance(maze, TST):
-            extra = set(settings.roi_manager.rois) - set(required)
-            if extra:
-                issues.append(
-                    f"{video.name}: unexpected TST ROI categories: "
-                    f"{', '.join(sorted(extra))}"
-                )
-            for category in required:
-                count = len(settings.roi_manager.rois.get(category, []))
-                if count != 1:
-                    issues.append(
-                        f"{video.name}: {category} must contain exactly one "
-                        f"ROI, found {count}"
-                    )
-            unknown = set(settings.per_roi_times) - set(required)
-            if unknown:
-                issues.append(
-                    f"{video.name}: time ranges reference unknown mice: "
-                    f"{', '.join(sorted(unknown))}"
-                )
-        if settings.paradigm_id and settings.paradigm_id != maze.name:
-            issues.append(
-                f"{video.name}: configuration is for "
-                f"'{settings.paradigm_id}', not '{maze.name}'"
-            )
+        issues.extend(
+            f"{video.name}: {issue}" for issue in maze.validate_settings(settings)
+        )
         if expected_parameters is None:
             expected_parameters = settings.algorithm_parameters
         elif settings.algorithm_parameters != expected_parameters:

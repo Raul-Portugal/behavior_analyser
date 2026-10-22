@@ -17,7 +17,8 @@ from typing import (Callable, Dict, List, Mapping, Optional, Sequence,
 
 import cv2
 
-from mazes.tst import TST
+from mazes import paradigm_analysis_kind
+from mazes.base_maze import ANALYSIS_MOTION
 
 logger = logging.getLogger(__name__)
 
@@ -298,7 +299,7 @@ class PreflightChecker:
     @staticmethod
     def _is_tst(settings: any, paradigm_name: Optional[str]) -> bool:
         paradigm = getattr(settings, 'paradigm_id', None) or paradigm_name
-        return paradigm == TST.name
+        return paradigm_analysis_kind(paradigm) == ANALYSIS_MOTION
 
     @staticmethod
     def _run_check(findings: _Findings, label: str, video: Optional[str],

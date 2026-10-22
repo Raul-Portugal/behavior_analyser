@@ -37,7 +37,8 @@ from core.tst_motion_engine import (
 from core.analysis_engine import apply_scale_to_result
 from mazes import create_maze
 from mazes.base_maze import BaseAnalysisResult, Maze
-from mazes.tst import TST, describe_window_truncation
+from mazes.base_maze import ANALYSIS_MOTION
+from mazes.tst import describe_window_truncation
 from output import DataExporter, Visualizer
 from checkpoint_manager import CheckpointManager, ProgressEstimator
 
@@ -252,7 +253,7 @@ class VideoPipeline:
                 )
 
             # === BRANCH: TST vs STANDARD TRACKING ===
-            if isinstance(self.maze, TST):
+            if self.maze.analysis_kind == ANALYSIS_MOTION:
                 # --- TST MOTION-DECOMPOSITION LOGIC ---
                 self._progress(
                     10, "Decomposing rigid and articulated motion..."
@@ -875,7 +876,7 @@ class VideoPipeline:
         """Export CSVs and JSONs."""
         frame_data_name = (
             f"{base_name}_tst_motion_evidence.csv"
-            if isinstance(self.maze, TST) else
+            if self.maze.analysis_kind == ANALYSIS_MOTION else
             f"{base_name}_tracking_data.csv"
         )
         self._raise_if_cancelled()

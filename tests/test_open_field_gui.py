@@ -7,7 +7,6 @@ os.environ.setdefault("QT_QPA_PLATFORM", "offscreen")
 import numpy as np  # noqa: E402
 
 try:
-    from PyQt6.QtCore import QPoint, QPointF, Qt
     from PyQt6.QtWidgets import QApplication, QMessageBox
     from gui.freestyle_config_dialog import (
         FreestyleConfigDialog,
@@ -40,11 +39,14 @@ class _Capture:
 
 
 def _click_polygon(dialog, points):
-    dialog.current_polygon_points = [QPointF(x, y) for x, y in points]
-    return dialog.finalize_polygon()
+    """Draw a polygon (source pixels) in the current zone and close it."""
+    for x, y in points:
+        dialog.editor.add_point(x, y)
+    return dialog.editor.close_shape()
 
 
-SQUARE = [(100, 100), (500, 100), (500, 500), (100, 500)]
+# Source pixels of the 1920 x 1080 test video.
+SQUARE = [(150, 150), (750, 150), (750, 750), (150, 750)]
 
 
 @unittest.skipUnless(HAS_RUNTIME, "GUI runtime is not installed")
@@ -200,7 +202,8 @@ class ArenaRoiSelectorTests(unittest.TestCase):
         self.assertEqual(
             [category for category, _ in dialog.roi_definitions], ["zone_a"]
         )
-        self.assertFalse(dialog._is_arena_step())
+        self.assertEqual(dialog.editor.current_zone(), "zone_a")
+        self.assertNotIn("arena", [r.category for r in dialog.editor.session.rows()])
 
     def test_arena_is_asked_first_and_stored_apart_from_zones(self):
         dialog = self._dialog(self._maze())
@@ -208,47 +211,37 @@ class ArenaRoiSelectorTests(unittest.TestCase):
             [category for category, _ in dialog.roi_definitions],
             ["arena", "zone_a"],
         )
-        self.assertTrue(dialog._is_arena_step())
-        self.assertIn("arena", dialog.instruction_label.text().lower())
-        self.assertIn("Step 1/2", dialog.instruction_label.text())
-        self.assertFalse(dialog.next_button.isEnabled())
+        self.assertEqual(dialog.editor.current_zone(), "arena")
+        self.assertIn("arena", dialog.editor.instruction_label.text().lower())
+        self.assertFalse(dialog.editor.is_valid())
 
         self.assertTrue(_click_polygon(dialog, SQUARE))
         manager = dialog.roi_manager
         self.assertIsNotNone(manager.arena)
         self.assertNotIn("arena", manager.rois)
-        # Display pixels are scaled to the 1920 px source (x1.5).
         np.testing.assert_array_equal(
             manager.arena.points,
             np.array([[150, 150], [750, 150], [750, 750], [150, 750]]),
         )
 
-        self.assertTrue(dialog.next_button.isEnabled())
-        dialog.next_roi()
-        self.assertFalse(dialog._is_arena_step())
-        self.assertIn("Step 2/2", dialog.instruction_label.text())
+        # The arena takes exactly one polygon, so drawing moves on to the zone.
+        self.assertEqual(dialog.editor.current_zone(), "zone_a")
+        self.assertIn("zone a", dialog.editor.instruction_label.text().lower())
         self.assertTrue(_click_polygon(
             dialog, [(200, 200), (300, 200), (300, 300), (200, 300)]
         ))
+        manager = dialog.roi_manager
         self.assertEqual(list(manager.rois), ["zone_a"])
-        self.assertEqual(manager.get_overlapping_zones((375, 375)), ["zone_a"])
+        self.assertEqual(manager.get_overlapping_zones((250, 250)), ["zone_a"])
+        self.assertTrue(dialog.editor.is_valid())
 
     def test_arena_takes_exactly_one_polygon(self):
         dialog = self._dialog(self._maze())
         self.assertTrue(_click_polygon(dialog, SQUARE))
-        state = dialog.step_state()
-        self.assertFalse(state.can_add_point)
-        self.assertTrue(state.can_advance)
-        # A further click cannot start a second arena polygon.
-        class _Click:
-            def button(self):
-                return Qt.MouseButton.LeftButton
-
-            def pos(self):
-                return QPoint(30, 30)
-
-        dialog.add_point(_Click())
-        self.assertEqual(dialog.current_polygon_points, [])
+        dialog.editor.set_current_zone("arena")
+        dialog.editor.set_tool("draw")
+        self.assertFalse(dialog.editor.add_point(30, 30))
+        self.assertEqual(dialog.editor.pending_points(), [])
         self.assertEqual(
             dialog.roi_manager.arena.points[0].tolist(), [150, 150]
         )
@@ -260,13 +253,13 @@ class ArenaRoiSelectorTests(unittest.TestCase):
         ))
         self.assertIsNone(dialog.roi_manager.arena)
 
-    def test_undo_reopens_the_arena(self):
+    def test_undo_removes_the_arena(self):
         dialog = self._dialog(self._maze())
         _click_polygon(dialog, SQUARE)
         self.assertTrue(dialog.has_unsaved_work())
-        dialog.undo_point()
+        dialog.editor.undo()
         self.assertIsNone(dialog.roi_manager.arena)
-        self.assertFalse(dialog.next_button.isEnabled())
+        self.assertFalse(dialog.editor.is_valid())
         self.assertFalse(dialog.has_unsaved_work())
 
     def test_zone_free_arena_goes_straight_to_calibration(self):
@@ -278,13 +271,33 @@ class ArenaRoiSelectorTests(unittest.TestCase):
         with patch.object(
             QMessageBox, "question", return_value=QMessageBox.StandardButton.No
         ) as question:
-            dialog.next_roi()
+            dialog.accept()
         question.assert_called_once()
         self.assertEqual(dialog.result(), dialog.DialogCode.Accepted)
         manager = dialog.get_roi_manager()
         self.assertIsNotNone(manager.arena)
         self.assertEqual(manager.rois, {})
         self.assertEqual(manager.source_dimensions, (1920, 1080))
+
+    def test_calibration_yes_stays_open_for_the_line_and_is_not_repeated(self):
+        dialog = self._dialog(self._maze(zones=()))
+        _click_polygon(dialog, SQUARE)
+        with patch.object(
+            QMessageBox, "question", return_value=QMessageBox.StandardButton.Yes
+        ) as question:
+            dialog.accept()
+        question.assert_called_once()
+        self.assertEqual(dialog.result(), 0)
+        self.assertEqual(dialog.editor.tool(), "line")
+
+        dialog.editor.set_line((100, 100), (400, 100))
+        with patch.object(QMessageBox, "question") as question:
+            dialog.accept()
+        question.assert_not_called()
+        self.assertEqual(dialog.result(), dialog.DialogCode.Accepted)
+        manager = dialog.get_roi_manager()
+        self.assertEqual(manager.reference_line, ((100.0, 100.0), (400.0, 100.0)))
+        self.assertAlmostEqual(manager.reference_length_pixels, 300.0)
 
     def test_area_fraction_center_is_previewed_and_carried_on_the_manager(self):
         dialog = self._dialog(self._maze(mode="area_fraction"))
@@ -294,7 +307,7 @@ class ArenaRoiSelectorTests(unittest.TestCase):
         # A quarter of a 600 px square: the central 300 px square.
         np.testing.assert_allclose(overlay.min(axis=0), [300, 300], atol=2)
         np.testing.assert_allclose(overlay.max(axis=0), [600, 600], atol=2)
-        dialog.undo_point()
+        dialog.editor.undo()
         self.assertIsNone(dialog.roi_manager.center_overlay)
 
     def test_distance_center_needs_calibration_so_no_preview_yet(self):
@@ -306,16 +319,32 @@ class ArenaRoiSelectorTests(unittest.TestCase):
         dialog = self._dialog(self._maze(mode="area_fraction"))
         _click_polygon(dialog, SQUARE)
         dialog.show()
+        canvas = dialog.editor.canvas
+        canvas.set_zoom(1.0)
+        canvas.horizontalScrollBar().setValue(0)
+        canvas.verticalScrollBar().setValue(0)
         self.app.processEvents()
-        image = dialog.image_label.pixmap().toImage()
-        # Orange arena outline pixels exist along the polygon edge (x = 100).
-        orange = [
-            image.pixelColor(100, y) for y in range(150, 450, 5)
-            if image.pixelColor(100, y).red() > 200
-            and 100 < image.pixelColor(100, y).green() < 220
-            and image.pixelColor(100, y).blue() < 80
-        ]
-        self.assertTrue(orange)
+        image = canvas.viewport().grab().toImage()
+
+        def found_along(model_x, model_y_range, test):
+            x_center = canvas.view_pos_for_model((model_x, 300)).x()
+            for model_y in model_y_range:
+                y = canvas.view_pos_for_model((model_x, model_y)).y()
+                if not 0 <= y < image.height():
+                    continue
+                for x in range(x_center - 3, x_center + 4):
+                    if 0 <= x < image.width() and test(image.pixelColor(x, y)):
+                        return True
+            return False
+
+        # The orange arena outline runs along the polygon edge (x = 150).
+        self.assertTrue(found_along(
+            150, range(200, 700, 3),
+            lambda c: c.red() > 200 and 100 < c.green() < 220 and c.blue() < 80))
+        # The dashed cyan center preview runs along x = 300.
+        self.assertTrue(found_along(
+            300, range(320, 580, 2),
+            lambda c: c.green() > 150 and c.blue() > 150 and c.red() < 120))
 
 
 @unittest.skipUnless(HAS_RUNTIME, "GUI runtime is not installed")
