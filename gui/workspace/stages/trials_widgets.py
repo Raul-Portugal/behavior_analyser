@@ -694,8 +694,8 @@ def make_table() -> Tuple[TrialsTable, TrialsModel, TimeDelegate]:
     header.setMinimumSectionSize(48)
     # The start column must fit "Set start…" (the call to action of a row
     # that has no start yet) without eliding it.
-    for column, width in ((COL_STATUS, 100), (COL_START, 92), (COL_END, 104),
-                          (COL_DURATION, 56), (COL_SOURCE, 66)):
+    for column, width in ((COL_STATUS, 102), (COL_START, 88), (COL_END, 114),
+                          (COL_DURATION, 68), (COL_SOURCE, 72)):
         table.setColumnWidth(column, width)
     table.setItemDelegateForColumn(COL_STATUS, ChipDelegate(table))
     delegate = TimeDelegate(table)

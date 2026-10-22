@@ -7,8 +7,9 @@ dialogs. Analysis results are unchanged from 3.5.0**, so 3.5.0 and 4.0.0
 results can be pooled. The workspace calls the same batch runner as the
 command line and the classic interface: a workspace run produces output files
 that are byte-identical to a headless `python -m core.cli run` of the same
-videos and settings (sequential and parallel; tested), and the Setup tab
-produces exactly the same settings as the classic wizard (tested). The classic
+videos and settings (sequential and parallel; tested), and the Arena & zones,
+Detection and Trials stages store exactly the settings the classic wizard
+produces (tested). The classic
 interface remains available with `--classic` and **File > Switch to classic
 interface**.
 
@@ -17,43 +18,103 @@ interface**.
 > published. Until you have done it for your recordings, always review the
 > validation video and tracking coverage before interpreting results.
 
+### Redesigned workspace
+
+The workspace is a guided flow of six stages, each of which fills the whole
+window: **1 Videos, 2 Arena & zones, 3 Detection** (**Motion tuning** for the
+Tail Suspension Test), **4 Trials, 5 Review & run, 6 Results**. The ROI editor,
+the tuner preview and the trial player are no longer squeezed into a tab: the
+main canvas takes at least two thirds of the window and the controls sit in a
+narrow column beside it.
+
+- **Guided stages and the stepper.** A stepper at the top shows every stage
+  with its state (to do, done, needs attention) and a one-line reason as a
+  tooltip; every stage can be opened in any order. A Back / Next footer says
+  what is missing ("3 of 12 videos need a start time") and disables Next with
+  the reason as a tooltip. The stage you left off at is remembered per project.
+  Empty and blocked pages say what to do and link to the stage that fixes it.
+- **Live edits, no Apply button.** Whatever you change in Arena & zones,
+  Detection or Trials is written to the project at once (slider and vertex
+  drags are debounced), autosaved, and flushed - never lost or asked about -
+  when you leave the stage, close the project or quit.
+- **Per-video trial windows** (**Trials** stage). Every video gets its own start
+  and end: a table with status, start, end, duration and source, edited in
+  place (`90`, `1:30` or `1:30.5`) or by playing the video and pressing `S` /
+  `E` (`Enter` jumps to the next video that still needs a start). A **trial
+  protocol** gives the trial length (fixed, or until the video ends) and
+  whether trials start with the video or at a moment set per video, and
+  **Apply to all videos** makes everything follow it again. For the Tail
+  Suspension Test every mouse has its own window. Per-video times are stored
+  as layers over the template, so analysis settings and checkpoint hashes are
+  identical to a full copy with the same values.
+- **Per-video zones** (**Arena & zones** stage). Edit the template's zones for
+  all videos, or pick one video and **Adjust zones for this video** (the editor
+  opens on that video's own frame), **Auto-align to template** (a rigid
+  registration of the video's background that also rescales the calibration) or
+  **Reset to template**. Videos whose frame size differs from the one the zones
+  were drawn on are flagged "Check alignment", and **Tools > Align template to
+  videos...** aligns all of them in one go.
+- **Simple detection mode and quick check** (**Detection** stage). Two plain
+  controls, **Sensitivity** and **Animal size**, drive the same sliders as the
+  collapsed **Advanced** section, so the two always agree and a value you did
+  not move is never rewritten. **What the detector sees** switches the preview
+  to the segmentation mask, a chip grades the current frame and **Quick check
+  all videos** scans every video in the background and gives each a Good /
+  Check / Poor chip. The detector's confidence is shown beside the preview
+  instead of being drawn into the video frame.
+- **Review & run** stage. A readiness checklist (Videos, Arena & zones,
+  Detection, Trials) with a status chip, a one-line reason and a **Fix** link
+  per row; per-video problems grouped by kind with the stage that fixes them;
+  the run options (output folder, parallel videos, time bins in minutes, which
+  videos to run, sample sheet, validation videos); and a large **Run analysis**
+  button that stays disabled, with a tooltip saying why, until nothing blocks
+  the run. While it runs the same stage shows the overall progress and ETA, a
+  per-video table, a collapsible log and **Cancel** (after a confirmation);
+  when it ends, a summary card offers **View results**, **Open folder** and
+  **Resume interrupted run**.
+- **Results** stage. The run picker lists date, folder and counts; the batch
+  summary, the per-video key numbers (stat tiles), quality warnings, plots in a
+  grid and the validation video, the time-bin charts and the run comparison
+  follow the theme.
+- **Design system with light and dark themes.** One set of colour tokens,
+  spacing, type scale, icons and widgets (`gui/workspace/theme.py`,
+  `gui/workspace/ui_kit.py`); the workspace follows the operating system's
+  light or dark setting live. The classic interface keeps the platform look.
+- **Project schema 2 with automatic migration.** `.bmaproj` files now store the
+  template plus per-video **layers** (trial window, zone override) instead of a
+  full copy of the settings for every video. Schema-1 projects are migrated when
+  opened, wherever that is exact; what a layer cannot express stays a full
+  copy. Versions before 4.0 cannot open `.bmaproj` files.
+
 ### Added
 
-- **Workspace.** One window with a video table on the left, the **Setup**,
-  **Run** and **Results** tabs in the middle and a context panel on the right.
-  - **Projects** (`.bmaproj`, schema 1; `core/project.py`,
-    `core/project_io.py`): a project holds the videos, the template, the
-    per-video settings, metadata, verification state and the run history, with
-    autosave and recovery after a crash, a recent-projects list, and import
-    from 3.x templates, batch plans and previous run folders.
-  - **Video table** with metadata editing, filters and search, relinking of
-    moved videos, and drag-and-drop of videos, folders, projects and
-    configurations.
-  - **Context panel** for the selected video: details, paradigm, issues,
-    notes and actions (verify, apply template, relink, remove).
+- **Workspace.** One window with the stepper on top, the stage in the middle and
+  the Back / Next footer at the bottom; a details drawer (Ctrl+I) describes the
+  selected video.
+  - **Projects** (`.bmaproj`; `core/project.py`, `core/project_io.py`): a
+    project holds the videos, the template, the per-video layers, metadata,
+    verification state and the run history, with autosave and recovery after a
+    crash, a recent-projects list, and import from 3.x templates, batch plans
+    and previous run folders.
+  - **Video table** (Videos stage) with a paradigm picker, metadata editing,
+    filters and search, relinking of moved videos, and drag-and-drop of
+    videos, folders, projects and configurations.
+  - **Details drawer** for the selected video: details, paradigm, issues, notes
+    and actions (verify, apply template, relink, remove).
   - **First-run welcome card.** When the workspace starts with no project to
     reopen but the classic interface remembers recent templates or batch
     plans, a one-time card offers **Create project**, **Open project**,
     **Import your recent 3.x configuration...** (listing up to three recent
     files) and **Use classic interface**. Dismissing it is remembered.
-- **Setup tab.**
-  - Setup steps can be done in any order.
-  - Settings can be edited for the whole template or per video.
-  - The paradigm parameter panels, the ROI editor, calibration, the detection
-    and TST tuners, the analysis time window and the review step are hosted
-    in the tab instead of opening dialogs.
-  - An unsaved-step guard warns before a step with unapplied changes is left.
-  - Template alignment to videos whose camera moved is integrated (**Tools >
-    Align template to videos...**).
-- **Run tab.**
+- **Run.**
   - Run scope: all configured videos, selected videos, or videos not yet done.
   - Pre-run checks (unconfigured or missing videos, paradigm and settings
     validation, sample-sheet conflicts and the batch pre-flight) before
-    anything starts.
+    anything starts; what they find stays on the page until it is fixed.
   - Per-video progress, a filterable log and Cancel.
   - Resume of interrupted runs from their checkpoints.
   - Every run is recorded in the project's run history.
-- **Results tab.**
+- **Results.**
   - A run picker and a summary table of `batch_summary.csv` that can be
     sorted, filtered, copied and exported.
   - Per-video metrics, plots and warnings.
@@ -61,7 +122,9 @@ interface**.
     video is shown with overlays drawn from the tracking and TST CSVs.
   - Time-bin charts for a video or averaged per group.
   - **Compare runs**, with changed values marked.
-- **ROI editor** (`gui/roi_editor/`), a zoomable editor used by the Setup tab
+  - `Project.clear_sample_sheet()` and a **Clear** button remove a loaded sample
+    sheet and the metadata columns.
+- **ROI editor** (`gui/roi_editor/`), a zoomable editor used by the Arena & zones stage
   and by the modal flow.
   - Zoom and pan; vertex drag, insert and delete; move, rotate and scale
     whole polygons.
@@ -88,9 +151,12 @@ interface**.
 
 ### Fixed
 
+- The overlap check between zones of one category (a warning in the ROI
+  validation) failed silently with OpenCV 5, whose point-in-polygon test rejects
+  numpy integers; it hands OpenCV plain floats now.
 - Intermittent crashes from `QObject.sender()` in the tuner and settings
   dialogs (the fix also shipped in 3.5.0).
-- Test-only race fixes (a thumbnail-cache test and a Results tab clipboard
+- Test-only race fixes (a thumbnail-cache test and a Results clipboard
   test); no change to the application.
 
 ### Upgrade notes
@@ -100,7 +166,8 @@ interface**.
   folder...**), or open a template or batch plan with **File > Open project...**
   or by dropping it on the window. Each import creates a new `.bmaproj`
   project; the original files are not modified.
-- `.bmaproj` files are new and use schema 1. Versions before 4.0 cannot open
+- `.bmaproj` files are new and use schema 2 (schema-1 files from pre-release
+  builds are migrated when opened). Versions before 4.0 cannot open
   them. **File > Export batch plan...** writes the configured videos as a 3.x
   batch plan, which gives 3.x compatibility.
 - Output files, `batch_summary.csv` and the manifest are unchanged from 3.5.0;

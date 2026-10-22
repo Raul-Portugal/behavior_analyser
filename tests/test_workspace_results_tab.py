@@ -526,7 +526,7 @@ class ResultsStageTests(ResultsFixture):
         self.assertEqual(self.tab.pages.currentIndex(), 0)
         self.assertEqual(self.tab.empty.title(), "No runs yet")
         self.assertFalse(self.tab.empty_run_button.isHidden())
-        self.assertEqual(self.tab.empty_run_button.text(), "Go to Review & run")
+        self.assertEqual(self.tab.empty_run_button.text(), "Go to Review && run")
         self.tab.empty_run_button.click()
         self.assertEqual(self.window.current_stage_id, "review")
 

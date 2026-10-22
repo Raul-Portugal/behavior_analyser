@@ -127,7 +127,7 @@ class ResultsStage(Stage):
     def _build(self) -> None:
         self.pages = QStackedWidget()
         self.empty = EmptyState("chart", "", "")
-        self.empty_run_button = self.empty.add_action("Go to Review & run")
+        self.empty_run_button = self.empty.add_action("Go to Review && run")
         self.empty_run_button.clicked.connect(
             lambda _checked=False: self._go(stage_status.STAGE_REVIEW)
         )

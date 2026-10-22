@@ -617,7 +617,12 @@ class WorkspaceDemo:
             QCoreApplication.processEvents()
             self.window.thumbnails.wait_idle()
         QCoreApplication.processEvents()
-        self.window.refresh_navigation()
+        window = self.window
+        if window.has_unsaved_changes and not window.is_busy:
+            window.save()                  # the app bar says "Saved", as in real use
+        window._message_timer.stop()       # the stage's own sentence, not a transient one
+        window._message_done()
+        window.refresh_navigation()
 
     def grab(self, target: Path) -> Path:
         self.settle()
@@ -626,6 +631,10 @@ class WorkspaceDemo:
         return target
 
     def close(self) -> None:
+        review = self.window.stage("review")
+        if review.is_running:               # a page captured mid-run: stop it first
+            review.controller._cancel_worker()
+            _wait_for(lambda: not review.is_running, 120.0)
         self.window._skip_close_prompt = True
         self.window.close()
         self.window.deleteLater()

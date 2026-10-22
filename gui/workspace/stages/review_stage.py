@@ -77,7 +77,7 @@ SIDE_WIDTH = 330
 MAX_LISTED_ISSUES = 8
 TABLE_MIN_HEIGHT = 170
 TITLE_WIDTH = 130        # the stage names of the checklist line up
-CHECK_ROW_HEIGHT = 42
+CHECK_ROW_HEIGHT = 44
 FIX_WIDTH = 72           # "Fix ->" buttons are as wide in every row
 
 
@@ -147,7 +147,7 @@ class CheckRow(_Row):
         row.addWidget(self.reason_label, 1, Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.chip, 0, Qt.AlignmentFlag.AlignVCenter)
         row.addWidget(self.fix_button, 0, Qt.AlignmentFlag.AlignVCenter)
-        self.setMinimumHeight(CHECK_ROW_HEIGHT)
+        self.setFixedHeight(CHECK_ROW_HEIGHT)
 
     def show_check(self, check) -> None:
         self.title_label.setText(check.title)
@@ -177,7 +177,7 @@ class ProblemRow(_Row):
         texts.addWidget(self.title_label)
         texts.addWidget(self.names_label)
         row = QHBoxLayout(self)
-        row.setContentsMargins(0, 0, 0, 0)
+        row.setContentsMargins(0, Spacing.SM, 0, Spacing.SM)
         row.setSpacing(Spacing.SM)
         row.addLayout(texts, 1)
         row.addWidget(self.chip, 0, Qt.AlignmentFlag.AlignVCenter)
