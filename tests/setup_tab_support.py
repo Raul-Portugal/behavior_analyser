@@ -55,6 +55,7 @@ class SetupTabFixture(WorkspaceFixture):
 
     def setUp(self):
         super().setUp()
+        self.tab = self.attach_setup_tab()
         self.new_project_at()
         folder = self.root / "real"
         folder.mkdir()
@@ -70,7 +71,27 @@ class SetupTabFixture(WorkspaceFixture):
         self.keys = self.project.keys()
         if self.PARADIGM:
             self.choose_paradigm(self.PARADIGM)
-        self.tab = self.window.setup_tab
+
+    def attach_setup_tab(self):
+        """The legacy Setup tab, attached to the window by the test.
+
+        No stage shows it any more (Arena & zones, Detection and Trials
+        replaced it), but its own tests and the stage tests that compare
+        against what it stores still drive it. The Tools > Align action
+        belongs to the Arena & zones stage, so the tab's handler is detached
+        from it; tests call ``tab.align_template()`` directly.
+        """
+        from PyQt6.QtWidgets import QWidget
+        from gui.workspace.setup_tab import SetupTab
+        window = self.window
+        parking = QWidget(window)
+        parking.hide()
+        tab = SetupTab()
+        tab.setParent(parking)
+        tab.attach_workspace(window)
+        window.align_action.triggered.disconnect(tab._on_align_action)
+        window.setup_tab = tab
+        return tab
 
     def choose_paradigm(self, name: str) -> None:
         self.assertTrue(self.window.change_paradigm(name))

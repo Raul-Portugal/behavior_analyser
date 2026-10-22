@@ -164,12 +164,22 @@ class RealVideoFixture(TrialsFixture):
 
 @unittest.skipUnless(HAS_RUNTIME, "GUI runtime is not installed")
 class TableTests(TrialsFixture):
-    def test_the_stage_replaces_the_hosted_one(self):
-        from gui.workspace.stages.hosted import HostedStage
+    def test_it_is_the_trials_stage(self):
         self.assertEqual(type(self.stage).__name__, "TrialsStage")
-        self.assertNotIsInstance(self.stage, HostedStage)
         self.assertEqual(self.stage.stage_id, "trials")
         self.assertEqual(self.stage.title, "Trials")
+
+    def test_the_start_column_has_room_for_the_call_to_action(self):
+        self.project.set_trial_protocol(300.0, START_PER_VIDEO)
+        self.go()
+        table = self.stage.table
+        key = self.keys[0]
+        self.assertEqual(self.text(key, tw.COL_START), "Set start…")
+        # Wide enough for the text at the theme's 13 px (the offscreen test
+        # font is much wider, so the exact width is checked by eye in the
+        # gallery); the video name column keeps its room.
+        self.assertGreaterEqual(table.columnWidth(tw.COL_START), 88)
+        self.assertGreater(table.columnWidth(tw.COL_VIDEO), 80)
 
     def test_one_row_per_video_with_the_six_columns(self):
         self.go()

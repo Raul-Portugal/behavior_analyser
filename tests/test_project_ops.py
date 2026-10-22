@@ -208,6 +208,21 @@ class MetadataTests(OpsFixture):
         self.assertEqual(match.unused_rows, ["day1/zzz.mp4"])
         self.assertEqual(self.project.run_options.sample_sheet, sheet.resolve())
 
+    def test_clearing_the_sheet_forgets_it_and_every_metadata_column(self):
+        sheet = self._sheet("video,group\nday1/a.mp4,ctl\nday1/b.mp4,trt\n")
+        self.project.set_metadata_from_sheet(sheet)
+        self.project.add_metadata_column("note")
+        calls = []
+        self.project.add_listener(lambda: calls.append(1))
+        self.assertTrue(self.project.clear_sample_sheet())
+        self.assertIsNone(self.project.run_options.sample_sheet)
+        self.assertEqual(self.project.metadata_columns(), [])
+        self.assertIsNone(self.project.sample_metadata())
+        self.assertEqual(len(calls), 1)
+        # Nothing left to clear: no change and no notification.
+        self.assertFalse(self.project.clear_sample_sheet())
+        self.assertEqual(len(calls), 1)
+
     def test_ambiguous_videos_are_reported_not_guessed(self):
         other = self.write_video("day3/a.mp4")
         self.project.add_videos([other])

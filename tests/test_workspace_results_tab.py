@@ -1,4 +1,4 @@
-"""The workspace Results tab: run picker, table, per-video view, charts."""
+"""The Results stage: run picker, table, per-video view, charts."""
 import csv
 import json
 import shutil
@@ -15,7 +15,7 @@ if HAS_RUNTIME:
     from PyQt6.QtCore import Qt
     from core.project import STATUS_DONE
     from gui.workspace import results_data as rd
-    from gui.workspace.results_tab import (ALL_SUBJECTS, NO_GROUP,
+    from gui.workspace.results_widgets import (ALL_SUBJECTS, NO_GROUP,
                                            SOURCE_OVERLAY, SOURCE_VALIDATION,
                                            PlotDialog, overlay_for_video)
 
@@ -36,7 +36,7 @@ class ResultsFixture(WorkspaceFixture):
 
     def setUp(self):
         super().setUp()
-        self.tab = self.window.results_tab
+        self.tab = self.window.stage("results")
         self.addCleanup(self.tab.shutdown)
         self.csv_rows = self.read_csv(self.run_dir / "batch_summary.csv")
 
@@ -75,7 +75,7 @@ class LoadingTests(ResultsFixture):
         self.assertEqual(self.tab.model.headers, headers)
         self.assertEqual(self.tab.proxy.columnCount(), len(headers))
         self.assertEqual(self.tab.table_rows(), rows)
-        self.assertEqual(self.tab.rows_label.text(), "3 row(s)")
+        self.assertEqual(self.tab.rows_label.text(), "3 rows")
         self.assertIn("group", headers)             # the metadata columns
 
     def test_sorting_is_numeric_and_filtering_is_by_text(self):
@@ -91,7 +91,7 @@ class LoadingTests(ResultsFixture):
         )
         self.tab.filter_edit.setText("trt")
         self.assertEqual([r[0] for r in self.tab.table_rows()], ["mouse_c.avi"])
-        self.assertEqual(self.tab.rows_label.text(), "1 of 3 row(s)")
+        self.assertEqual(self.tab.rows_label.text(), "1 of 3 rows")
         self.tab.filter_edit.setText("")
         self.assertEqual(len(self.tab.table_rows()), 3)
 
@@ -192,7 +192,7 @@ class ProjectRunTests(ResultsFixture):
     def test_activating_the_tab_shows_the_newest_run(self):
         self.open_project_with_videos()
         self.assertIsNone(self.tab.run)
-        self.window.show_tab("results")
+        self.window.go_to_stage("results")
         self.assertIsNotNone(self.tab.run)
         self.assertEqual(self.tab.run.run_dir, self.run_dir.resolve())
 
@@ -216,12 +216,12 @@ class ProjectRunTests(ResultsFixture):
         labels = [self.tab.run_combo.itemText(i)
                   for i in range(self.tab.run_combo.count())]
         self.assertTrue(any("folder not found" in label for label in labels))
-        self.window.show_tab("results")
+        self.window.go_to_stage("results")
         self.assertEqual(self.tab.run.run_dir, self.run_dir.resolve())
 
     def test_closing_the_project_clears_the_tab(self):
         self.open_project_with_videos()
-        self.window.show_tab("results")
+        self.window.go_to_stage("results")
         self.assertIsNotNone(self.tab.run)
         self.prompts.say("ask_save_changes", "discard")
         self.assertTrue(self.window.close_project())
@@ -507,17 +507,173 @@ class CompareTests(ResultsFixture):
         self.assertIsNone(self.tab.compare_panel.compare())
 
 
+class ResultsStageTests(ResultsFixture):
+    """The stage around the widgets: empty states, picker, header, cards."""
+
+    def test_without_a_project_the_empty_state_says_so(self):
+        self.window.go_to_stage("results", force=True)
+        self.assertEqual(self.tab.pages.currentIndex(), 0)
+        self.assertIn("No project open", self.tab.empty.title())
+        self.assertTrue(self.tab.empty_run_button.isHidden())
+        self.assertFalse(self.tab.folder_button.isEnabled())
+        self.assertTrue(self.tab.folder_button.toolTip())
+
+    def test_a_project_without_runs_leads_to_review_and_run(self):
+        self.new_project_at()
+        self.add_videos()
+        self.window.change_paradigm("Y-Maze")
+        self.window.go_to_stage("results", force=True)
+        self.assertEqual(self.tab.pages.currentIndex(), 0)
+        self.assertEqual(self.tab.empty.title(), "No runs yet")
+        self.assertFalse(self.tab.empty_run_button.isHidden())
+        self.assertEqual(self.tab.empty_run_button.text(), "Go to Review & run")
+        self.tab.empty_run_button.click()
+        self.assertEqual(self.window.current_stage_id, "review")
+
+    def test_the_empty_state_can_still_open_a_run_folder(self):
+        self.window.go_to_stage("results", force=True)
+        self.prompts.say("choose_folder", self.run_dir)
+        self.tab.empty_open_button.click()
+        self.assertEqual(self.tab.pages.currentIndex(), 1)
+        self.assertEqual(self.tab.run.run_dir, self.run_dir)
+
+    def test_the_header_offers_the_folder_actions(self):
+        self.tab.show_run(self.run_dir)
+        actions = self.tab.header.actions_layout
+        buttons = [actions.itemAt(i).widget() for i in range(actions.count())]
+        self.assertIn(self.tab.open_button, buttons)
+        self.assertIn(self.tab.folder_button, buttons)
+        self.assertTrue(self.tab.folder_button.isEnabled())
+        self.tab.folder_button.click()
+        self.assertEqual(self.prompts.called("open_folder"), [(self.run_dir,)])
+
+    def test_the_picker_lists_date_folder_and_counts(self):
+        project = self.open_project_with_videos()
+        self.tab.on_project_modified()
+        text = self.tab.run_combo.itemText(0)
+        self.assertIn(self.run_dir.name, text)
+        self.assertIn("3 done", text)
+        self.assertRegex(text, r"\d{2} [A-Z][a-z]{2} \d{4}, \d{2}:\d{2}")
+        self.assertEqual(len(project.runs), 1)
+
+    def test_the_run_is_summarised_in_chips(self):
+        self.tab.show_run(self.run_dir)
+        self.assertEqual(self.tab.completed_chip.text(), "3 completed")
+        self.assertTrue(self.tab.failed_chip.isHidden())
+        self.assertTrue(self.tab.warnings_chip.isHidden())
+        self.assertFalse(self.tab.paradigm_chip.isHidden())
+        self.assertFalse(self.tab.bins_chip.isHidden())
+        self.assertIn("time bins of 1 s", self.tab.bins_chip.text())
+
+    def test_the_sections_are_videos_time_bins_and_compare(self):
+        self.assertEqual(
+            [self.tab.sections.tabText(i) for i in range(self.tab.sections.count())],
+            ["Videos", "Time bins", "Compare runs"],
+        )
+
+    def test_the_footer_names_the_run_and_the_last_stage_has_no_next(self):
+        self.assertIsNone(self.tab.next_label())
+        self.tab.show_run(self.run_dir)
+        text, chip = self.tab.footer_text()
+        self.assertIn(self.run_dir.name, text)
+        self.assertEqual(chip, ("ok", "Run loaded"))
+
+    def test_a_video_is_shown_as_key_numbers_a_closed_table_and_plots(self):
+        self.tab.show_run(self.run_dir)
+        self.tab.select_row(0)
+        detail = self.tab.detail
+        tiles = dict(detail.tile_texts())
+        self.assertIn("Total distance", tiles)
+        self.assertIn("Average speed", tiles)
+        self.assertFalse(detail.tiles_card.isHidden())
+        self.assertFalse(detail.metrics_section.is_expanded())
+        self.assertGreater(detail.plot_list.count(), 0)
+        self.assertTrue(detail.no_plots_label.isHidden())
+        self.assertEqual(
+            [detail.tabs.tabText(i) for i in range(detail.tabs.count())],
+            ["Overview", "Plots", "Video"],
+        )
+
+    def test_a_video_without_plots_says_so(self):
+        run_dir = self.copy_run("noplots")
+        shutil.rmtree(run_dir / "mouse_a" / "plots")
+        self.tab.show_run(run_dir)
+        self.tab.select_row(0)
+        detail = self.tab.detail
+        self.assertEqual(detail.plot_list.count(), 0)
+        self.assertFalse(detail.no_plots_label.isHidden())
+        self.assertTrue(detail.plot_list.isHidden())
+
+    def test_a_quality_warning_is_a_warning_callout_with_a_title(self):
+        run_dir = self.copy_run("warncallout")
+        manifest = json.loads((run_dir / "manifest.json").read_text())
+        manifest["quality_warnings"] = [
+            {"source": manifest["videos"][0]["source"], "message": "lost <1 s>"}
+        ]
+        (run_dir / "manifest.json").write_text(json.dumps(manifest))
+        self.tab.show_run(run_dir)
+        self.tab.select_row(0)
+        callout = self.tab.detail.warnings_label
+        self.assertEqual(callout.kind(), "warning")
+        self.assertEqual(callout.title(), "Quality warnings")
+        self.assertIn("lost &lt;1 s&gt;", callout.text())    # never read as markup
+
+    def test_the_chart_follows_the_theme(self):
+        from matplotlib.colors import to_hex
+        from gui.workspace import theme
+        self.addCleanup(theme.apply_theme, self.app, "light")
+        self.tab.show_run(self.run_dir)
+        theme.apply_theme(self.app, "dark")
+        self.tab.bins_panel.render()
+        self.assertEqual(to_hex(self.tab.bins_panel.figure.get_facecolor()).lower(),
+                         theme.DARK.surface.lower())
+        theme.apply_theme(self.app, "light")
+        self.tab.bins_panel.render()
+        self.assertEqual(to_hex(self.tab.bins_panel.figure.get_facecolor()).lower(),
+                         theme.LIGHT.surface.lower())
+
+    def test_shutdown_releases_the_decoder_and_the_plot_windows(self):
+        self.tab.show_run(self.run_dir)
+        self.tab.select_row(0)
+        self.tab.open_plot(self.tab.detail.plot_paths()[0])
+        self.assertEqual(len(self.tab._plot_dialogs), 1)
+        self.tab.shutdown()
+        self.assertEqual(self.tab._plot_dialogs, [])
+
+    def test_the_window_shuts_the_stage_down_when_it_closes(self):
+        self.tab.show_run(self.run_dir)
+        self.tab.select_row(0)
+        self.tab.open_plot(self.tab.detail.plot_paths()[0])
+        self.prompts.say("ask_save_changes", "discard")
+        self.window.close()
+        self.assertEqual(self.tab._plot_dialogs, [])
+
+
+class RunLabelTests(unittest.TestCase):
+    def test_the_label_names_date_folder_and_counts(self):
+        from gui.workspace.stages.results_stage import format_started, run_label
+        label = run_label(Path("analysis_run_1"), 3, 1, True, "2020-01-02T03:04:05+0000")
+        self.assertEqual(
+            label,
+            "02 Jan 2020, 03:04  ·  analysis_run_1  ·  3 done, 1 failed, cancelled",
+        )
+        self.assertEqual(run_label(Path("analysis_run_1")), "analysis_run_1")
+        self.assertEqual(format_started("20201231_235959"), "31 Dec 2020, 23:59")
+        self.assertEqual(format_started("whenever"), "whenever")
+        self.assertEqual(format_started(""), "")
+
+
 class FinishedRunHandOffTests(ResultsFixture):
-    def test_the_run_tab_hands_a_finished_run_to_the_results_tab(self):
+    def test_the_review_stage_hands_a_finished_run_to_the_results_stage(self):
         self.new_project_at()
         self.window.video_panel.add_paths(
             sorted((self.run_root / "real").glob("*.avi"))
         )
         project = self.window.project
-        run_tab = self.window.run_tab
-        run_tab._last_run_dir = self.run_dir
-        self.assertTrue(run_tab.open_results())
-        self.assertEqual(self.window.current_tab_name(), "results")
+        review = self.window.stage("review")
+        review.controller._last_run_dir = self.run_dir
+        self.assertTrue(review.open_results())
+        self.assertEqual(self.window.current_stage_id, "results")
         self.assertEqual(self.tab.run.run_dir, self.run_dir)
         project.record_run(self.run_dir)
         self.assertEqual(

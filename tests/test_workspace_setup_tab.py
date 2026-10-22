@@ -60,9 +60,8 @@ def dispose(widget) -> None:
 
 
 class LayoutTests(SetupTabFixture):
-    def test_the_window_installs_the_setup_tab(self):
+    def test_the_tab_is_attached_to_the_window(self):
         self.assertIsInstance(self.window.setup_tab, SetupTab)
-        self.assertIs(self.window.tab_widget("setup"), self.window.setup_tab)
         self.assertIs(self.tab.workspace, self.window)
 
     def test_no_stage_hosts_the_setup_tab_any_more(self):

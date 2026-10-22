@@ -887,15 +887,8 @@ class ArenaStage(Stage):
     def attach(self, window) -> None:
         super().attach(window)
         window.register_close_guard(self._close_guard)
-        # This stage owns "Align template to videos...": detach the Setup
-        # tab's older handler from the same action.
+        # This stage owns "Align template to videos...".
         action = window.align_action
-        old = getattr(getattr(window, "setup_tab", None), "_on_align_action", None)
-        if old is not None:
-            try:
-                action.triggered.disconnect(old)
-            except (TypeError, RuntimeError):
-                pass
         action.triggered.connect(self._on_align_action)
         action.setToolTip(
             "Carry the template's zones onto the videos marked "
@@ -1041,6 +1034,11 @@ class ArenaStage(Stage):
     def _close_guard(self) -> bool:
         self.flush()
         return True
+
+    def shutdown(self) -> None:
+        """The window is closing: write what is pending, stop the timer."""
+        self.flush()
+        self._timer.stop()
 
     # -- the video list: strip or rail -----------------------------------------
     def _decide_strip(self) -> None:

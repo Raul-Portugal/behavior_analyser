@@ -381,7 +381,7 @@ class AppSettings:
         self._qs.setValue(self.KEY_STAGES, json.dumps(mapping))
 
     # ------------------------------------------------------------------
-    # Run output folder of each project (workspace Run tab)
+    # Run output folder of each project (workspace Review & run stage)
     # ------------------------------------------------------------------
     KEY_RUN_OUTPUTS = "run/project_output_dirs"
 

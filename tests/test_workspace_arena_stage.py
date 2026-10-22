@@ -44,7 +44,6 @@ if HAS_RUNTIME:
     from gui.workspace.stages.arena_stage import (ArenaStage, MODE_TEMPLATE,
                                                   MODE_VIDEO, PAGE_EDITOR,
                                                   PAGE_MESSAGE, PAGE_READONLY)
-    from gui.workspace.stages.hosted import HostedStage
     from gui.workspace.ui_kit import CollapsibleSection
 
 BIG = (200, 150)
@@ -221,9 +220,8 @@ class ArenaFixture(SetupTabFixture):
 
 
 class StageTests(ArenaFixture):
-    def test_it_is_a_real_stage_not_a_hosted_one(self):
+    def test_it_is_a_real_stage(self):
         self.assertIsInstance(self.stage, ArenaStage)
-        self.assertNotIsInstance(self.stage, HostedStage)
         self.assertEqual(self.stage.stage_id, "arena")
         self.assertEqual(self.stage.header.title(), "Arena & zones")
 
@@ -1307,7 +1305,7 @@ class LifecycleTests(ArenaFixture):
         from gui.workspace.stages.detection_stage import DetectionStage
         self.window.go_to_stage("detection")
         self.assertIsInstance(self.window.stage("detection"), DetectionStage)
-        self.assertIsNot(self.window.setup_tab.parentWidget(),
+        self.assertIsNot(self.tab.parentWidget(),
                          self.window.stage("detection").content)
 
 

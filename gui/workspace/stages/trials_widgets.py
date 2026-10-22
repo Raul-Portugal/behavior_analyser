@@ -692,8 +692,10 @@ def make_table() -> Tuple[TrialsTable, TrialsModel, TimeDelegate]:
     header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
     header.setSectionResizeMode(COL_VIDEO, QHeaderView.ResizeMode.Stretch)
     header.setMinimumSectionSize(48)
-    for column, width in ((COL_STATUS, 106), (COL_START, 60), (COL_END, 112),
-                          (COL_DURATION, 64), (COL_SOURCE, 70)):
+    # The start column must fit "Set start…" (the call to action of a row
+    # that has no start yet) without eliding it.
+    for column, width in ((COL_STATUS, 100), (COL_START, 92), (COL_END, 104),
+                          (COL_DURATION, 56), (COL_SOURCE, 66)):
         table.setColumnWidth(column, width)
     table.setItemDelegateForColumn(COL_STATUS, ChipDelegate(table))
     delegate = TimeDelegate(table)

@@ -1,6 +1,6 @@
 """
 gui/workspace/overlay.py
-Overlays for the Results tab's player: draw a finished analysis on the
+Overlays for the Results stage's player: draw a finished analysis on the
 original video when no validation video was made.
 
 * :func:`tracking_overlay` - the tracked position (dot and short trail), the

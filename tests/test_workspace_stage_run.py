@@ -13,11 +13,12 @@ class RunThroughTheStagesTests(RunFixture):
     def test_review_and_run_produces_the_files_of_the_cli(self):
         window = self.window
         self.assertTrue(window.go_to_stage("review"))
-        self.assertIs(self.run_tab.parentWidget(), window.stage("review").content)
+        self.assertIs(self.review, window.stage("review"))
+        self.assertEqual(window.current_stage_id, "review")
         self.assertTrue(window.run_action.isEnabled())
         self.prompts.say("confirm", True)
         finished = []
-        self.run_tab.run_finished.connect(finished.append)
+        self.review.run_finished.connect(finished.append)
         with self.isolated_environment("ws"):
             window.run_action.trigger()                 # Tools > Run analysis
             wait_for(lambda: bool(finished), 120.0, "the run to finish")
@@ -34,12 +35,10 @@ class RunThroughTheStagesTests(RunFixture):
         self.window.go_to_stage("review")
         self.start_and_wait()
         self.assertEqual(self.window.current_stage_id, "review")
-        self.assertTrue(self.run_tab.open_results())
+        self.assertTrue(self.review.open_results())
         self.assertEqual(self.window.current_stage_id, "results")
         self.assertEqual(self.window.stepper.status("results"), "current")
-        self.assertIs(
-            self.results_tab.parentWidget(), self.window.stage("results").content
-        )
+        self.assertEqual(self.results.run.run_dir.resolve(), self.review.run_dir.resolve())
 
     def test_a_finished_run_marks_the_stages(self):
         self.start_and_wait()
