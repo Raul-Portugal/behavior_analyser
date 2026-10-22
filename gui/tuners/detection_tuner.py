@@ -478,6 +478,11 @@ class DetectionTunerWidget(QWidget):
         self.advanced_panel.setLayout(param_grid)
 
         self.frame_label = QLabel()
+        self.detect_label = QLabel()
+        self.detect_label.setToolTip(
+            "What the detector found in this frame: its confidence (0 to 1), "
+            "or why it found nothing"
+        )
         self.frame_slider = QSlider(
             Qt.Orientation.Horizontal, minimum=0,
             maximum=self.video_info.total_frames - 1,
@@ -486,6 +491,8 @@ class DetectionTunerWidget(QWidget):
         self.footer_layout = QHBoxLayout()
         self.footer_layout.setContentsMargins(0, 0, 0, 0)
         self.footer_layout.addWidget(self.frame_label)
+        self.footer_layout.addSpacing(12)
+        self.footer_layout.addWidget(self.detect_label)
         self.footer_layout.addStretch(1)
 
         root_layout = QVBoxLayout()
@@ -544,9 +551,11 @@ class DetectionTunerWidget(QWidget):
 
         # Frame Navigation
         self.frame_label = QLabel()
+        self.detect_label = QLabel()
         self.frame_slider = QSlider(Qt.Orientation.Horizontal, minimum=0, maximum=self.video_info.total_frames - 1)
         self.frame_slider.valueChanged.connect(self.on_frame_slider_change)
         right_layout.addWidget(self.frame_label)
+        right_layout.addWidget(self.detect_label)
         right_layout.addWidget(self.frame_slider)
 
         help_label = QLabel("Keyboard: N/P (frame), +/- (jump 100 frames)\nTip: Scan through video to test different frames")
@@ -671,20 +680,12 @@ class DetectionTunerWidget(QWidget):
             cv2.circle(display_frame, center, 15, (0, 255, 0), 3)
             cv2.circle(display_frame, center, 3, (0, 0, 255), -1)
             status_text = f"Confidence: {detection.confidence:.2f}"
-            status_color = (0, 255, 0)
         else:
             status_text = f"Not detected: {detection.failure_reason}"
-            status_color = (0, 0, 255)
-        cv2.putText(
-            display_frame,
-            status_text,
-            (15, 35),
-            cv2.FONT_HERSHEY_SIMPLEX,
-            0.8,
-            status_color,
-            2,
-            cv2.LINE_AA
-        )
+        # The result is a label beside the preview, not text burnt into the
+        # frame: drawn on the frame it grows with the video's resolution and
+        # covers a small video.
+        self.detect_label.setText(status_text)
 
         for category, rois in self.roi_manager.rois.items():
             for roi in rois:
