@@ -8,35 +8,29 @@ The six stages of the 4.0 workspace::
 
 Modules
 -------
-``base``          the :class:`Stage` base class (header, content area, hooks);
-``status``        Qt-free rules for the stepper statuses;
-``videos_stage``  stage 1, finished: empty state, paradigm picker, video table;
-``arena_stage``   stage 2, finished: the template's zones and the zones of
-                  single videos (live edits, alignment);
-``detection_stage``  stage 3, finished: live-written detection / motion tuning;
-``hosted``        Review & run and Results in their *temporary* form: the old
-                  Run and Results tabs hosted inside a stage.
+``base``             the :class:`Stage` base class (header, content area, hooks);
+``status``           Qt-free rules for the stepper statuses;
+``videos_stage``     stage 1: empty state, paradigm picker, video table;
+``arena_stage``      stage 2: the template's zones and the zones of single
+                     videos (live edits, alignment);
+``detection_stage``  stage 3: live-written detection / motion tuning;
+``trials_stage``     stage 4: per-video start and end of each trial;
+``review_stage``     stage 5: readiness checklist, run options, the run and its
+                     progress (the machinery is
+                     :mod:`gui.workspace.run_controller`);
+``results_stage``    stage 6: the runs of the project and their results.
 
-The replacement contract (for the authors of stages 2 to 6)
-----------------------------------------------------------
-Each hosted stage is scaffolding. To replace one:
-
-1. Write ``YourStage(Stage)`` with the same ``stage_id`` as the hosted class
-   it replaces (``STAGE_ARENA``, ``STAGE_DETECTION``, ``STAGE_TRIALS``,
-   ``STAGE_REVIEW`` or ``STAGE_RESULTS``). Build the content with
-   ``self.set_content(widget)`` or ``self.content_layout``; use the
-   ``self.header`` (``set_texts``, ``add_action``) and set ``title``,
-   ``subtitle`` and ``icon_name`` as class attributes.
-2. Register it in ``WorkspaceWindow._make_stages`` (``gui/workspace/window.py``)
-   instead of the hosted class. Nothing else in the window changes: it calls
-   the hooks below and reads ``status()``, ``next_label()``, ``can_advance()``
-   and ``footer_text()`` to draw the stepper and the footer.
-3. Delete the matching hosted class from ``hosted.py``. The old tabs are
-   attached to the window with ``install_tab``; when the last hosted stage
-   that needs one (Setup: stages 2 to 4, Run: 5, Results: 6) goes, remove the
-   tab from ``WorkspaceWindow.__init__``. Anything that still uses
-   ``window.setup_tab`` / ``run_tab`` / ``results_tab`` or ``show_tab`` must
-   move to ``window.go_to_stage(stage_id)``.
+Writing or changing a stage
+---------------------------
+Subclass ``Stage`` with a ``stage_id`` of :mod:`~gui.workspace.stages.status`,
+set ``title``, ``subtitle`` and ``icon_name`` as class attributes, build the
+content with ``self.set_content(widget)`` or ``self.content_layout`` and use
+the ``self.header`` (``set_texts``, ``add_action``). Register the class in
+``WorkspaceWindow._make_stages`` (``gui/workspace/window.py``): the window
+calls the hooks below and reads ``status()``, ``next_label()``,
+``can_advance()`` and ``footer_text()`` to draw the stepper and the footer. A
+stage that owns threads or capture devices defines ``shutdown()``; the window
+calls it on every stage when it closes.
 
 What a stage can rely on (all on the GUI thread)
 ------------------------------------------------

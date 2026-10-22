@@ -106,6 +106,8 @@ class ROI:
             return False
         
         try:
+            # OpenCV 5 rejects numpy scalars here: hand it plain Python floats.
+            point = (float(point[0]), float(point[1]))
             result = cv2.pointPolygonTest(self.points.astype(np.float32), point, False)
             return result >= 0
         except Exception as e:
@@ -132,11 +134,11 @@ class ROI:
             
             # Check if any vertex of one is inside the other
             for point in self.points:
-                if other.contains_point(tuple(point)):
+                if other.contains_point((float(point[0]), float(point[1]))):
                     return True
             
             for point in other.points:
-                if self.contains_point(tuple(point)):
+                if self.contains_point((float(point[0]), float(point[1]))):
                     return True
             
             return False

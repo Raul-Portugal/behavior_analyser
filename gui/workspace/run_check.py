@@ -1,6 +1,6 @@
 """
 gui/workspace/run_check.py
-What the Run tab decides *before* it starts a worker, without any Qt.
+What the Review & run stage decides *before* it starts a worker, without any Qt.
 
 * :func:`scope_keys` turns the run scope (all / selected / not yet done) into
   project video keys.
@@ -155,13 +155,13 @@ def prepare_run(
         names = [path.name for path in analysis.unconfigured]
         message = (
             f"{len(names)} video(s) have no settings: {_listed(names)}. "
-            "Configure them in the Setup tab."
+            "Draw their arena and zones in the Arena & zones stage."
         )
         if strict:
             result.issues.append(message)
         else:
             result.warnings.append(message.replace(
-                "Configure them", "They are left out of this run; configure them"
+                "Draw their", "They are left out of this run; draw their"
             ))
         result.skipped = list(analysis.unconfigured)
     if analysis.missing:

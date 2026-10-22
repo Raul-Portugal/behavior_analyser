@@ -1389,6 +1389,22 @@ class Project:
         self._changed()
         return match
 
+    def clear_sample_sheet(self) -> bool:
+        """Forget the sample sheet and every metadata column of the videos.
+
+        Runs then add no metadata columns to the batch summary. True if
+        anything changed.
+        """
+        changed = self.run_options.sample_sheet is not None
+        self.run_options.sample_sheet = None
+        for video in self.videos:
+            if video.metadata:
+                video.metadata.clear()
+                changed = True
+        if changed:
+            self._changed()
+        return changed
+
     def sample_metadata(self) -> Optional[SampleMetadata]:
         """The project's metadata as the ``SampleMetadata`` a run expects.
 

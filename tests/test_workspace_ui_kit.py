@@ -18,7 +18,8 @@ try:
                                       DropZone, EmptyState, Filmstrip, FilmstripItem,
                                       FooterBar, GhostButton, InlineHelp, KeyHint, Label,
                                       ParadigmPicker, PrimaryButton, SecondaryButton,
-                                      StageHeader, StatusChip, StepInfo, Stepper)
+                                      StageHeader, StatTile, StatusChip, StepInfo,
+                                      Stepper)
     from mazes import AVAILABLE_MAZES
     HAS_RUNTIME = True
 except ModuleNotFoundError:
@@ -206,6 +207,36 @@ class CardTests(KitCase):
         image = self.grab(card)
         self.assertEqual(self.hex_at(image, 100, 100), theme.LIGHT.surface)
         self.assertEqual(self.hex_at(image, 100, 0), theme.LIGHT.border)
+
+
+class StatTileTests(KitCase):
+    def test_caption_value_and_unit(self):
+        tile = StatTile("Total distance", "123.4", "px")
+        self.show(tile, 220)
+        self.assertEqual(tile.caption(), "Total distance")
+        self.assertEqual(tile.value(), "123.4")
+        self.assertEqual(tile.unit(), "px")
+        self.assertTrue(tile._unit.isVisibleTo(tile))
+        self.assertIn("Total distance: 123.4 px", tile.toolTip())
+
+    def test_the_unit_is_optional(self):
+        tile = StatTile("Grade", "Excellent")
+        self.show(tile, 220)
+        self.assertFalse(tile._unit.isVisibleTo(tile))
+        tile.set_stat("Speed", "36.8", "px/s")
+        self.assertEqual((tile.caption(), tile.value(), tile.unit()),
+                         ("Speed", "36.8", "px/s"))
+
+    def test_it_paints_a_quiet_tile_in_the_theme_colours(self):
+        tile = self.show(StatTile("a", "b"), 200, 80)
+        image = self.grab(tile)
+        self.assertEqual(self.hex_at(image, 100, 70), theme.LIGHT.surface_alt)
+        self.assertEqual(self.hex_at(image, 100, 0), theme.LIGHT.border)
+
+    def test_a_long_value_does_not_widen_the_tile(self):
+        tile = StatTile("Caption", "x" * 200)
+        self.show(tile, 160)
+        self.assertLessEqual(tile.width(), 160)
 
 
 class CollapsibleSectionTests(KitCase):
@@ -1013,6 +1044,18 @@ class ThemeFollowTests(KitCase):
             theme.apply_theme(self.app, "light")
 
 
+class CalloutTitleTests(KitCase):
+    def test_the_title_can_be_set_and_cleared(self):
+        callout = Callout("warning", "text")
+        self.show(callout, 300)
+        self.assertEqual(callout.title(), "")
+        callout.set_title("Quality warnings")
+        self.assertEqual(callout.title(), "Quality warnings")
+        self.assertTrue(callout._title.isVisibleTo(callout))
+        callout.set_title("")
+        self.assertFalse(callout._title.isVisibleTo(callout))
+
+
 class ModuleSanityTests(KitCase):
     def test_the_module_does_not_use_qobject_sender(self):
         source = (Path(__file__).resolve().parent.parent / "gui" / "workspace" / "ui_kit.py"
@@ -1023,7 +1066,7 @@ class ModuleSanityTests(KitCase):
         for factory in (StatusChip, lambda: KeyHint("S"), lambda: Callout("info", "x"),
                         Card, lambda: CollapsibleSection("t"), lambda: EmptyState("video", "t"),
                         lambda: StageHeader("t"), FooterBar, Stepper, DropZone, ParadigmPicker,
-                        Filmstrip, QWidget):
+                        Filmstrip, StatTile, QWidget):
             widget = factory()
             self.assertIsNotNone(widget)
             widget.deleteLater()

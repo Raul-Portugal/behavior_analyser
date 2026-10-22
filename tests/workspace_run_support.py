@@ -14,7 +14,7 @@ if HAS_RUNTIME:
     from PyQt6.QtCore import QCoreApplication, QThread
     from core import cli
     from core.models import BatchSettings
-    from gui.workspace import run_tab
+    from gui.workspace import run_controller
     from mazes.freestyle import Freestyle
 
 FREESTYLE = "Freestyle / Open Field"
@@ -57,19 +57,21 @@ class RunFixture(WorkspaceFixture):
         self.project = self.window.project
         self.add_videos(self.real_videos)
         self.project.set_template(freestyle_settings())
-        self.run_tab = self.window.run_tab
-        self.results_tab = self.window.results_tab
-        self.run_tab.FORCE_QUIT_DELAY_MS = 60_000
-        self.run_tab.set_output_dir(self.root / "ws_out")
+        self.review = self.window.stage("review")
+        self.results = self.window.stage("results")
+        self.review.controller.FORCE_QUIT_DELAY_MS = 60_000
+        self.review.set_output_dir(self.root / "ws_out")
         # Quiet defaults: one process, so the tests are fast and deterministic.
         self.project.set_run_options(parallel_workers=1)
-        self.addCleanup(self.results_tab.shutdown)
+        self.window.go_to_stage("review")
+        self.addCleanup(self.results.shutdown)
 
     def drain_threads(self):
-        tab = getattr(self, "run_tab", None)
-        if tab is not None and tab.is_running:
-            tab._cancel_worker()
-        wait_for(lambda: not run_tab._live_threads, 60.0, "the run thread to end")
+        stage = getattr(self, "review", None)
+        if stage is not None and stage.is_running:
+            stage.controller._cancel_worker()
+        wait_for(lambda: not run_controller._live_threads, 60.0,
+                 "the run thread to end")
 
     # -- helpers ---------------------------------------------------------
     def select(self, *names):
@@ -83,8 +85,8 @@ class RunFixture(WorkspaceFixture):
         if accept_warnings:
             self.prompts.say("confirm", True)
         finished = []
-        self.run_tab.run_finished.connect(finished.append)
-        self.assertTrue(self.run_tab.start_run())
+        self.review.run_finished.connect(finished.append)
+        self.assertTrue(self.review.start_run())
         wait_for(lambda: bool(finished), timeout, "the run to finish")
         return finished[0]
 

@@ -195,6 +195,46 @@ class KeyMetricTests(RunFolderCase):
         self.assertEqual(rd.format_value(float("nan")), "N/A")
 
 
+class HeadlineMetricTests(RunFolderCase):
+    def test_a_real_run_gives_the_distance_the_speeds_and_the_grade(self):
+        summary = rd.RunData.load(self.run_dir).videos[0].load_summary()
+        rows, _notes = rd.key_metrics(summary)
+        headline = rd.headline_metrics(rows)
+        names = [name for name, _value in headline]
+        self.assertEqual(names[0], "total distance")
+        self.assertIn("average speed", names)
+        self.assertEqual(names[-1], "tracking quality grade")
+        self.assertLessEqual(len(headline), 6)
+        self.assertTrue(all(value not in ("", "N/A") for _n, value in headline))
+
+    def test_settings_like_entries_and_missing_values_are_left_out(self):
+        rows = [
+            ("specific metrics", "average speed", "3.5"),
+            ("specific metrics", "immobility time", "N/A"),
+            ("specific metrics", "immobility threshold", "2"),
+            ("specific metrics", "speed window seconds", "0.2"),
+            ("specific metrics", "peak speed", ""),
+            ("specific metrics", "zone transitions", "4"),
+        ]
+        self.assertEqual(
+            rd.headline_metrics(rows),
+            [("average speed", "3.5"), ("zone transitions", "4")],
+        )
+
+    def test_the_limit_is_respected_and_the_grade_keeps_its_place(self):
+        rows = [("total distance", "total distance", "9")]
+        rows += [("specific metrics", f"metric {n}", str(n)) for n in range(10)]
+        rows += [("metadata", "tracking quality grade", "Good")]
+        headline = rd.headline_metrics(rows, limit=5)
+        self.assertEqual(len(headline), 5)
+        self.assertEqual(headline[0], ("total distance", "9"))
+        self.assertEqual(headline[-1], ("tracking quality grade", "Good"))
+
+    def test_nothing_to_show_gives_an_empty_list(self):
+        self.assertEqual(rd.headline_metrics([]), [])
+        self.assertEqual(rd.headline_metrics([("sample", "group", "ctl")]), [])
+
+
 class TimeBinTests(RunFolderCase):
     def table(self):
         return rd.RunData.load(self.run_dir).time_bins

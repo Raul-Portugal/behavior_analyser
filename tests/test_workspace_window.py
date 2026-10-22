@@ -13,15 +13,12 @@ from tests.workspace_support import HAS_RUNTIME, WorkspaceFixture
 
 if HAS_RUNTIME:
     from PyQt6.QtCore import QCoreApplication, QEvent, Qt
-    from PyQt6.QtWidgets import QMainWindow, QWidget
+    from PyQt6.QtWidgets import QMainWindow
     from gui.workspace.stages.base import Stage
-    from gui.workspace.stages.hosted import HostedStage
-    from gui.workspace.tabs import (WorkspaceTab, TAB_RESULTS,
-                                    TAB_RUN, TAB_SETUP)
 
 
 class LayoutTests(WorkspaceFixture):
-    def test_six_stages_and_the_old_tabs_inside_them(self):
+    def test_six_real_stages(self):
         window = self.window
         self.assertEqual(
             window.stage_ids(),
@@ -32,14 +29,15 @@ class LayoutTests(WorkspaceFixture):
             self.assertIs(stage.workspace, window)
             self.assertIs(window.stack.indexOf(stage) >= 0, True)
         self.assertIs(window.video_panel, window.videos_stage.video_panel)
-        # The old tabs are hosted by the stages that stand in for them.
-        for attribute in ("setup_tab", "run_tab", "results_tab"):
-            self.assertIsInstance(getattr(window, attribute), QWidget)
-        for stage_id, tab in (("review", "run"),
-                              ("results", "results")):
-            hosted = window.stage(stage_id)
-            self.assertIsInstance(hosted, HostedStage)
-            self.assertEqual(hosted.tab_name, tab)
+        self.assertEqual(
+            [type(stage).__name__ for stage in window.stages.values()],
+            ["VideosStage", "ArenaStage", "DetectionStage", "TrialsStage",
+             "ReviewStage", "ResultsStage"],
+        )
+        # The old Setup / Run / Results tabs are gone: no stage hosts a tab.
+        for attribute in ("setup_tab", "run_tab", "results_tab", "install_tab",
+                          "show_tab", "tab_widget", "current_tab_name"):
+            self.assertFalse(hasattr(window, attribute), attribute)
 
     def test_the_old_chrome_is_gone(self):
         window = self.window
@@ -802,69 +800,53 @@ class ProjectSetParadigmTests(unittest.TestCase):
         self.assertEqual(calls, [1])
 
 
-class TabExtensionTests(WorkspaceFixture):
-    class RecordingTab(WorkspaceTab if HAS_RUNTIME else object):
-        def __init__(self):
-            super().__init__()
-            self.events = []
+class StageHookTests(WorkspaceFixture):
+    """The window tells every stage about the project and the selection."""
 
-        def on_project_changed(self, project):
-            self.events.append(("project", project and project.name))
+    def watch(self, stage, name):
+        calls = []
+        original = getattr(stage, name)
 
-        def on_project_modified(self):
-            self.events.append(("modified",))
+        def spy(*args):
+            calls.append(args)
+            return original(*args)
 
-        def on_selection_changed(self, keys):
-            self.events.append(("selection", list(keys)))
+        patcher = patch.object(stage, name, spy)
+        patcher.start()
+        self.addCleanup(patcher.stop)
+        return calls
 
-        def on_tab_activated(self):
-            self.events.append(("activated",))
-
-    def test_placeholders_are_installed(self):
-        # Pieces replace placeholders with real tabs; each is a WorkspaceTab.
-        for name in ("setup_tab", "run_tab", "results_tab"):
-            self.assertIsInstance(getattr(self.window, name), WorkspaceTab)
-
-    def test_run_and_results_are_real_tabs(self):
-        from gui.workspace.tabs import PlaceholderTab
-        for name in ("run_tab", "results_tab"):
-            self.assertNotIsInstance(getattr(self.window, name), PlaceholderTab)
-
-    def test_installing_a_tab_attaches_it_and_replaces_the_attribute(self):
-        tab = self.RecordingTab()
-        old = self.window.install_tab(TAB_SETUP, tab)
-        self.assertIsInstance(old, WorkspaceTab)
-        self.assertIs(self.window.setup_tab, tab)
-        self.assertIs(self.window.tab_widget(TAB_SETUP), tab)
-        self.assertIs(tab.workspace, self.window)
-        self.assertEqual(tab.events[:2], [("project", None), ("selection", [])])
-
-    def test_the_tab_hears_about_project_modifications_and_selection(self):
-        tab = self.RecordingTab()
-        self.window.install_tab(TAB_RUN, tab)
-        tab.events.clear()
+    def test_the_stages_hear_about_the_project_and_the_selection(self):
+        window = self.window
+        opened = self.watch(window.stage("review"), "on_project_changed")
+        modified = self.watch(window.stage("results"), "on_project_modified")
+        selected = self.watch(window.stage("results"), "on_selection_changed")
         self.new_project_at()
         self.add_videos()
-        self.window.change_paradigm("Y-Maze")
-        panel = self.window.video_panel
-        panel.select_keys([panel.project().keys()[0]])
+        window.change_paradigm("Y-Maze")
+        panel = window.video_panel
+        key = panel.project().keys()[0]
+        panel.select_keys([key])
         panel.flush_selection()
-        self.window.show_tab(TAB_RUN)
-        self.assertEqual(self.window.current_stage_id, "review")
-        kinds = [event[0] for event in tab.events]
-        self.assertIn("project", kinds)
-        self.assertIn("modified", kinds)
-        self.assertIn(("selection", [panel.project().keys()[0]]), tab.events)
-        self.assertIn(("activated",), tab.events)
+        self.assertEqual([call[0].name for call in opened], ["study"])
+        self.assertTrue(modified)
+        self.assertIn(([key],), selected)
 
-    def test_a_plain_widget_can_be_installed(self):
-        widget = QWidget()
-        self.window.install_tab(TAB_RESULTS, widget)
-        self.assertIs(self.window.results_tab, widget)
-
-    def test_unknown_tab_name_is_rejected(self):
-        with self.assertRaises(ValueError):
-            self.window.install_tab("nope", QWidget())
+    def test_a_stage_that_needs_closing_is_shut_down_with_the_window(self):
+        window = self.window
+        closed = []
+        for stage_id in ("review", "results", "trials", "detection", "arena"):
+            stage = window.stage(stage_id)
+            self.assertTrue(hasattr(stage, "shutdown"), stage_id)
+            patcher = patch.object(
+                stage, "shutdown", lambda stage_id=stage_id: closed.append(stage_id)
+            )
+            patcher.start()
+            self.addCleanup(patcher.stop)
+        window.close()
+        self.assertEqual(
+            sorted(closed), ["arena", "detection", "results", "review", "trials"]
+        )
 
 
 class ClassicSwitchTests(WorkspaceFixture):

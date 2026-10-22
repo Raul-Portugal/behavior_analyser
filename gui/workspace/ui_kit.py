@@ -14,7 +14,7 @@ Quick reference (details on each class)
 Navigation      ``Stepper``, ``StageHeader``, ``FooterBar``
 Buttons         ``PrimaryButton``, ``SecondaryButton``, ``GhostButton``,
                 ``DangerButton``
-Containers      ``Card``, ``CollapsibleSection``
+Containers      ``Card``, ``CollapsibleSection``, ``StatTile``
 Feedback        ``StatusChip``, ``Callout``, ``InlineHelp``, ``EmptyState``
 Input           ``DropZone``, ``ParadigmCard`` / ``ParadigmPicker``,
                 ``Filmstrip``
@@ -45,7 +45,8 @@ __all__ = [
     "EmptyState", "Filmstrip", "FilmstripItem", "FooterBar", "GhostButton",
     "InlineHelp", "KeyHint", "Label", "PARADIGM_INFO", "ParadigmCard",
     "ParadigmPicker", "PrimaryButton", "SecondaryButton", "StageHeader",
-    "StatusChip", "StepInfo", "Stepper", "STEP_STATUSES", "CHIP_KINDS",
+    "StatTile", "StatusChip", "StepInfo", "Stepper", "STEP_STATUSES",
+    "CHIP_KINDS",
 ]
 
 CHIP_KINDS = ("ok", "warning", "error", "info", "neutral", "running")
@@ -429,6 +430,10 @@ class Callout(_Themed, QWidget):
     def set_text(self, text: str) -> None:
         self._body.setText(text)
 
+    def set_title(self, title: str) -> None:
+        self._title.setText(title)
+        self._title.setVisible(bool(title))
+
     def set_kind(self, kind: str) -> None:
         if kind not in _CALLOUT_ICONS:
             raise ValueError(f"Unknown callout kind {kind!r}")
@@ -556,6 +561,58 @@ class Card(_Themed, QWidget):
         palette = current_palette()
         painter = QPainter(self)
         _rounded(painter, QRectF(self.rect()), Radius.LG, palette.surface,
+                 palette.border)
+
+
+class StatTile(_Themed, QWidget):
+    """One key number: a small caption above a large value (and an optional
+    unit), on a quiet tile. Long texts are elided; the tooltip has them all."""
+
+    def __init__(self, caption: str = "", value: str = "", unit: str = "",
+                 parent: Optional[QWidget] = None):
+        super().__init__(parent)
+        self._caption = Label("", "caption", wrap=True)
+        self._value = Label("", "title")
+        self._value.setMinimumWidth(1)       # a long value is clipped, not widening
+        self._unit = Label("", "muted")
+        row = QHBoxLayout()
+        row.setContentsMargins(0, 0, 0, 0)
+        row.setSpacing(Spacing.XXS)
+        row.addWidget(self._value)
+        row.addWidget(self._unit, 0, Qt.AlignmentFlag.AlignBottom)
+        row.addStretch(1)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(Spacing.SM, Spacing.SM, Spacing.SM, Spacing.SM)
+        column.setSpacing(Spacing.XXS)
+        column.addWidget(self._caption)
+        column.addLayout(row)
+        self.setSizePolicy(QSizePolicy.Policy.Expanding, QSizePolicy.Policy.Minimum)
+        self.set_stat(caption, value, unit)
+
+    def caption(self) -> str:
+        return self._caption.text()
+
+    def value(self) -> str:
+        return self._value.text()
+
+    def unit(self) -> str:
+        return self._unit.text()
+
+    def set_stat(self, caption: str, value: str, unit: str = "") -> None:
+        self._caption.setText(caption)
+        self._value.setText(value)
+        self._unit.setText(unit)
+        self._unit.setVisible(bool(unit))
+        self.setToolTip(f"{caption}: {value}{(' ' + unit) if unit else ''}")
+        self.setAccessibleName(f"{caption} {value} {unit}".strip())
+
+    def minimumSizeHint(self) -> QSize:
+        return QSize(96, super().minimumSizeHint().height())
+
+    def paintEvent(self, event) -> None:
+        palette = current_palette()
+        painter = QPainter(self)
+        _rounded(painter, QRectF(self.rect()), Radius.LG, palette.surface_alt,
                  palette.border)
 
 

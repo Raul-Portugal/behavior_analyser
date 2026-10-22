@@ -617,7 +617,12 @@ class WorkspaceDemo:
             QCoreApplication.processEvents()
             self.window.thumbnails.wait_idle()
         QCoreApplication.processEvents()
-        self.window.refresh_navigation()
+        window = self.window
+        if window.has_unsaved_changes and not window.is_busy:
+            window.save()                  # the app bar says "Saved", as in real use
+        window._message_timer.stop()       # the stage's own sentence, not a transient one
+        window._message_done()
+        window.refresh_navigation()
 
     def grab(self, target: Path) -> Path:
         self.settle()
@@ -626,6 +631,10 @@ class WorkspaceDemo:
         return target
 
     def close(self) -> None:
+        review = self.window.stage("review")
+        if review.is_running:               # a page captured mid-run: stop it first
+            review.controller._cancel_worker()
+            _wait_for(lambda: not review.is_running, 120.0)
         self.window._skip_close_prompt = True
         self.window.close()
         self.window.deleteLater()
@@ -877,6 +886,124 @@ def ws_detection_tst(demo: WorkspaceDemo) -> None:
     _wait_for(lambda: stage.tuner is not None and stage.tuner.has_unsaved_changes(), 60.0)
 
 
+def _ready_study(demo: WorkspaceDemo) -> None:
+    """The demo study with nothing wrong: the missing clip is dropped, every
+    video has its start and the detection was reviewed."""
+    ws_videos(demo)
+    window = demo.window
+    project = window.project
+    project.remove_videos([project.videos[5].key])
+    # The clips are only 12 to 24 s long: trials run until the video ends.
+    project.set_trial_protocol(None, "per_video")
+    for index, entry in enumerate(project.videos):
+        project.set_trial(entry.key, start=1.0 + 0.5 * index)
+    project.set_detection_reviewed(True)
+    window.refresh_navigation()
+
+
+def ws_review(demo: WorkspaceDemo) -> None:
+    """Review & run of the demo study: a missing file and videos without a start."""
+    ws_videos(demo)
+    demo.window.go_to_stage("review", force=True)
+    demo.window.stage("review").problems.setVisible(True)
+
+
+def ws_review_ready(demo: WorkspaceDemo) -> None:
+    """Everything is ready: the checklist is green and Run analysis is enabled."""
+    _ready_study(demo)
+    demo.window.go_to_stage("review", force=True)
+
+
+def ws_review_empty(demo: WorkspaceDemo) -> None:
+    """No project: the stage points back to the Videos stage."""
+    demo.window.go_to_stage("review", force=True)
+
+
+def _start_run(demo: WorkspaceDemo) -> "object":
+    """Start a real analysis of the ready study (sequential, so it is calm)."""
+    _ready_study(demo)
+    window = demo.window
+    window.project.set_run_options(parallel_workers=1, time_bin_seconds=10.0)
+    window.go_to_stage("review", force=True)
+    stage = window.stage("review")
+    stage.set_output_dir(demo.root / "runs")
+    if not stage.start_run():
+        raise RuntimeError("the demo run did not start")
+    return stage
+
+
+def ws_review_running(demo: WorkspaceDemo) -> None:
+    """The progress view part-way through: the table, the bar and the ETA."""
+    stage = _start_run(demo)
+    model = stage.progress_model
+
+    def midway() -> bool:
+        states = [model.state(path) for path in model.paths()]
+        return any(s and s["status"] == "running" and s["pct"] > 20 for s in states)             and any(s and s["status"] == "done" for s in states)
+
+    _wait_for(midway, 120.0)
+    stage.log_section.set_expanded(True)
+
+
+def ws_review_done(demo: WorkspaceDemo) -> None:
+    """The finished run: summary card with View results and Open folder."""
+    stage = _start_run(demo)
+    _wait_for(lambda: not stage.is_running, 300.0)
+    demo.settle()
+
+
+def _finished_run(demo: WorkspaceDemo):
+    stage = _start_run(demo)
+    _wait_for(lambda: not stage.is_running, 300.0)
+    demo.settle()
+    window = demo.window
+    window.stage("review").open_results()
+    results = window.stage("results")
+    results.select_row(1)
+    return results
+
+
+def ws_results(demo: WorkspaceDemo) -> None:
+    """The summary table and the key numbers of one video."""
+    results = _finished_run(demo)
+    demo.settle()
+    results.detail.tabs.setCurrentIndex(0)
+
+
+def ws_results_plots(demo: WorkspaceDemo) -> None:
+    results = _finished_run(demo)
+    demo.settle()
+    results.detail.tabs.setCurrentIndex(1)
+
+
+def ws_results_video(demo: WorkspaceDemo) -> None:
+    results = _finished_run(demo)
+    results.detail.show_video_tab()
+    results.detail.video_pane.player.wait_idle()
+
+
+def ws_results_bins(demo: WorkspaceDemo) -> None:
+    results = _finished_run(demo)
+    results.sections.setCurrentWidget(results.bins_panel)
+
+
+def ws_results_compare(demo: WorkspaceDemo) -> None:
+    """Two runs of the same study, compared."""
+    results = _finished_run(demo)
+    stage = demo.window.stage("review")
+    stage.dismiss_summary()
+    stage.start_run()
+    _wait_for(lambda: not stage.is_running, 300.0)
+    results.show_compare()
+    results.compare_panel.compare()
+
+
+def ws_results_empty(demo: WorkspaceDemo) -> None:
+    """A study that has not been analysed yet."""
+    ws_videos(demo)
+    demo.window.go_to_stage("results", force=True)
+
+
 WORKSPACE_PAGES: Dict[str, Callable[[WorkspaceDemo], None]] = {
     "welcome": ws_welcome,
     "paradigm": ws_paradigm,
@@ -901,8 +1028,17 @@ WORKSPACE_PAGES: Dict[str, Callable[[WorkspaceDemo], None]] = {
     "trials_protocol": ws_trials_protocol,
     "trials_tst": ws_trials_tst,
     "trials_empty": ws_trials_empty,
-    "review": _stage_page("review"),
-    "results": _stage_page("results"),
+    "review": ws_review,
+    "review_ready": ws_review_ready,
+    "review_empty": ws_review_empty,
+    "review_running": ws_review_running,
+    "review_done": ws_review_done,
+    "results": ws_results,
+    "results_plots": ws_results_plots,
+    "results_video": ws_results_video,
+    "results_bins": ws_results_bins,
+    "results_compare": ws_results_compare,
+    "results_empty": ws_results_empty,
 }
 
 

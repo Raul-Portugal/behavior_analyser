@@ -12,7 +12,6 @@ if HAS_RUNTIME:
     from gui.project_table_model import COL_CONFIGURED, KeyRole
     from gui.workspace.stages import status as st
     from gui.workspace.stages.base import Stage
-    from gui.workspace.stages.hosted import HostedSetupStage
     from gui.workspace.stages.videos_stage import (PAGE_PARADIGM, PAGE_VIDEOS,
                                                    PAGE_WELCOME)
     from gui.workspace.ui_kit import ParadigmCard, ParadigmPicker
@@ -200,15 +199,6 @@ class NavigationTests(StageFixture):
         self.settings.set_workspace_stage(path, "review")     # no videos yet
         self.assertTrue(self.window.open_project(path))
         self.assertEqual(self.window.current_stage_id, "videos")
-
-    def test_show_tab_maps_the_old_tabs_to_stages(self):
-        self.ready()
-        window = self.window
-        for tab, stage_id in (("setup", "arena"), ("run", "review"),
-                              ("results", "results")):
-            window.show_tab(tab)
-            self.assertEqual(window.current_stage_id, stage_id)
-            self.assertEqual(window.current_tab_name(), tab)
 
 
 class StepperTests(StageFixture):
@@ -938,49 +928,24 @@ class DrawerTests(StageFixture):
         self.assertEqual(self.window.current_stage_id, "trials")
 
 
-class HostedStageTests(StageFixture):
-    def test_setup_stages_are_real_stages(self):
+class StageKindTests(StageFixture):
+    def test_every_stage_is_a_real_stage(self):
         self.ready()
         window = self.window
-        for stage_id in ("arena", "detection", "trials"):
+        for stage_id in window.stage_ids():
+            stage = window.stage(stage_id)
+            self.assertEqual(type(stage).__module__.rsplit(".", 1)[-1],
+                             f"{stage_id}_stage", stage_id)
+            self.assertFalse(hasattr(stage, "tab_name"), stage_id)
+
+    def test_review_and_results_draw_their_own_content(self):
+        self.ready()
+        window = self.window
+        for stage_id in ("review", "results"):
             window.go_to_stage(stage_id)
-            self.assertNotIsInstance(window.stage(stage_id), HostedSetupStage)
-            self.assertIsNot(window.setup_tab.parentWidget(), window.stage(stage_id).content)
-
-    def test_no_setup_stage_is_hosted_any_more(self):
-        for stage_id in ("arena", "detection", "trials"):
-            self.assertNotIsInstance(self.window.stage(stage_id), HostedSetupStage)
-
-    def test_run_and_results_host_their_tabs(self):
-        self.ready()
-        window = self.window
-        window.go_to_stage("review")
-        self.assertIs(window.run_tab.parentWidget(), window.stage("review").content)
-        window.go_to_stage("results")
-        self.assertIs(window.results_tab.parentWidget(), window.stage("results").content)
-
-    def test_a_replaced_tab_is_hosted_again(self):
-        from PyQt6.QtWidgets import QWidget
-        self.ready()
-        window = self.window
-        window.go_to_stage("results")
-        replacement = QWidget()
-        old = window.install_tab("results", replacement)
-        self.assertIsNot(old, replacement)
-        self.assertIs(replacement.parentWidget(), window.stage("results").content)
-        self.assertTrue(replacement.isVisibleTo(window.stage("results")))
-
-    def test_parked_tabs_belong_to_the_window(self):
-        window = self.window
-        for name in ("setup", "run", "results"):
-            tab = window.tab_widget(name)
-            self.assertIsNotNone(tab.parentWidget(), name)
-
-    def test_the_old_tabs_still_hear_the_hooks(self):
-        project = self.ready()
-        tab = self.window.setup_tab
-        self.assertIs(tab.project, project)
-        self.assertIs(tab.workspace, self.window)
+            stage = window.stage(stage_id)
+            self.assertIs(stage.pages.parentWidget(), stage.content)
+            self.assertTrue(stage.pages.isVisibleTo(stage))
 
 
 class StartupAndTimerTests(StageFixture):

@@ -368,9 +368,11 @@ class TrialsStage(Stage):
         self.splitter.addWidget(self.pane)
         left.setMinimumWidth(430)
         self.pane.setMinimumWidth(460)
-        self.splitter.setStretchFactor(0, 2)
-        self.splitter.setStretchFactor(1, 3)
-        self.splitter.setSizes([400, 600])
+        # The table needs room for "0:12.0  protocol" and the video names; the
+        # player is as wide as its picture is tall at this ratio.
+        self.splitter.setStretchFactor(0, 3)
+        self.splitter.setStretchFactor(1, 4)
+        self.splitter.setSizes([430, 570])
         self.pages.addWidget(self.splitter)
 
         self.show_next_button = GhostButton(SHOW_NEXT_TEXT, "arrow-right")

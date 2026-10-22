@@ -1,6 +1,6 @@
 """
 gui/workspace/results_data.py
-Reading a run folder for the Results tab, without Qt.
+Reading a run folder for the Results stage, without Qt.
 
 A run folder (see ``OUTPUTS.md``) holds ``manifest.json``, ``batch_summary.csv``,
 optionally ``batch_time_bins.csv`` and one folder per video with ``data/``,
@@ -470,6 +470,37 @@ def key_metrics(summary: Dict[str, Any]) -> Tuple[List[Tuple[str, str, str]], Li
         for label, value in pairs:
             rows.append((title, label.replace("_", " ") or title, value))
     return rows, notes
+
+
+_HEADLINE_SKIP = ("threshold", "window", "unit", "min immobility", "bouts")
+_MISSING = ("", "N/A")
+
+
+def headline_metrics(
+    rows: List[Tuple[str, str, str]], limit: int = 6
+) -> List[Tuple[str, str]]:
+    """``[(name, value)]`` of the few numbers worth a tile: the total
+    distance, the paradigm's own metrics (``specific metrics``) that have a
+    value, and the tracking quality grade. ``rows`` are :func:`key_metrics`
+    rows; settings-like entries (thresholds, windows, units) are skipped.
+    """
+    def pick(section: str, metric: Optional[str] = None) -> List[Tuple[str, str]]:
+        return [
+            (m, v) for s, m, v in rows
+            if s == section and (metric is None or m == metric) and v not in _MISSING
+        ]
+
+    distance = pick("total distance", "total distance")
+    specific = [
+        (m, v) for m, v in pick("specific metrics")
+        if not any(word in m for word in _HEADLINE_SKIP)
+    ]
+    grade = [
+        (m, v) for s, m, v in rows
+        if m == "tracking quality grade" and v not in _MISSING
+    ]
+    chosen = distance[:1] + specific[: max(0, limit - 2)] + grade[:1]
+    return chosen[:limit]
 
 
 # ----------------------------------------------------------------------

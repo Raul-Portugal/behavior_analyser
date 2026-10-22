@@ -31,8 +31,8 @@ save / save as / recovery / imports / export / close). It does not analyse
 anything; the Run stage does, and talks to the window through the signals
 and methods below.
 
-For the stages and the old tabs (see also :mod:`gui.workspace.tabs`)
---------------------------------------------------------------------
+For the stages (see :mod:`gui.workspace.stages`)
+------------------------------------------------
 Signals
     ``project_changed(project)``  a project was opened or closed (``None``);
     ``project_modified()``        the open project was edited (by anyone);
@@ -50,9 +50,6 @@ Navigation
     ``refresh_navigation()`` (stepper), ``refresh_footer()``,
     ``show_details(keys)``, ``show_message(text)`` (a sentence in the footer).
 Control
-    ``install_tab(name, widget)``   replace the Setup / Run / Results tab
-                                    hosted by the temporary stages;
-    ``show_tab(name)``              go to the stage that hosts that tab;
     ``set_run_enabled(bool)``       enable the Run action;
     ``set_busy(bool, reason)``      a run is in progress: lock project
                                     editing, enable Cancel, block closing
@@ -88,17 +85,14 @@ from gui.workspace.context_panel import (ACTION_APPLY_TEMPLATE, ACTION_RELINK,
                                          ContextPanel, DetailsDrawer)
 from gui.workspace.prompts import (DISCARD, OPEN_FILTER, PROJECT_FILTER,
                                    SAVE, SOURCE_FILTER, Prompts)
-from gui.workspace.setup_tab import SetupTab  # Setup tab (X2b-2)
 from gui.workspace.stages import status as stage_status
 from gui.workspace.stages.arena_stage import ArenaStage
 from gui.workspace.stages.base import Stage
 from gui.workspace.stages.detection_stage import DetectionStage
-from gui.workspace.stages.hosted import (HostedStage, ResultsStage,
-                                         ReviewStage)
+from gui.workspace.stages.results_stage import ResultsStage
+from gui.workspace.stages.review_stage import ReviewStage
 from gui.workspace.stages.trials_stage import TrialsStage
 from gui.workspace.stages.videos_stage import VideosStage
-from gui.workspace.tabs import (TAB_NAMES, TAB_RESULTS, TAB_RUN, TAB_SETUP,
-                                PlaceholderTab, WorkspaceTab)
 from gui.workspace.theme import Spacing, current_palette
 from gui.workspace.thumbnails import ThumbnailLoader
 from gui.workspace.ui_kit import (FooterBar, GhostButton, Label, StatusChip,
@@ -122,20 +116,6 @@ _IMPORT_LABELS = {
     IMPORT_TEMPLATE: "a saved template",
     IMPORT_PLAN: "a batch plan",
     IMPORT_RUN: "a previous run folder",
-}
-
-# The old tabs live inside the stages that host them (see stages/hosted.py).
-_TAB_STAGES = {
-    TAB_SETUP: stage_status.STAGE_ARENA,
-    TAB_RUN: stage_status.STAGE_REVIEW,
-    TAB_RESULTS: stage_status.STAGE_RESULTS,
-}
-_STAGE_TABS = {
-    stage_status.STAGE_ARENA: TAB_SETUP,
-    stage_status.STAGE_DETECTION: TAB_SETUP,
-    stage_status.STAGE_TRIALS: TAB_SETUP,
-    stage_status.STAGE_REVIEW: TAB_RUN,
-    stage_status.STAGE_RESULTS: TAB_RESULTS,
 }
 
 # Classic windows opened by "Switch to classic interface" must outlive the
@@ -259,7 +239,6 @@ class WorkspaceWindow(QMainWindow):
         self._build_actions()
         self._build_menus()
         self._build_shortcuts()
-        self.install_tab(TAB_SETUP, SetupTab())  # Setup tab (X2b-2); also enables align_action
         self._restore_layout()
 
         self._autosave_timer = QTimer(self)
@@ -284,12 +263,6 @@ class WorkspaceWindow(QMainWindow):
         self._update_title()
         self._update_ui_state()
 
-        # --- Run and Results tabs (workstream X2b-3) -------------------
-        from gui.workspace.results_tab import ResultsTab
-        from gui.workspace.run_tab import RunTab
-        self.install_tab(TAB_RESULTS, ResultsTab())
-        self.install_tab(TAB_RUN, RunTab())
-        # ---------------------------------------------------------------
         for stage in self.stages.values():
             stage.attach(self)
         self.refresh_navigation()
@@ -307,26 +280,6 @@ class WorkspaceWindow(QMainWindow):
             self.prompts, self.video_panel.model.issues_for,
             loader=self.thumbnails, chip_for=self.video_panel.proxy.chip_for,
         )
-        # Where the old tabs wait while no stage shows them.
-        self._tab_parking = QWidget(self)
-        self._tab_parking.hide()
-        self.setup_tab: QWidget = PlaceholderTab(
-            "Setup", "Setup: choose the paradigm and configure the regions "
-                     "of interest, detection and calibration."
-        )
-        self.run_tab: QWidget = PlaceholderTab(
-            "Run", "Run: start the analysis and follow its progress."
-        )
-        self.results_tab: QWidget = PlaceholderTab(
-            "Results", "Results: open and review the output of earlier runs."
-        )
-        self._tab_widgets: Dict[str, QWidget] = {
-            TAB_SETUP: self.setup_tab, TAB_RUN: self.run_tab,
-            TAB_RESULTS: self.results_tab,
-        }
-        for widget in self._tab_widgets.values():
-            widget.setParent(self._tab_parking)
-
         self.stages: Dict[str, Stage] = self._make_stages()
         central = QWidget()
         outer = QVBoxLayout(central)
@@ -374,11 +327,7 @@ class WorkspaceWindow(QMainWindow):
         self.statusBar().hide()      # messages show in the footer instead
 
     def _make_stages(self) -> Dict[str, Stage]:
-        """The stages in flow order.
-
-        To replace a hosted stage by a real one, put the new class here
-        (see :mod:`gui.workspace.stages`).
-        """
+        """The stages in flow order (see :mod:`gui.workspace.stages`)."""
         ordered = [
             self.videos_stage, ArenaStage(self.thumbnails),
             DetectionStage(self.thumbnails, self.app_settings), TrialsStage(),
@@ -598,41 +547,6 @@ class WorkspaceWindow(QMainWindow):
 
     def invalidate_issues(self) -> None:
         self._issues_cache = None
-
-    # -- the old tabs ------------------------------------------------------
-    def tab_widget(self, name: str) -> QWidget:
-        return self._tab_widgets[name]
-
-    def install_tab(self, name: str, widget: QWidget) -> QWidget:
-        """Replace the Setup, Run or Results tab; returns the old widget.
-
-        The tab is hosted by the temporary stages (Setup by Arena & zones,
-        Detection and Trials, Run by Review & run, Results by Results). A
-        :class:`WorkspaceTab` is attached to the window (it then receives
-        the project and selection hooks); any other widget is just shown.
-        """
-        if name not in TAB_NAMES:
-            raise ValueError(f"Unknown tab {name!r}; use one of {TAB_NAMES}")
-        old = self._tab_widgets[name]
-        self._tab_widgets[name] = widget
-        setattr(self, f"{name}_tab", widget)
-        widget.setParent(self._tab_parking)
-        if isinstance(widget, WorkspaceTab):
-            widget.attach_workspace(self)
-        for stage in self.stages.values():
-            if isinstance(stage, HostedStage) and stage.tab_name == name:
-                stage.on_tab_replaced(widget)
-        old.setParent(None)
-        old.deleteLater()
-        return old
-
-    def show_tab(self, name: str) -> None:
-        """Go to the stage that hosts the Setup, Run or Results tab."""
-        self.go_to_stage(_TAB_STAGES[name])
-
-    def current_tab_name(self) -> str:
-        """The old tab the current stage shows (``videos`` for stage 1)."""
-        return _STAGE_TABS.get(self._current_stage, self._current_stage)
 
     def set_run_enabled(self, enabled: bool) -> None:
         """The Run stage calls this when a run can be started."""
@@ -1476,7 +1390,10 @@ class WorkspaceWindow(QMainWindow):
         self._nav_timer.stop()
         self._message_timer.stop()
         self.drawer.close_drawer(animated=False)
-        self.videos_stage.shutdown()
+        for stage in self.stages.values():
+            shutdown = getattr(stage, "shutdown", None)
+            if shutdown is not None:
+                shutdown()
         self.context_panel.shutdown()
         self.thumbnails.shutdown()
         self._detach_project()

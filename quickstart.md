@@ -6,10 +6,16 @@ data. If you prefer the 3.x wizard window, see the
 [Classic interface](#appendix-classic-interface) appendix at the end.
 
 **What's new in 4.0:** one window instead of a chain of dialogs. A `.bmaproj`
-**project** keeps your videos, their settings and the history of your runs; the
-**Setup**, **Run** and **Results** tabs take you from drawing regions to
-reading results. Analysis results are unchanged from 3.5.0, and a workspace
-run writes the same files as the command line. See `CHANGELOG.md`.
+**project** keeps your videos, their settings and the history of your runs, and
+the work is a guided flow of **six stages**, each with the whole window:
+
+> **1 Videos** > **2 Arena & zones** > **3 Detection** (**Motion tuning** for the
+> Tail Suspension Test) > **4 Trials** > **5 Review & run** > **6 Results**
+
+Edits apply as you make them (there is no Apply button), every video can have
+its own trial times and its own zones, and the window follows your operating
+system's light or dark setting. Analysis results are unchanged from 3.5.0, and a
+workspace run writes the same files as the command line. See `CHANGELOG.md`.
 
 **Earlier releases:** 3.5 added the **Validation** menu (section 8), 3.4 added
 parallel videos, the command line, the open-field arena, sample sheets, time
@@ -23,17 +29,24 @@ since 3.2.0 apart from the additive features; see `CHANGELOG.md`.
   and run `python gui_main.py`. Add a project file to open it straight away
   (`python gui_main.py study.bmaproj`), or `--classic` for the 3.x wizard window.
 
-The window has the **video table** on the left, the **Setup / Run / Results**
-tabs in the middle and a **context panel** on the right that describes the
-selected video (resolution, settings, issues, notes). **Help > Quickstart
-guide** opens this guide.
+The window has a slim bar on top with the project name and whether it is saved,
+the **stepper** (the six stages), the **current stage** filling the middle, and
+a **footer** with **Back**, a sentence about what is missing (for example "3 of
+12 videos need a start time") and **Next**. Each step of the stepper is a stage:
+a tick means done, a warning means it needs attention (hover it to see why),
+and you can open any stage at any time. **Next** is disabled, with a tooltip
+that says why, until the stage has what the following one needs. A **details
+drawer** (Ctrl+I, or **Details** on a video row) describes the selected video:
+resolution, settings, issues and notes. **Help > Quickstart guide** opens this
+guide.
 
 ## 2. Create or Open a Project
 - **File > New project...** (Ctrl+N) asks for a name and a place for the
   `.bmaproj` file and creates an empty project.
 - **File > Open project...** (Ctrl+O) opens a project; **File > Open recent**
   lists the last ones. When the application starts it offers to reopen the
-  project you were working on.
+  project you were working on, and opening a project takes you back to the
+  stage you left it at.
 - Changes are saved with **File > Save** (Ctrl+S) or **Save as...**
   (Ctrl+Shift+S). While you work, the project is also autosaved next to the
   file (`<name>.bmaproj.autosave`); if the application ended before you saved,
@@ -46,58 +59,69 @@ guide** opens this guide.
   folder...** at any time (or drop a `.json` file on the window). Each import
   creates a new project and leaves the original file untouched.
 
-## 3. Add Videos
-1. Use **Add videos...** (Ctrl+Shift+V) or **Add folder...** (Ctrl+Shift+O) in
-   the toolbar, or simply drag videos and folders onto the window. Tick **Include subfolders** to take the videos inside the folders
-   of a folder as well.
-2. Choose the **Paradigm** (Y-Maze, Elevated Plus Maze, Tail Suspension Test or
-   Freestyle / Open Field) in the context panel. Changing it later clears the
+## 3. Stage 1 - Videos
+![The Videos stage](docs/img/ws-1-videos.png)
+
+1. A new project first asks **What test are these videos from?** Pick one of the
+   four cards (Y-Maze, Elevated Plus Maze, Tail Suspension Test or Freestyle /
+   Open Field). **Change** in the summary line changes it later; that clears the
    settings of configured videos, after asking.
+2. Add the videos: **Add videos...** (Ctrl+Shift+V), **Add folder...**
+   (Ctrl+Shift+O), or drag videos and folders onto the window. Tick **Include
+   subfolders** to take the videos inside the folders of a folder as well.
 3. The table shows each video's status (New, Configured, Done, Failed, Warning,
-   Interrupted). Search and filter by status, double-click a metadata cell to
-   edit it, and use **Add column** for your own metadata (group, dose, ...). A
-   video that moved shows an issue in the context panel: **Relink...** points
-   the project at its new folder. Del removes the selected videos, Alt+Up and
-   Alt+Down reorder them.
+   Interrupted) and, once you have set them, its trial and zone state. Search
+   and filter by status, double-click a metadata cell to edit it, and use **Add
+   column** for your own metadata (group, dose, ...). A video that moved shows
+   an issue in the details drawer: **Relink...** points the project at its new
+   folder. Del removes the selected videos, Alt+Up and Alt+Down reorder them.
+4. **Study details** holds the project's name and notes.
 
 *All output (CSVs, plots, timelapses) goes in an `analysis_run_...` folder
-inside the output folder chosen in the Run tab.*
+inside the output folder chosen in Review & run.*
 
-## 4. Setup
-In the **Setup** tab the configuration steps of the chosen paradigm are listed
-on the left: parameters, regions, calibration, detection or TST tuning, time
-window and review. A green tick means done, a grey ring not done yet and a red
-mark a problem, which is listed under the step. Steps can be opened in any
-order; **Previous step** and **Next step** walk the list.
+**Next: Arena & zones** is enabled once there is a test and at least one video.
 
-- **What you are editing** is shown at the top (**Edit:**). *Project template*
-  is the shared setting every video follows; changing it updates all the videos
-  that use it. Switch the scope to *Selected video(s)* to give the videos
-  selected in the table their own settings, starting from the template's
-  values. A video that is edited this way stops following the template until
-  you use **Apply template settings** (context panel or right-click menu of the
-  table) on it again. With several videos selected, each step you apply is
-  copied to all of them, and everything else of each video stays as it was.
-- **Apply** writes the open step into the project. Nothing changes until you
-  apply; leaving the step, switching scope or selection, closing the project
-  or the window with unapplied edits asks whether to apply, discard or stay.
-  **Revert step** drops the edits of the open step.
-- The **regions** and the tuners work on a frame of the *reference video*:
-  the first video of the project (pick another in the *Reference video* box)
-  for the template, or the selected video itself.
-- **Mark selected videos verified** records that you checked their regions;
-  the review step also lists the problems found in the project's videos.
+## 4. Stages 2 to 4 - Arena & zones, Detection, Trials
+These three stages set the analysis up. They have no **Apply** button: whatever
+you change is written to the project at once (slider and vertex drags a moment
+after you let go), autosaved, and never lost or asked about when you move to
+another stage or close the project. Every video follows the **project template**
+unless you give it settings of its own; the settings built here are identical
+to the ones the classic wizard produces for the same choices.
 
-The settings built here are identical to the ones the classic wizard produces
-for the same choices.
+### Stage 2 - Arena & zones
+![The Arena & zones stage](docs/img/ws-2-arena.png)
 
-### Regions of interest (ROI editor)
-The **ROI editor** shows a frame from the middle of the reference video. The
-**Zones** list on the left has one row per zone (the arena first, if it is
-switched on), and a **Reference line** row at the bottom. Each row shows whether
-the zone is done (✓), missing (○) or breaks a rule (✗, for example a TST mouse
-with two polygons, or a polygon smaller than 100 px²). Click any row at any
-time to draw or edit that zone: there is no fixed order.
+The big canvas is the **ROI editor** on a frame from the middle of a video; the
+column on the right holds **Editing**, the **Calibration** and the **Paradigm
+options**. The video list on the left picks which video's frame you draw on (a
+slim rail on a narrow window).
+
+- **Editing: All videos (template)** is the default. What you draw is the zones
+  of every video that follows the template, drawn on the first video (or the one
+  you picked).
+- **Editing: This video only** shows the picked video's own zones on its own
+  frame. A video that follows the template shows the template's zones read-only
+  ("Looks off?"), which makes a crooked camera easy to spot. Then:
+  - **Adjust zones for this video** gives it zones of its own and opens the
+    editor on its frame (see the screenshot below);
+  - **Auto-align to template** registers the video's background against the
+    template's and stores the result as an *aligned* override, rescaling the
+    calibration with it (see [Reusing ROIs when the camera moved](#reusing-rois-when-the-camera-moved-or-the-resolution-differs));
+  - **Reset to template** drops the override.
+
+![Adjusting the zones of one video](docs/img/ws-2-arena-adjust.png)
+
+The stepper shows a warning on this stage when a video's frame size differs from
+the one the zones were drawn on ("Check alignment").
+
+#### Regions of interest (ROI editor)
+The **Zones** list on the left of the editor has one row per zone (the arena
+first, if it is switched on), and a **Reference line** row at the bottom. Each
+row shows whether the zone is done (✓), missing (○) or breaks a rule (✗, for
+example a TST mouse with two polygons, or a polygon smaller than 100 px²). Click
+any row at any time to draw or edit that zone: there is no fixed order.
 
 **Drawing a zone** (the *Draw* tool, key `D`)
 1. Pick the zone in the list (the editor starts on the first missing one).
@@ -127,26 +151,25 @@ whole frame, `1` shows actual size, and a **middle-button drag** or
 **Space+drag** pans. The status bar shows the cursor position in source pixels
 and the zoom. Press **?** for the list of shortcuts.
 
-**Calibration** (the *Line* tool, key `L`, or the Reference line row): draw a
-line along an object of known length in the real world (e.g., a 30cm maze arm):
-click two points or drag, then drag an end to adjust it; its length in pixels is
-shown on the line. In the **Calibration** step, **Draw reference line...** jumps
-to the editor with the line tool selected, and **Real-world length** takes the
-length of the line in cm. This allows the software to output distances in
-centimeters instead of pixels. **Always draw a reference line when you want
-cm**: the software no longer estimates a scale from the ROI bounding box. The
-TST does not use calibration.
+#### Calibration
+Draw a line along an object of known length in the real world (e.g., a 30cm maze
+arm) with the *Line* tool (key `L`, or the Reference line row): click two points
+or drag, then drag an end to adjust it; its length in pixels is shown on the
+line. **Draw reference line** in the Calibration card jumps to the editor with
+the line tool selected, and **Real-world length** takes the length of the line in
+cm. This allows the software to output distances in centimeters instead of
+pixels. **Always draw a reference line when you want cm**: the software no
+longer estimates a scale from the ROI bounding box. The TST does not use
+calibration.
 
-Apply the step once every zone is done; the editor lists the zones that still
-need work.
-
-### Paradigm parameters
-- **Y-Maze / Elevated Plus Maze:** set the **Minimum dwell time** (a zone change must last this long to count, which ignores flicker across a zone border) and whether to **count the arm the animal starts in as an entry**.
+#### Paradigm options
+Open **Paradigm options** to set what is specific to the test:
+- **Y-Maze / Elevated Plus Maze:** the **Minimum dwell time** (a zone change must last this long to count, which ignores flicker across a zone border) and whether to **count the arm the animal starts in as an entry**.
 - **Tail Suspension Test:** the **Number of mice**, the **Minimum immobility bout** and the **Maximum bridged gap**.
-- **Freestyle / Open Field:** this step also holds the zones and the immobility parameters: the zone names, the **Immobility threshold** (cm/s), the **Speed smoothing window** (s), the **Minimum immobility bout** (s) and the **Minimum zone dwell** (s). Immobility is scored from the smoothed speed, and is reported as N/A if the video is not calibrated.
+- **Freestyle / Open Field:** the zone names, the **Immobility threshold** (cm/s), the **Speed smoothing window** (s), the **Minimum immobility bout** (s) and the **Minimum zone dwell** (s). Immobility is scored from the smoothed speed, and is reported as N/A if the video is not calibrated.
 
 - **Open-field arena (Freestyle):** tick **Open field arena (center/periphery)**
-  in this step to get center/periphery metrics and thigmotaxis. The ROI editor
+  to get center/periphery metrics and thigmotaxis. The ROI editor
   then lists the **arena boundary** first (the floor outline, drawn like any
   zone, before the zones and the reference line). Choose how the center is
   defined: a **distance from the wall in cm** (default 10 cm, needs the
@@ -159,43 +182,13 @@ need work.
   validation video. Zones are optional in this mode; `arena` is a reserved
   zone name. See `OUTPUTS.md`.
 
-### Detection tuning
-The Interactive Detection Tuner ensures the software cleanly separates the animal from the background.
-1. Use the **Frame Navigation** slider (or the `N` and `P` keys) to look at different parts of the video.
-2. Adjust the **Threshold**, minimum component area, and morphology controls
-   until the green selected component in the "Threshold View" covers the
-   animal without selecting reflections or shadows.
-3. Check the evidence-based confidence and quality panel (**Detection Quality
-   (Live)**). “Review” or “Poor” means the validation output must be inspected
-   and the settings may need adjustment.
-4. *(Optional)* Click **Quick Scan Test** to test deterministic sequential
-   windows from the beginning, middle, and end of the video.
-5. Click **Apply**.
-
-For TST, the **TST motion tuning** step is different: select each mouse in turn
-and review the state overlay across the scan. Purple is coherent passive swing,
-red is static immobility, green is active escape, and orange/yellow is
-uncertain and excluded from scoring. The tuner reviews up to five minutes to
-remain responsive; the actual analysis uses the entire selected interval.
-
-### Time window and review
-- **Time window:** adjust the **Start** and **End** time (useful for trimming
-  setup/handling time); for TST, each mouse can have its own window.
-- **Review:** shows what will run and what blocks it. Tick **Create validation
-  video (annotated)** (highly recommended for verifying results) to write an
-  annotated video for the videos that follow these settings.
-
-### Reusing ROIs when the camera moved or the resolution differs
-
+#### Reusing ROIs when the camera moved or the resolution differs
 A saved template or plan holds ROIs in the pixels of the video they were drawn
 on, so a video with another frame size, or one recorded with a slightly moved
 camera, would get misplaced regions. The pre-run check still stops a run whose
 frame size does not match, but you can **align** the template instead of
-redrawing it. If a selected video's frame size differs from the one the
-template was drawn on, the Setup tab shows a warning with **Align
-template...**; the same window opens from **Tools > Align template to
-videos...**, which aligns the selected videos (or every video that does not
-fit) and stores the result as their own, "aligned" settings.
+redrawing it, one video at a time (**Auto-align to template**, above) or all
+the flagged ones at once with **Tools > Align template to videos...**.
 
 1. Choose **Tools > Align template to videos...**. The application asks which
    video the template was drawn on (it remembers it for the session), compares
@@ -222,27 +215,116 @@ length you entered stays the same, so cm values remain correct. A template
 whose reference line was drawn before 3.4 stores only its length, so the length
 is scaled and marked *approximate*; redraw the line for exact cm values.
 
-## 5. Run
-The **Run** tab starts the analysis of the project's videos and follows it. It
-runs exactly what the classic window and the command line run: the same files
-come out for the same settings.
+### Stage 3 - Detection (Motion tuning)
+![The Detection stage](docs/img/ws-3-detection.png)
 
+This stage makes sure the software cleanly separates the animal from the
+background. The preview is large: the video with the animal marked, and the
+detector's confidence for the frame shown under it. Use the slider under the
+preview (or `N` and `P`) to look at different parts of the video, and **What the
+detector sees** to switch the preview to the picture the detector works on (the
+animal it picked is the green blob).
+
+- **Detection settings** has two plain controls: **Sensitivity** (how easily a
+  pixel counts as part of the animal; raise it to find a pale animal) and
+  **Animal size** (how big the animal looks, which sets the smallest blob that
+  counts). A chip says **Good**, **Check** or **Poor** for the frame you are
+  looking at and why. "Custom (advanced)" appears if you have set values the
+  simple controls cannot show; touching a control is the only thing that
+  changes them.
+- **Preview video** picks which video you look at (the settings are shared by
+  every video that follows the template). **Quick check all videos** scans every
+  video in the background, with progress and **Cancel**, and gives each a Good /
+  Check / Poor chip so a bad video stands out.
+- **Advanced** holds every slider (threshold, minimum component area,
+  morphology, ...), kept in step with the simple controls. Adjust them until the
+  green selected component covers the animal without selecting reflections or
+  shadows. "Review" or "Poor" quality means the validation output must be
+  inspected and the settings may need adjustment.
+
+For the **Tail Suspension Test** the stage is called **Motion tuning**. Movement
+is told apart from stillness automatically; the one plain setting is how long
+stillness must last before it counts as immobility, and the classifier settings
+are under **Classifier settings**. Select each mouse in turn and review the
+state overlay across the scan. Purple is coherent passive swing, red is static
+immobility, green is active escape, and orange/yellow is uncertain and excluded
+from scoring. The tuner reviews up to five minutes to remain responsive; the
+actual analysis uses the entire selected interval.
+
+The stage asks you to draw the zones first (with a link to **Arena & zones**)
+if there are none yet. The stepper shows **Detection** as done once you have
+looked at the preview or changed a setting.
+
+### Stage 4 - Trials
+![The Trials stage](docs/img/ws-4-trials.png)
+
+Every mouse is put in the apparatus at a different moment, so every video can
+have **its own start time**; its end is usually the start plus a fixed trial
+length. The table has one row per video with its **Status**, **Start**, **End**,
+**Duration** and **Source** (the *protocol* or *manual*); for the Tail
+Suspension Test every mouse has its own row and window.
+
+- **Type a time** in the Start, End or Duration cell (`90`, `1:30` or `1:30.5`).
+  Anything that cannot be used shows in red with the reason as a tooltip, and
+  what you typed is kept.
+- **Or play the video** in the player on the right and press `S` at the frame
+  where the mouse is in place (**Set start here**) and `E` where the trial ends
+  (**Set end here**). `Left` / `Right` step one frame (`Shift`: ten), and `Enter`
+  (or `N`) selects the next video that still needs a start, so a whole cohort is
+  tagged with the keyboard alone. The shaded bar under the player shows the
+  trial.
+- **Trial protocol** (the card above the table) sets how long a trial lasts
+  ("Fixed length" or "Until the video ends") and whether trials start with the
+  video or at a moment set per video. **Apply to all videos** makes every video
+  follow the protocol again (its own ends are removed, and its own starts too
+  when trials start with the video).
+
+![The trial protocol and a refused time](docs/img/ws-4-trials-protocol.png)
+
+**Next: Review & run** is enabled once every video's trial is valid and has its
+start; the footer says how many still need one.
+
+## 5. Stage 5 - Review & run
+![The Review & run stage](docs/img/ws-5-review.png)
+
+Review & run checks that everything is ready and starts the analysis. It runs
+exactly what the classic window and the command line run: the same files come
+out for the same settings.
+
+**Is everything ready?** One row per earlier stage (Videos, Arena & zones,
+Detection, Trials) with a status chip, a one-line reason and a **Fix** link that
+opens the stage. *Not reviewed* on Detection is a reminder, not a blocker.
+Problems found in single videos are listed underneath, grouped by kind (video
+files not found, no settings yet, start time needed, trial times that cannot be
+used, zones drawn on another frame size, ...), each with the videos concerned
+and the **Fix** link of the stage that solves it. A video without settings is
+left out of a run of *All* videos with a warning, and blocks a run of *Selected*
+videos.
+
+**Run analysis** (also `Ctrl+Enter`) is disabled until nothing blocks the run;
+hover it to read why. Pressing it first checks the plan in one go: videos
+without settings or whose file is missing, the paradigm, the paradigm's own
+checks, metadata columns that clash with output columns, and the usual
+pre-flight checks (video, disk and system). Problems stop the run and stay
+listed on the page until you change something; warnings are listed once and you
+confirm them.
+
+**Run options**
 - **Output folder.** Each run creates an `analysis_run_...` folder inside it.
   It defaults to `runs/` next to the project file; **Change...** picks another
   folder and the workspace remembers it for that project.
-- **Run.** *All configured videos*, *Selected videos* (the rows selected in the
-  table) or *Videos not yet done* (no finished analysis yet). Videos without
-  settings are left out of *All* and *Not yet done* with a warning, and block a
-  run of *Selected videos*: configure them in the Setup tab first.
+- **Videos to analyse.** *All configured videos*, *Selected videos* (the rows
+  selected in the Videos stage) or *Videos not yet done* (no finished analysis
+  yet).
 - **Parallel videos** sets how many videos are analysed at the same time.
   **Auto** (the default) picks `min(CPU cores / 4, videos, RAM in GB / 3)`, at
   least 1; 1 runs the videos one after another. Outputs are byte-identical to
   a sequential run.
-- **Time bins** also reports the metrics in consecutive bins of N seconds (Off
+- **Time bins** also reports the metrics in consecutive bins of N minutes (Off
   by default; see `OUTPUTS.md`). Both settings are saved in the project.
-- **Sample sheet...** attaches animal information to the results. A sample
-  sheet is a CSV whose first column is `video` (a bare filename, or a path
-  relative to the sheet) followed by any columns you like:
+- **Sample sheet.** **Load...** attaches animal information to the results. A
+  sample sheet is a CSV whose first column is `video` (a bare filename, or a
+  path relative to the sheet) followed by any columns you like:
 
   ```text
   video,animal_id,group,sex
@@ -250,33 +332,32 @@ come out for the same settings.
   mouse2.mp4,A02,treated,M
   ```
 
-  The metadata line shows the sheet and how many videos have values; the
+  The line under the title shows the sheet and how many videos have values; the
   values are loaded into the video table. Those columns appear in
   `batch_summary.csv` (after the shared columns), in each video's
   `*_summary.json` and in `manifest.json`. Videos with no row, or whose
   filename matches several rows, are listed, and you are asked before starting
-  with blank metadata for them.
-- **Validation videos** has three states. Partly filled (the default) keeps each
-  video's own setting from Setup; checked or unchecked creates or skips the
-  validation video for every video of *this run* only. The project's settings
-  are not changed.
-- **Run analysis** (also F5) first checks the plan in one go: videos without
-  settings or whose file is missing, the paradigm, the paradigm's own checks,
-  metadata columns that clash with output columns, and the usual pre-flight
-  checks (video, disk and system). Problems stop the run and are listed;
-  warnings are listed once and you confirm them.
-- While it runs, the table shows each video's status, progress, ETA and last
-  message (a percentage per video is only known when videos run one after
-  another), with an overall progress bar and ETA and a log you can filter by
-  level and text (**Save log...** keeps it). The video table is locked.
-  **Cancel** asks first and saves a checkpoint. Closing the window during a run
-  asks, cancels, and closes by itself once the run has stopped.
-- When it ends, the run is added to the project's run history (the table
-  statuses update) and a summary offers **Open results** (the Results tab,
-  showing that run) and **Open folder**.
-- **Resume interrupted run** appears when the output folder holds checkpoints
-  of project videos whose settings are unchanged; it continues them from where
-  they stopped, even after closing the application.
+  with blank metadata for them. **Clear** removes the sheet and the metadata.
+- **Validation video** has three states. Partly filled (the default) keeps each
+  video's own setting; checked or unchecked creates or skips the validation
+  video for every video of *this run* only. The project's settings are not
+  changed.
+
+**While it runs** the same stage shows the progress: an overall bar with the
+batch ETA, a table with each video's status, progress, ETA and last message (a
+percentage per video is only known when videos run one after another), and a
+collapsible **Log** you can filter by level and text (**Save log...** keeps it).
+The rest of the project is locked. You can look at other stages while it runs.
+**Cancel run** asks first and saves a checkpoint. Closing the window during a
+run asks, cancels, and closes by itself once the run has stopped.
+
+**When it ends** the run is added to the project's run history (the table
+statuses update) and a summary card shows how many videos completed, failed or
+have quality warnings, with **View results** (the Results stage, showing that
+run), **Open folder**, and **Resume interrupted run**, which appears when the
+output folder holds checkpoints of project videos whose settings are unchanged;
+it continues them from where they stopped, even after closing the application.
+**Back to run options** returns to the options.
 
 ### Running from the command line
 A saved batch plan (**File > Export batch plan...** in the workspace, or the
@@ -294,24 +375,27 @@ a plan. Exit codes: `0` success, `1` a video failed, `2` bad arguments or
 plan, `130` cancelled. Headless with metadata and bins: `python -m core.cli run
 --plan plan.json --out DIR --sample-sheet sheet.csv --bin-seconds 60`.
 
-## 6. Results
-The **Results** tab opens a finished run and shows what it produced. It lists
-the project's runs, newest first; **Open run folder...** opens any other run
-(manifest schema 3, and older runs as far as they were recorded), and **Show
-folder** reveals it on disk.
+## 6. Stage 6 - Results
+![The Results stage](docs/img/ws-6-results.png)
+
+The Results stage opens a finished run and shows what it produced. The **Run**
+picker lists the project's runs, newest first, with date and counts;
+**Open run folder...** opens any other run (manifest schema 3, and older runs as
+far as they were recorded), and **Show in file manager** reveals it on disk. With
+no run yet the stage says so and links to Review & run.
 
 - **Videos.** `batch_summary.csv` as a table: click a header to sort (numbers
   sort as numbers), type in **Filter the table...** to filter every column,
   select cells and press Ctrl+C (or **Copy**) to copy them, or **Export
   CSV...** to save the rows as shown. A warning badge marks videos with quality
   warnings.
-- **The selected video** has an *Overview* (key metrics from its
-  `summary.json`, the sample-sheet values and the quality warnings), *Plots*
-  (thumbnails; click one to enlarge it) and *Video*. The video tab plays the
-  validation video when the run made one. Otherwise it plays the original video
-  with the analysis drawn on it: the tracked position, its trail, the zone and
-  the ROIs for tracking paradigms, and each mouse's state in the usual colours
-  for the Tail Suspension Test.
+- **The selected video** has an *Overview* (its key numbers as tiles, any
+  quality warnings, and every measurement under **All measurements**, including
+  the sample-sheet values), *Plots* (thumbnails; click one to enlarge it) and
+  *Video*. The video tab plays the validation video when the run made one.
+  Otherwise it plays the original video with the analysis drawn on it: the
+  tracked position, its trail, the zone and the ROIs for tracking paradigms, and
+  each mouse's state in the usual colours for the Tail Suspension Test.
 - **Time bins.** When the run had time bins, chart one metric over the bins per
   video, or choose **Group by** a metadata column to average each group (error
   bars are the standard error of the mean; the legend gives n).
@@ -357,7 +441,8 @@ validation video before interpreting results.
 **File > Export batch plan...** writes the configured videos of the project as
 a 3.x batch plan, which the classic interface and the command line can load.
 Videos without settings are left out (you are told how many). `.bmaproj` files
-use schema 1 and cannot be opened by versions before 4.0.
+use schema 2 (older pre-release files are migrated when opened) and cannot be
+opened by versions before 4.0.
 
 ## 8. Validate the Automated Scores (Validation Menu)
 
@@ -400,10 +485,16 @@ read the result.
 | Workspace | Ctrl+Q | Quit |
 | Workspace | Ctrl+Shift+V | Add videos |
 | Workspace | Ctrl+Shift+O | Add a folder of videos |
-| Workspace | F5 | Run the analysis (Cancel is a toolbar and Run tab button; it has no key) |
+| Workspace | F5 | Go to Review & run |
+| Workspace | Ctrl+PgDown, Ctrl+PgUp | Next or previous stage (Next is held back until the stage has what the next needs) |
+| Workspace | Ctrl+I | Show or hide the details of the selected video |
+| Review & run | Ctrl+Enter | Run the analysis (when nothing blocks it); Cancel is its button and has no key |
 | Video table | Del | Remove the selected videos from the project |
 | Video table | Alt+Up, Alt+Down | Move the selected videos up or down |
 | Video table | F2 or double-click | Edit a metadata cell |
+| Trials | S, E | Set the start or the end of the trial at the frame on screen |
+| Trials | Left, Right (Shift: x10) | Step one frame |
+| Trials | Enter, N | Select the next video that still needs a start |
 | Results table | Ctrl+C | Copy the selected cells |
 | Results video player | Space | Play or pause (when the player has focus) |
 | Results video player | Left, Right | Step one frame |
@@ -470,7 +561,7 @@ same directory as the first video in your list, unless you change it via
 
 ### Configure
 Click **Configure & Start Analysis** (F5, or **Run > Configure and Start
-Analysis**). The same building blocks as in the Setup tab appear as dialogs, one
+Analysis**). The same building blocks as in the Arena & zones, Detection and Trials stages appear as dialogs, one
 after the other:
 
 1. **Select the maze type** (Y-Maze, Elevated Plus Maze, Tail Suspension Test
@@ -501,7 +592,7 @@ after the other:
   remaining for the batch.
 - To stop, click **Cancel Analysis** (or press Esc) and confirm. The software
   saves a checkpoint, and you can resume from the exact same frame later.
-- **Parallel videos** (next to the Start button) works as in the Run tab.
+- **Parallel videos** (next to the Start button) works as in Review & run.
   **Sample sheet...** and **Time bins** (in minutes here) are under the Start
   button; they behave as described in section 5.
 

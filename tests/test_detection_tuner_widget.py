@@ -52,14 +52,32 @@ class DetectionTunerWidgetTests(unittest.TestCase):
         _write_video(self.video, 40)
         self.reference = np.full((48, 64), 40, dtype=np.uint8)
 
-    def _widget(self, initial_config=None, roi_manager=None, parent=None):
+    def _widget(self, initial_config=None, roi_manager=None, parent=None,
+                embedded=False):
         widget = DetectionTunerWidget(
             str(self.video), self.reference,
             roi_manager or ROIManager(source_dimensions=(64, 48)),
-            initial_config=initial_config, parent=parent,
+            initial_config=initial_config, parent=parent, embedded=embedded,
         )
         self.addCleanup(widget.shutdown)
         return widget
+
+    # -- the result of the detector ------------------------------------------
+    def test_the_result_is_a_label_not_text_drawn_into_the_frame(self):
+        for embedded in (False, True):
+            with self.subTest(embedded=embedded):
+                widget = self._widget(embedded=embedded)
+                with patch.object(detection_tuner.cv2, "putText") as put_text:
+                    widget.update_detection()
+                put_text.assert_not_called()
+                text = widget.detect_label.text()
+                self.assertTrue(text.startswith(("Confidence:", "Not detected:")), text)
+
+    def test_the_label_sits_in_the_row_under_the_preview(self):
+        widget = self._widget(embedded=True)
+        self.assertGreaterEqual(widget.footer_layout.indexOf(widget.detect_label), 0)
+        self.assertLess(widget.footer_layout.indexOf(widget.frame_label),
+                        widget.footer_layout.indexOf(widget.detect_label))
 
     # -- initial configuration -------------------------------------------
     def test_without_initial_config_the_defaults_are_used(self):
