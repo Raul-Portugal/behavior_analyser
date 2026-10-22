@@ -27,5 +27,7 @@ dist/
 .*_ref_v*.npz
 outputs/
 
-# Claude Code agent worktrees
-.claude/
+# Claude Code: share .claude/{rules,agents,skills}; keep machine-local bits out
+.claude/worktrees/
+.claude/settings.local.json
+CLAUDE.local.md
