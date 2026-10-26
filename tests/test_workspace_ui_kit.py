@@ -116,7 +116,7 @@ class StatusChipTests(KitCase):
         for kind in ("ok", "warning", "error", "info"):
             chip = self.show(StatusChip(kind, "Status"))
             soft = theme.LIGHT.kind_colors(kind)[1].upper()
-            self.assertEqual(self.hex_at(self.grab(chip), chip.width() - 12, 11), soft, kind)
+            self.assertEqual(self.hex_at(self.grab(chip), chip.width() - 4, 11), soft, kind)
 
     def test_running_chip_animates_only_while_visible(self):
         chip = StatusChip("running", "Working")
@@ -1037,7 +1037,7 @@ class ThemeFollowTests(KitCase):
         theme.apply_theme(self.app, "dark")
         try:
             soft = theme.DARK.kind_colors("ok")[1].upper()
-            self.assertEqual(self.hex_at(self.grab(chip), chip.width() - 12, 11), soft)
+            self.assertEqual(self.hex_at(self.grab(chip), chip.width() - 4, 11), soft)
             card = self.show(Card("x"), 200, 100)
             self.assertEqual(self.hex_at(self.grab(card), 100, 90), theme.DARK.surface)
         finally:
