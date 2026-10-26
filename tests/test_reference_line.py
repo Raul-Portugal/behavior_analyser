@@ -123,7 +123,6 @@ class ReferenceLineDialogTests(unittest.TestCase):
             self.assertIsNone(dialog.get_line_points())
             dialog.add_point(_click(10, 20))
             dialog.add_point(_click(40, 60))
-            dialog.paintEvent(None)
             self.assertEqual(dialog.get_line_points(), ((20.0, 60.0), (80.0, 180.0)))
             self.assertAlmostEqual(dialog.get_line_length(), np.hypot(60, 120))
         finally:
@@ -134,7 +133,6 @@ class ReferenceLineDialogTests(unittest.TestCase):
         try:
             dialog.add_point(_click(10, 20))
             dialog.add_point(_click(40, 60))
-            dialog.paintEvent(None)
             manager = ROIManager()
             self.assertTrue(apply_reference_line(manager, dialog))
             self.assertEqual(manager.reference_line, ((20.0, 60.0), (80.0, 180.0)))
@@ -171,10 +169,10 @@ class ReferenceLineDialogTests(unittest.TestCase):
                 pass
 
         def fake_exec(dialog):
-            # Display is downscaled 1920 -> 1280, so source = display * 1.5.
-            dialog.add_point(_click(100, 50))
-            dialog.add_point(_click(300, 50))
-            dialog.paintEvent(None)
+            # The canvas shows the frame at source resolution (it zooms
+            # instead of downscaling), so image pixels are source pixels.
+            dialog.add_point(_click(150, 75))
+            dialog.add_point(_click(450, 75))
             return 1
 
         manager = ROIManager()

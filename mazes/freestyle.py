@@ -12,7 +12,11 @@ from matplotlib.figure import Figure
 from matplotlib.backends.backend_agg import FigureCanvasAgg
 import numpy as np
 
-from mazes.base_maze import BaseAnalysisResult, Maze
+from mazes.base_maze import (
+    KIND_FREESTYLE, STEP_CALIBRATION, STEP_DETECTION_TUNING,
+    STEP_PARADIGM_PARAMS, STEP_REVIEW, STEP_ROIS, STEP_TIME_WINDOW,
+    BaseAnalysisResult, Maze,
+)
 from core.kinematics import (
     calculate_immobility_bouts,
     calculate_instantaneous_speeds,
@@ -156,7 +160,9 @@ class FreestyleAnalysisResult(BaseAnalysisResult):
 
 class Freestyle(Maze):
     """Freestyle/Open Field maze type with flexible zone configuration."""
-    
+
+    name = "Freestyle / Open Field"
+
     def __init__(self):
         self.user_defined_zones: List[Tuple[str, str]] = []
         self._zones_configured = False
@@ -172,6 +178,11 @@ class Freestyle(Maze):
         self.arena_center_mode = CENTER_BY_DISTANCE
         self.arena_center_distance_cm = DEFAULT_CENTER_DISTANCE_CM
         self.arena_center_area_fraction = DEFAULT_CENTER_AREA_FRACTION
+
+    @property
+    def zones_configured(self) -> bool:
+        """True once zones (possibly none: zone-free) have been chosen."""
+        return self._zones_configured
 
     @property
     def arena_enabled(self) -> bool:
@@ -249,10 +260,68 @@ class Freestyle(Maze):
             outline = None
         roi_manager.set_center_overlay(outline)
 
+    # --- Setup hooks -------------------------------------------------
     @property
-    def name(self) -> str:
-        return "Freestyle / Open Field"
-    
+    def wizard_kind(self) -> str:
+        return KIND_FREESTYLE
+
+    def setup_steps(self) -> List[str]:
+        # Zones and the arena come from the parameters, so they go first.
+        return [
+            STEP_PARADIGM_PARAMS, STEP_ROIS, STEP_CALIBRATION,
+            STEP_DETECTION_TUNING, STEP_TIME_WINDOW, STEP_REVIEW,
+        ]
+
+    def validate_parameters(self) -> List[str]:
+        issues: List[str] = []
+        if self.immobility_threshold_cm_per_s < 0:
+            issues.append("Immobility threshold cannot be negative")
+        for label, value in (
+            ("Speed smoothing window", self.speed_window_seconds),
+            ("Minimum immobility bout", self.min_immobility_seconds),
+            ("Minimum zone dwell", self.min_dwell_seconds),
+        ):
+            if value < 0:
+                issues.append(f"{label} cannot be negative")
+        names = [internal for internal, _ in self.user_defined_zones]
+        if len(set(names)) != len(names):
+            issues.append("Zone names must be unique")
+        return issues
+
+    def validate_rois(self, roi_manager) -> List[str]:
+        issues: List[str] = []
+        if (
+            self.arena_enabled
+            and roi_manager is not None
+            and roi_manager.arena is None
+        ):
+            issues.append(
+                "the open-field arena is enabled but no arena was drawn. "
+                "Redraw the regions for this video."
+            )
+        issues.extend(super().validate_rois(roi_manager))
+        return issues
+
+    @classmethod
+    def matches_roi_names(cls, roi_names) -> bool:
+        """Catch-all: Freestyle is what no other paradigm claims."""
+        from mazes import AVAILABLE_MAZES
+        names = list(roi_names)
+        return not any(
+            maze_class.matches_roi_names(names)
+            for maze_class in AVAILABLE_MAZES.values()
+            if maze_class is not cls
+        )
+
+    def infer_from_settings(self, settings) -> None:
+        super().infer_from_settings(settings)
+        if not self._zones_configured:
+            keys = settings.roi_manager.rois.keys()
+            self.configure_zones([
+                (key, key.replace('_', ' ').title())
+                for key in keys if key != 'outside'
+            ])
+
     def configure_zones(self, zone_definitions: List[Tuple[str, str]]) -> None:
         self.user_defined_zones = zone_definitions
         self._zones_configured = True

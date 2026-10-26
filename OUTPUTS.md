@@ -19,9 +19,16 @@ effective algorithm parameters, failures, quality warnings, and every
 generated artifact. This makes each run self-contained and prevents files from
 separate runs or videos being mixed.
 
+**The outputs are unchanged in 4.0.** Every file described below is written
+exactly as in 3.5.0, whichever interface started the run: a run from the 4.0
+workspace produces the same files as the command line (byte for byte, which the
+tests check) and as the classic interface. The new `.bmaproj` project (see
+"Projects (4.0)") is a separate file that records which runs were made; a run
+folder never needs it and does not refer to it.
+
 ## Manifest (`manifest.json`, schema 3)
 
-`schema_version` is `3` (3.4.0; unchanged in 3.5.0). Top-level keys: `application`, `paradigm`,
+`schema_version` is `3` (3.4.0; unchanged in 3.5.0 and 4.0.0). Top-level keys: `application`, `paradigm`,
 `started_at`, `finished_at`, `cancelled`, `requested_videos`,
 `completed_videos`, `sample_sheet` (path of the sample sheet, or `null`),
 `time_bin_seconds` (bin length, or `null` when bins are off), `videos`,
@@ -59,12 +66,15 @@ The application uses it in two ways:
 - **Resume after a restart.** A checkpoint only resumes when its settings hash
   matches the settings of the next run. At startup, and whenever videos are
   added, the application pairs each checkpoint with the run plan whose entry
-  for that video hashes to the same value. **Resume interrupted run** then
+  for that video hashes to the same value. **Resume interrupted run** (a button
+  in the workspace's Review & run stage, and a banner in the classic interface) then
   reloads that plan and the paradigm parameters, so the checkpoint continues
   exactly where it stopped. Checkpoints that no run plan explains (for
   example from runs started by an older version) are not resumed.
-- **File > Load settings from previous run...** loads the plan of an earlier
-  run folder so the same settings can be applied to new videos.
+- **File > Load settings from previous run...** (classic interface) loads the
+  plan of an earlier run folder so the same settings can be applied to new
+  videos. In the workspace, **File > Import > Previous run folder...** builds a
+  project from it.
 
 `run_plan.json` is a settings file, not a result: it contains no analysis
 output. If it cannot be written the analysis still runs (the failure is only
@@ -415,6 +425,127 @@ another drive is keyed by its absolute path. Older plans keyed by bare
 filename still match when the filename is unambiguous. A video that matches no
 entry is never given another video's settings; the application reports it as
 unmatched and asks whether to configure it separately, skip it or cancel.
+
+## Projects (4.0)
+
+A project (`.bmaproj`) keeps everything about one study in a single JSON file:
+the videos, the settings of every video, free metadata per video, the run
+options and the history of the runs made from it. It is data only: analysis
+outputs are never changed by it, and a run started from a project writes the
+same run folder, `run_plan.json` and `manifest.json` as any other run (the
+outputs are unchanged in 4.0). The run folders are created in the Review & run
+stage's output folder, which defaults to `runs/` next to the project file; that folder
+is remembered per project by the application's settings, not stored in the
+project. The project's `runs` list is the history shown in the Results stage.
+
+```json
+{
+  "type": "project",
+  "schema_version": 1,
+  "name": "Cohort A, Y-maze",
+  "created_at": "2026-03-02T09:14:00+0000",
+  "modified_at": "2026-03-02T11:40:12+0000",
+  "app_version": "4.0.0",
+  "paradigm": "Y-Maze",
+  "algorithm_parameters": {},
+  "notes": "",
+  "run_options": {
+    "parallel_workers": 0,
+    "time_bin_seconds": 60.0,
+    "sample_sheet": "sheets/cohort_a.csv",
+    "create_validation_video": false
+  },
+  "template_settings": { "schema_version": 5, "roi_manager": {}, "...": "..." },
+  "videos": [
+    {
+      "key": "videos/mouse1.mp4",
+      "path": "videos/mouse1.mp4",
+      "metadata": { "animal_id": "A01", "group": "control" },
+      "settings": "template",
+      "settings_source": "template",
+      "verified": true,
+      "fingerprint": "3f1c0b7a52d94e0c8a1b77e2",
+      "last_status": "done",
+      "last_run_dir": "analysis_run_20260302_104500",
+      "notes": ""
+    },
+    {
+      "key": "videos/mouse2.mp4",
+      "path": "videos/mouse2.mp4",
+      "metadata": { "animal_id": "A02", "group": "treated" },
+      "settings": { "schema_version": 5, "roi_manager": {}, "...": "..." },
+      "settings_source": "custom",
+      "verified": false,
+      "fingerprint": "9d2e41c6b0a85f3d1c7e04aa",
+      "last_status": "configured",
+      "last_run_dir": null,
+      "notes": "camera was bumped"
+    }
+  ],
+  "runs": [
+    {
+      "run_dir": "analysis_run_20260302_104500",
+      "started_at": "2026-03-02T10:45:00+0000",
+      "finished_at": "2026-03-02T10:52:31+0000",
+      "cancelled": false,
+      "completed": 1,
+      "failed": 0,
+      "manifest": "analysis_run_20260302_104500/manifest.json",
+      "settings_hashes": { "videos/mouse1.mp4": "b1a07c2e55d3e9f0a4c18d62" }
+    }
+  ]
+}
+```
+
+(`"roi_manager": {}` and `"..."` stand for the usual settings content, see
+"Configuration schemas"; they are not abbreviated in a real file.)
+
+- **Paths** (`path`, `last_run_dir`, `run_dir`, `manifest`, `sample_sheet`) are
+  stored relative to the project file's folder, with forward slashes, and
+  resolved against it on load, so a study folder can be moved or shared as a
+  whole. A path with no relative form (another drive) is stored absolute.
+- **`key`** identifies a video for good: it starts as the video's path
+  relative to the project file (the same key a batch plan uses) and never
+  changes when the video is relinked or the project file is saved elsewhere.
+  Run history refers to videos by key.
+- **`settings`** is a full settings object (the same as a template or one batch
+  plan entry), `null` for a video that is not configured yet, or the string
+  `"template"` for a video whose settings are exactly `template_settings`
+  (written once instead of once per video). `settings_source` is `template`,
+  `custom` or `aligned` (the result of aligning the template to this video).
+  Changing a video's settings clears `verified` and sets `last_status` back to
+  `configured`.
+- **`fingerprint`** is the checkpoint video fingerprint (path, size and
+  modification time) taken when the video was configured. When it no longer
+  matches, the project reports that the video changed since it was configured.
+  Relinking a video records it again, since the path is part of it.
+- **`last_status`** is `new` (no settings), `configured`, `done`, `warning`
+  (done, with a quality warning), `failed` or `interrupted` (listed in the
+  run's `run_plan.json` but without an outcome in the manifest). It is set from
+  the run's `manifest.json` (schema 3) when the run is recorded.
+- **`settings_hashes`** per run are the manifest's per-video `settings_hash`,
+  keyed by video key.
+- **`run_options.parallel_workers`** `0` means automatic.
+  `time_bin_seconds` `0` means no time bins.
+
+The file is written atomically (a temporary file, then a rename). A project
+with a newer `schema_version` than the application understands is refused with
+a clear message; unknown settings inside a video entry (for example from a
+newer settings schema) are kept as they are and written back unchanged.
+While a project is open the application writes `<name>.bmaproj.autosave` next
+to it a couple of seconds after each change and offers to recover it at the
+next start when it is newer than the project file; saving the project removes
+it.
+
+Projects convert both ways with the earlier formats. A project can be started
+from a template (every video inherits it), from a batch plan (entries are
+matched to videos exactly as when loading a plan) or from any 3.x run folder,
+using `run_plan.json` for the videos and settings and `manifest.json` for the
+metadata, sample sheet, time-bin length, video fingerprints and each video's
+outcome. A project can be exported as an ordinary batch plan (**File > Export
+batch plan...**, keys relative to the plan file) that 3.x builds and the
+command line read; videos without settings are left out of the plan. Versions
+before 4.0 cannot open a `.bmaproj` file.
 
 ## Reference-line endpoints in configurations
 

@@ -16,6 +16,7 @@ try:
     from gui.main_window import MainWindow, QTextEditLogger
     from gui.settings_dialog import SettingsDialog
     from gui.tst_tuner import TstTunerDialog
+    from gui.tuners.tst_tuner import TstTunerWidget
     from gui.tuner_dialog import TunerDialog
     from mazes import create_maze
     from roi_manager import ROIManager
@@ -376,7 +377,7 @@ class DialogWordingTests(unittest.TestCase):
         self.assertEqual(self._tuner().windowTitle(), "Detection Tuner")
         roi_manager = ROIManager(source_dimensions=(100, 100))
         roi_manager.add_roi("mouse_1", _square())
-        with patch.object(TstTunerDialog, "start_scan"):
+        with patch.object(TstTunerWidget, "start_scan"):
             tst = TstTunerDialog(Path("unopened.mp4"), roi_manager, create_maze("Tail Suspension Test"))
         self.addCleanup(tst.deleteLater)
         try:
@@ -412,7 +413,7 @@ class TstTunerShortcutTests(unittest.TestCase):
     def _dialog(self):
         roi_manager = ROIManager(source_dimensions=(100, 100))
         roi_manager.add_roi("mouse_1", _square())
-        with patch.object(TstTunerDialog, "start_scan"):
+        with patch.object(TstTunerWidget, "start_scan"):
             dialog = TstTunerDialog(
                 Path("unopened.mp4"), roi_manager, create_maze("Tail Suspension Test")
             )
@@ -439,8 +440,8 @@ class TstTunerShortcutTests(unittest.TestCase):
         dialog.scrub_slider.setRange(0, 100)
         dialog.scrub_slider.setValue(50)
         dialog.frame_buffer = list(range(101))
-        with patch.object(dialog, "update_frame"), \
-                patch.object(dialog, "update_cursor_blit"):
+        with patch.object(dialog.widget, "update_frame"), \
+                patch.object(dialog.widget, "update_cursor_blit"):
             dialog.step_frames(1)
             self.assertEqual(dialog.scrub_slider.value(), 51)
             dialog.step_frames(-10)

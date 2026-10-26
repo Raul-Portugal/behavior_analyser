@@ -14,6 +14,7 @@ from matplotlib.backends.backend_agg import FigureCanvasAgg
 from matplotlib.patches import Patch
 import numpy as np
 
+from mazes.arm_entry import ArmEntrySetupMixin
 from mazes.base_maze import BaseAnalysisResult, Maze
 from core.zone_events import (
     debounce_zone_labels,
@@ -174,8 +175,9 @@ class YMazeAnalysisResult(BaseAnalysisResult):
     entries_possibly_missed: int = 0
 
 
-class YMaze(Maze):
+class YMaze(ArmEntrySetupMixin, Maze):
     name = "Y-Maze"
+    LEGACY_ROI_SIGNATURE = ("arm_a", "arm_b")
 
     def __init__(self):
         self.min_dwell_seconds = 0.10
